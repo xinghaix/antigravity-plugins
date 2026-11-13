@@ -1,0 +1,46 @@
+{
+  "name": "antigravity-plugins",
+  "version": "1.0.0",
+  "description": "Curated monorepo of native Google Antigravity plugins (MCP Manager, Mattpocock Skills, Sidecar UI extensions & agent workflows).",
+  "type": "module",
+  "bin": {
+    "antigravity-plugins": "./scripts/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "list": "node scripts/cli.mjs list",
+    "status": "node scripts/cli.mjs status",
+    "install:all": "node scripts/cli.mjs install --all --link",
+    "install:copy": "node scripts/cli.mjs install --all --copy",
+    "uninstall:all": "node scripts/cli.mjs uninstall --all",
+    "doctor": "node scripts/cli.mjs doctor",
+    "new:plugin": "node scripts/new-plugin.mjs",
+    "sync:registry": "node scripts/sync-registry.mjs",
+    "sync:mattpocock": "node plugins/mattpocock-skills/scripts/sync-upstream.mjs",
+    "check": "node scripts/check-all.mjs",
+    "test": "node scripts/test-all.mjs",
+    "pack:release": "node scripts/package-release.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xinghaix/antigravity-plugins.git"
+  },
+  "homepage": "https://github.com/xinghaix/antigravity-plugins#readme",
+  "bugs": {
+    "url": "https://github.com/xinghaix/antigravity-plugins/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "plugins",
+    "mcp",
+    "mattpocock-skills",
+    "agent-skills",
+    "sidecar",
+    "gemini"
+  ],
+  "author": "xinghaix",
+  "license": "MIT"
+}

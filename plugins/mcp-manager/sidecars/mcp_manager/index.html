@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP Manager</title>
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="topbar-main">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22v-5"/>
+              <path d="M9 8V2"/>
+              <path d="M15 8V2"/>
+              <path d="M18 8v5a6 6 0 0 1-12 0V8Z"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>MCP Manager</h1>
+            <span id="summary-pill" class="summary-pill">加载中…</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="btn-lang" type="button" class="btn btn-ghost btn-xs lang-pill" title="Switch language / 切换语言">EN</button>
+          <button id="btn-refresh" type="button" class="icon-btn" data-i18n-title="refreshTip" title="刷新配置">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+              <polyline points="21 3 21 9 15 9"/>
+            </svg>
+          </button>
+          <button id="btn-probe-all" type="button" class="btn btn-secondary btn-sm">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/>
+              <path d="M4 6h.01"/>
+              <path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/>
+              <path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/>
+              <path d="M12 18h.01"/>
+              <path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/>
+              <circle cx="12" cy="12" r="2"/>
+            </svg>
+            <span data-i18n="probeAll">探测全部</span>
+          </button>
+          <button id="btn-add" type="button" class="btn btn-primary btn-sm" data-i18n="addMcp">+ 添加 MCP</button>
+        </div>
+      </div>
+
+      <div class="controls-bar">
+        <div class="scope-row">
+          <div class="scope-tabs" role="tablist" aria-label="作用域筛选">
+            <button type="button" class="scope-tab active" role="tab" aria-selected="true" data-scope="all"><span data-i18n="scopeAll">全部</span> <span class="count" id="cnt-all">0</span></button>
+            <button type="button" class="scope-tab" role="tab" aria-selected="false" data-scope="global"><span data-i18n="scopeGlobal">全局</span> <span class="count" id="cnt-global">0</span></button>
+            <button type="button" class="scope-tab" role="tab" aria-selected="false" data-scope="workspace"><span data-i18n="scopeWorkspace">工作区</span> <span class="count" id="cnt-workspace">0</span></button>
+            <button type="button" class="scope-tab" role="tab" aria-selected="false" data-scope="plugin"><span data-i18n="scopePlugin">插件</span> <span class="count" id="cnt-plugin">0</span></button>
+          </div>
+          <div class="scope-tools">
+            <button id="btn-import" type="button" class="btn btn-secondary btn-xs" data-i18n="importBtn">导入</button>
+            <button id="btn-raw" type="button" class="btn btn-secondary btn-xs" data-i18n="rawBtn">Raw / 备份</button>
+          </div>
+        </div>
+        <div class="filter-row">
+          <label class="search-box">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+            </svg>
+            <input id="search-input" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="搜索服务名、命令、URL…" autocomplete="off">
+            <kbd class="kbd-hint" title="快捷键: / 或 Cmd/Ctrl+K">/</kbd>
+          </label>
+          <select id="status-filter" class="select-sm" aria-label="状态筛选">
+            <option value="all" data-i18n="statusAll">全部状态</option>
+            <option value="enabled" data-i18n="statusEnabled">仅已启用</option>
+            <option value="disabled" data-i18n="statusDisabled">仅已禁用</option>
+            <option value="warn" data-i18n="statusWarn">仅告警</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="workspace-bar" class="workspace-bar hidden">
+        <div class="workspace-bar-left">
+          <span class="ws-label" data-i18n="wsLabel">工作区:</span>
+          <select id="workspace-select" class="select-sm"></select>
+          <button id="btn-ws-remove" type="button" class="icon-btn sm hidden" data-i18n-title="wsRemoveTip" title="移除此工作区">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="workspace-add-group">
+          <input id="ws-path-input" type="text" class="input-sm" data-i18n-placeholder="wsPlaceholder" placeholder="添加项目目录路径，如 ~/Projects/app">
+          <button id="btn-ws-add" type="button" class="btn btn-secondary btn-sm" data-i18n="wsAdd">关联</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="alerts-area" class="alerts-area"></div>
+
+    <main id="server-list" class="server-list" aria-live="polite"></main>
+  </div>
+
+  <!-- Add / Edit Server Modal -->
+  <div id="modal-editor" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="editor-title" data-i18n="editorAddTitle">添加 MCP 服务</h2>
+          <p id="editor-subtitle" class="modal-sub" data-i18n="editorSubtitle">支持本地 Stdio 进程与远程 Streamable HTTP</p>
+        </div>
+        <div class="modal-header-right">
+          <div class="mode-switch">
+            <button type="button" class="mode-btn active" data-mode="form" data-i18n="modeForm">可视化表单</button>
+            <button type="button" class="mode-btn" data-mode="json">JSON</button>
+          </div>
+          <button type="button" class="icon-btn" data-close="modal-editor" aria-label="关闭">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <div id="template-strip" class="template-strip">
+          <span class="tpl-label" data-i18n="tplLabel">快速模板:</span>
+          <button type="button" class="tpl-chip" data-tpl="filesystem">Filesystem</button>
+          <button type="button" class="tpl-chip" data-tpl="fetch">Fetch</button>
+          <button type="button" class="tpl-chip" data-tpl="github">GitHub</button>
+          <button type="button" class="tpl-chip" data-tpl="sqlite">SQLite</button>
+          <button type="button" class="tpl-chip" data-tpl="http">Remote HTTP</button>
+          <button type="button" class="tpl-chip" data-tpl="sse-bridge">SSE Bridge</button>
+        </div>
+
+        <div id="editor-form-pane">
+          <div class="form-grid-2">
+            <label class="field">
+              <span class="field-label" data-i18n="scopeLabel">作用域</span>
+              <select id="ed-scope">
+                <option value="global" data-i18n="scopeOptGlobal">全局 (~/.gemini/config/mcp_config.json)</option>
+                <option value="workspace" data-i18n="scopeOptWs">工作区 (.agents/mcp_config.json)</option>
+              </select>
+            </label>
+            <label class="field" id="ed-ws-wrap">
+              <span class="field-label" data-i18n="targetWsLabel">目标工作区</span>
+              <select id="ed-workspace"></select>
+            </label>
+          </div>
+
+          <div class="form-grid-2">
+            <label class="field">
+              <span class="field-label"><span data-i18n="serverIdLabel">服务名称 (ID)</span> <span class="req">*</span></span>
+              <input id="ed-name" type="text" placeholder="filesystem / github-mcp" autocomplete="off">
+            </label>
+            <div class="field">
+              <span class="field-label" data-i18n="transportLabel">传输方式</span>
+              <div class="seg-group">
+                <button type="button" class="seg-btn active" data-transport="stdio" data-i18n="transportStdio">本地进程 (Stdio)</button>
+                <button type="button" class="seg-btn" data-transport="http" data-i18n="transportHttp">远程 (Streamable HTTP)</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stdio Pane -->
+          <div id="pane-stdio" class="transport-pane">
+            <div class="quick-cmd-box">
+              <input id="ed-cmd-quick" type="text" data-i18n-placeholder="quickCmdPlaceholder" placeholder="快捷拆解整行命令，如: npx -y @modelcontextprotocol/server-filesystem ~/Projects">
+              <button id="btn-split-cmd" type="button" class="btn btn-secondary btn-sm" data-i18n="splitCmdBtn">一键填入</button>
+            </div>
+            <div class="form-grid-2">
+              <label class="field">
+                <span class="field-label"><span data-i18n="commandLabel">命令 (command)</span> <span class="req">*</span></span>
+                <input id="ed-command" type="text" placeholder="npx / uvx / python3 / /path/to/bin" autocomplete="off">
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="cwdLabel">工作目录 (cwd，可选)</span>
+                <input id="ed-cwd" type="text" placeholder="/path/to/dir" autocomplete="off">
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label" data-i18n="argsLabel">启动参数 (args，每行一个参数)</span>
+              <textarea id="ed-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/path/to/workspace"></textarea>
+            </label>
+            <div class="field">
+              <div class="field-head">
+                <span class="field-label" data-i18n="envLabel">环境变量 (env)</span>
+                <button id="btn-add-env" type="button" class="link-btn" data-i18n="addEnvBtn">+ 添加变量</button>
+              </div>
+              <div id="ed-env-rows" class="kv-list"></div>
+            </div>
+          </div>
+
+          <!-- HTTP Pane -->
+          <div id="pane-http" class="transport-pane hidden">
+            <label class="field">
+              <span class="field-label"><span data-i18n="urlLabel">服务端点 URL</span> <span class="req">*</span></span>
+              <input id="ed-url" type="url" placeholder="https://mcp.example.com/mcp" autocomplete="off">
+              <span class="field-hint" data-i18n="urlHint">请使用 Streamable HTTP 端点（通常为 /mcp）。如对方仅支持旧版 /sse，请改用「SSE Bridge」模板。</span>
+            </label>
+            <div class="field">
+              <div class="field-head">
+                <span class="field-label" data-i18n="headersLabel">请求头 (headers)</span>
+                <button id="btn-add-header" type="button" class="link-btn" data-i18n="addHeaderBtn">+ 添加请求头</button>
+              </div>
+              <div id="ed-header-rows" class="kv-list"></div>
+            </div>
+            <div class="form-grid-2">
+              <label class="field">
+                <span class="field-label" data-i18n="authProviderLabel">鉴权提供方 (authProviderType)</span>
+                <select id="ed-auth-type">
+                  <option value="" data-i18n="authOptDefault">默认 / 自定义 Headers</option>
+                  <option value="google_credentials">google_credentials (Google ADC)</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">OAuth Client ID (<span data-i18n="optional">可选</span>)</span>
+                <input id="ed-oauth-id" type="text" placeholder="OAuth clientId" autocomplete="off">
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label">OAuth Client Secret (<span data-i18n="optional">可选</span>)</span>
+              <input id="ed-oauth-secret" type="password" placeholder="OAuth clientSecret" autocomplete="off">
+            </label>
+          </div>
+
+          <!-- Tool Filter & Status -->
+          <div class="divider"></div>
+          <div class="form-grid-2">
+            <label class="field">
+              <span class="field-label" data-i18n="toolPolicyLabel">工具过滤策略</span>
+              <select id="ed-tool-mode">
+                <option value="all" data-i18n="toolPolicyAll">不限制（暴露全部工具）</option>
+                <option value="allow" data-i18n="toolPolicyAllow">仅允许白名单 (enabledTools)</option>
+                <option value="deny" data-i18n="toolPolicyDeny">排除黑名单 (disabledTools)</option>
+              </select>
+            </label>
+            <div class="field switch-field">
+              <span class="field-label" data-i18n="enableStatusLabel">启用状态</span>
+              <label class="switch-row">
+                <input id="ed-enabled" type="checkbox" checked>
+                <span class="switch-track"></span>
+                <span id="ed-enabled-label">保存后立即启用</span>
+              </label>
+            </div>
+          </div>
+          <label id="ed-tools-wrap" class="field hidden">
+            <span class="field-label" data-i18n="toolsListLabel">工具名称列表（逗号或换行分隔）</span>
+            <textarea id="ed-tools-list" rows="2" placeholder="read_file, list_directory"></textarea>
+          </label>
+        </div>
+
+        <div id="editor-json-pane" class="hidden">
+          <label class="field">
+            <span class="field-label" data-i18n="singleJsonLabel">单服务 JSON 配置</span>
+            <textarea id="ed-raw-json" class="code-area" rows="14" spellcheck="false"></textarea>
+          </label>
+        </div>
+
+        <div id="editor-probe-box" class="probe-box hidden"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btn-editor-probe" type="button" class="btn btn-secondary" data-i18n="editorProbeBtn">测试连接并拉取工具</button>
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-ghost" data-close="modal-editor" data-i18n="cancelBtn">取消</button>
+        <button id="btn-editor-save" type="button" class="btn btn-primary" data-i18n="saveBtn">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Snippet Modal -->
+  <div id="modal-import" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="import-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="import-title" data-i18n="importTitle">粘贴 JSON 一键导入</h2>
+          <p class="modal-sub" data-i18n="importSub">兼容 Antigravity、Claude Desktop、Cursor 与 VS Code 的 mcpServers 片段</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="modal-import" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid-2">
+          <label class="field">
+            <span class="field-label" data-i18n="importToLabel">导入到</span>
+            <select id="imp-scope">
+              <option value="global" data-i18n="scopeGlobalOpt">全局配置</option>
+              <option value="workspace" data-i18n="scopeWsOpt">工作区配置</option>
+            </select>
+          </label>
+          <label class="field" id="imp-ws-wrap">
+            <span class="field-label" data-i18n="targetWsLabel">目标工作区</span>
+            <select id="imp-workspace"></select>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label" data-i18n="importJsonLabel">JSON 配置片段</span>
+          <textarea id="imp-text" class="code-area" rows="10" spellcheck="false" placeholder='{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
+    }
+  }
+}'></textarea>
+        </label>
+        <label class="check-row">
+          <input id="imp-overwrite" type="checkbox">
+          <span data-i18n="importOverwriteLabel">若存在同名 MCP 服务，直接覆盖</span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-ghost" data-close="modal-import" data-i18n="cancelBtn">取消</button>
+        <button id="btn-import-run" type="button" class="btn btn-primary" data-i18n="importConfirmBtn">确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Raw Config & Backup Modal -->
+  <div id="modal-raw" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="raw-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="raw-title" data-i18n="rawTitle">Raw 配置文件与备份恢复</h2>
+          <p id="raw-filepath" class="modal-sub mono"></p>
+        </div>
+        <button type="button" class="icon-btn" data-close="modal-raw" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid-2">
+          <label class="field">
+            <span class="field-label" data-i18n="rawScopeLabel">配置文件作用域</span>
+            <select id="raw-scope">
+              <option value="global" data-i18n="scopeOptGlobal">全局 (~/.gemini/config/mcp_config.json)</option>
+              <option value="workspace" data-i18n="scopeOptWs">工作区 (.agents/mcp_config.json)</option>
+            </select>
+          </label>
+          <label class="field" id="raw-ws-wrap">
+            <span class="field-label" data-i18n="targetWsLabel">目标工作区</span>
+            <select id="raw-workspace"></select>
+          </label>
+        </div>
+
+        <div class="backup-bar">
+          <span class="ws-label" data-i18n="backupLabel">历史备份:</span>
+          <select id="raw-backup-select" class="select-sm"></select>
+          <button id="btn-raw-restore" type="button" class="btn btn-secondary btn-sm" data-i18n="restoreBackupBtn">恢复备份</button>
+        </div>
+
+        <label class="field">
+          <textarea id="raw-text" class="code-area" rows="15" spellcheck="false"></textarea>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-raw-format" type="button" class="btn btn-secondary" data-i18n="formatJsonBtn">格式化 JSON</button>
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-ghost" data-close="modal-raw" data-i18n="cancelBtn">取消</button>
+        <button id="btn-raw-save" type="button" class="btn btn-primary" data-i18n="saveFileBtn">保存文件</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Plugin Modal -->
+  <div id="modal-export" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="export-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="export-title" data-i18n="exportTitle">打包为独立插件</h2>
+          <p class="modal-sub" data-i18n="exportSub">将此 MCP 封装到 ~/.gemini/config/plugins/，便于在插件页面独立开关</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="modal-export" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label"><span data-i18n="exportSlugLabel">插件目录名 (小写 + 短横线)</span> <span class="req">*</span></span>
+          <input id="exp-slug" type="text" placeholder="my-sqlite-mcp">
+        </label>
+        <label class="field">
+          <span class="field-label" data-i18n="exportDisplayLabel">显示名称</span>
+          <input id="exp-display" type="text" placeholder="SQLite MCP">
+        </label>
+        <label class="field">
+          <span class="field-label" data-i18n="exportDescLabel">简介</span>
+          <input id="exp-desc" type="text" placeholder="Standalone MCP plugin">
+        </label>
+      </div>
+      <div class="modal-footer">
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-ghost" data-close="modal-export" data-i18n="cancelBtn">取消</button>
+        <button id="btn-export-run" type="button" class="btn btn-primary" data-i18n="exportConfirmBtn">生成插件包</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

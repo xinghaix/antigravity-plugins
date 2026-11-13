@@ -1,0 +1,21 @@
+{
+  "name": "mcp-manager",
+  "displayName": "MCP Manager",
+  "description": "Visual MCP server manager for Antigravity: inspect, add, edit, toggle, probe tools, and configure global, workspace, and plugin MCP servers.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "xinghaix",
+    "url": "https://github.com/xinghaix"
+  },
+  "homepage": "https://github.com/xinghaix/antigravity-plugins/tree/main/plugins/mcp-manager",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xinghaix/antigravity-plugins.git"
+  },
+  "suggestedPrompts": [
+    "打开 MCP Manager 面板查看当前已配置的 MCP 服务",
+    "帮我在 MCP Manager 中添加一个新的本地或远程 MCP 服务",
+    "检查当前 MCP 配置是否有协议或命令路径问题"
+  ]
+}

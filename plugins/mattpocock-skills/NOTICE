@@ -1,0 +1,11 @@
+THIRD-PARTY ATTRIBUTION NOTICE
+
+This plugin natively adapts and bundles agent skills derived from:
+  mattpocock/skills (https://github.com/mattpocock/skills)
+  Author: Matt Pocock (https://www.aihero.dev)
+  License: MIT License
+
+Original skill content under `catalog/upstream/`, `catalog/adapted/`, and `skills/`
+retains upstream attribution under the MIT License. All Antigravity native
+compiler transforms, leaf subagents, Sidecar Aux Pane Studio UI, and CLI
+tooling are original work licensed under the MIT License.

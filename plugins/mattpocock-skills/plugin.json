@@ -1,0 +1,21 @@
+{
+  "name": "mattpocock-skills",
+  "displayName": "Mattpocock Skills",
+  "description": "Native Antigravity edition of Matt Pocock's engineering & productivity skills (grilling, spec/ticket flows, TDD, two-axis code review, domain modeling) with a visual Aux Pane Studio.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "xinghaix",
+    "url": "https://github.com/xinghaix"
+  },
+  "homepage": "https://github.com/xinghaix/antigravity-plugins/tree/main/plugins/mattpocock-skills",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xinghaix/antigravity-plugins.git"
+  },
+  "suggestedPrompts": [
+    "打开 Mattpocock Skills 面板管理技能或初始化当前仓库",
+    "/ask-matt 帮我看看当前需求适合走哪条研发技能流",
+    "/grill-with-docs 对我接下来的功能设计进行极限追问并沉淀术语表"
+  ]
+}

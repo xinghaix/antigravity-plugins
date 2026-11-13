@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mattpocock Skills</title>
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="topbar-main">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m6 7 5 5-5 5"/>
+              <path d="M13 17h6"/>
+              <circle cx="17" cy="7" r="2"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>Mattpocock Skills</h1>
+            <span id="summary-pill" class="summary-pill">加载中…</span>
+            <span id="mode-pill" class="mode-pill" title="安装模式">--link</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="btn-lang" type="button" class="btn btn-ghost btn-xs lang-pill" title="Switch language / 切换语言">EN</button>
+          <button id="btn-refresh" type="button" class="icon-btn" data-i18n-title="refreshTip" title="刷新状态">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+              <polyline points="21 3 21 9 15 9"/>
+            </svg>
+          </button>
+          <button id="btn-quick-sync" type="button" class="btn btn-secondary btn-sm">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+              <path d="M16 16h5v5"/>
+            </svg>
+            <span data-i18n="syncBtn">同步上游</span>
+          </button>
+        </div>
+      </div>
+
+      <nav class="primary-tabs" role="tablist" aria-label="主功能区">
+        <button type="button" class="primary-tab active" role="tab" aria-selected="true" data-tab="skills" data-i18n="tabSkills">技能编排</button>
+        <button type="button" class="primary-tab" role="tab" aria-selected="false" data-tab="workflow" data-i18n="tabWorkflow">流程领航</button>
+        <button type="button" class="primary-tab" role="tab" aria-selected="false" data-tab="workspace" data-i18n="tabWorkspace">项目工作台</button>
+        <button type="button" class="primary-tab" role="tab" aria-selected="false" data-tab="settings" data-i18n="tabSettings">同步与设置</button>
+      </nav>
+    </header>
+
+    <main id="main-content" class="main-content" aria-live="polite"></main>
+  </div>
+
+  <!-- Deliver to Workspace Modal -->
+  <div id="modal-deliver" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="deliver-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="deliver-title" data-i18n="deliverModalTitle">投递技能到项目 .agents/skills/</h2>
+          <p class="modal-sub" data-i18n="deliverModalSub">让协作者克隆仓库即可直接使用指定技能（自动补齐所需依赖）</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="modal-deliver" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label" data-i18n="targetWorkspaceLabel">目标项目工作区</span>
+          <select id="deliver-ws-select" class="input"></select>
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label" data-i18n="deliverScopeLabel">投递范围</span>
+            <select id="deliver-scope-select" class="input">
+              <option value="enabled" data-i18n="deliverEnabledOpt">当前全局已启用的全部技能</option>
+              <option value="core" data-i18n="deliverCoreOpt">精简核心主干 (10 技能)</option>
+              <option value="single" data-i18n="deliverSingleOpt">仅指定单个技能</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label" data-i18n="deliverModeLabel">写入方式</span>
+            <select id="deliver-mode-select" class="input">
+              <option value="copy" data-i18n="deliverCopyOpt">复制文件（推荐，可提交 Git 团队共享）</option>
+              <option value="link" data-i18n="deliverLinkOpt">软链接（跟随本地插件目录实时更新）</option>
+            </select>
+          </label>
+        </div>
+        <div id="deliver-single-wrap" class="field hidden">
+          <span class="field-label" data-i18n="deliverSingleNameLabel">技能名称</span>
+          <input id="deliver-single-name" type="text" class="input mono" readonly>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-deliver" data-i18n="cancelBtn">取消</button>
+        <button id="btn-deliver-confirm" type="button" class="btn btn-primary" data-i18n="confirmDeliverBtn">确认投递</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

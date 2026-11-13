@@ -1,0 +1,40 @@
+{
+  "name": "antigravity-mcp-manager",
+  "version": "1.0.0",
+  "description": "Visual MCP server manager plugin for Google Antigravity (Sidecar Aux Pane UI + Live Tool Probing).",
+  "type": "module",
+  "bin": {
+    "antigravity-mcp-manager": "./scripts/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node tests/mcp_manager.test.mjs",
+    "install:plugin": "node scripts/cli.mjs install",
+    "install:link": "node scripts/cli.mjs install --link",
+    "uninstall:plugin": "node scripts/cli.mjs uninstall",
+    "status": "node scripts/cli.mjs status"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xinghaix/antigravity-plugins.git",
+    "directory": "plugins/mcp-manager"
+  },
+  "homepage": "https://github.com/xinghaix/antigravity-plugins/tree/main/plugins/mcp-manager#readme",
+  "bugs": {
+    "url": "https://github.com/xinghaix/antigravity-plugins/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "mcp",
+    "model-context-protocol",
+    "sidecar",
+    "plugin",
+    "gemini",
+    "ai-agent"
+  ],
+  "author": "xinghaix",
+  "license": "MIT"
+}

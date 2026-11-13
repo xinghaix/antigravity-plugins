@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/xinghaix/antigravity-plugins",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "id": "mattpocock-skills",
+      "dirName": "mattpocock-skills",
+      "path": "plugins/mattpocock-skills",
+      "displayName": "Mattpocock Skills",
+      "version": "1.0.0",
+      "description": "Native Antigravity edition of Matt Pocock's engineering & productivity skills (grilling, spec/ticket flows, TDD, two-axis code review, domain modeling) with a visual Aux Pane Studio.",
+      "logo": "assets/logo.svg",
+      "components": {
+        "skills": 28,
+        "agents": 4,
+        "sidecars": 1,
+        "rules": 0,
+        "mcp": false,
+        "hooks": false
+      },
+      "sidecarLinks": [
+        "sidecar://mattpocock-skills/mp_studio/"
+      ],
+      "suggestedPrompts": [
+        "打开 Mattpocock Skills 面板管理技能或初始化当前仓库",
+        "/ask-matt 帮我看看当前需求适合走哪条研发技能流",
+        "/grill-with-docs 对我接下来的功能设计进行极限追问并沉淀术语表"
+      ]
+    },
+    {
+      "id": "mcp-manager",
+      "dirName": "mcp-manager",
+      "path": "plugins/mcp-manager",
+      "displayName": "MCP Manager",
+      "version": "1.0.0",
+      "description": "Visual MCP server manager for Antigravity: inspect, add, edit, toggle, probe tools, and configure global, workspace, and plugin MCP servers.",
+      "logo": "assets/logo.svg",
+      "components": {
+        "skills": 1,
+        "agents": 0,
+        "sidecars": 1,
+        "rules": 0,
+        "mcp": false,
+        "hooks": false
+      },
+      "sidecarLinks": [
+        "sidecar://mcp-manager/mcp_manager/"
+      ],
+      "suggestedPrompts": [
+        "打开 MCP Manager 面板查看当前已配置的 MCP 服务",
+        "帮我在 MCP Manager 中添加一个新的本地或远程 MCP 服务",
+        "检查当前 MCP 配置是否有协议或命令路径问题"
+      ]
+    }
+  ]
+}

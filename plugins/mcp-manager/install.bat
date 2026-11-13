@@ -1,0 +1,4 @@
+@echo off
+setlocal
+node "%~dp0scripts\cli.mjs" install %*
+exit /b %errorlevel%

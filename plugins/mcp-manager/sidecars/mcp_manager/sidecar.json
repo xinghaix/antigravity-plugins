@@ -1,0 +1,18 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always",
+  "display_name": "MCP Manager",
+  "description": "Visual manager for global, workspace, and plugin MCP servers with live tool probing.",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "MCP Manager",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "MCP Manager"
+      }
+    ]
+  }
+}
