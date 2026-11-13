@@ -1,0 +1,7 @@
+{
+  "command": "node",
+  "args": ["../../sidecar-live.js"],
+  "restart_policy": "always",
+  "display_name": "Context Viewer Auto-Loader",
+  "description": "Watches Antigravity DevToolsActivePort and injects the context meter live panel via CDP on startup or window reload."
+}

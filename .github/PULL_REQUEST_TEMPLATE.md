@@ -6,6 +6,7 @@
 
 - [ ] `mcp-manager`
 - [ ] `mattpocock-skills`
+- [ ] `antigravity-context-viewer`
 - [ ] Root tooling / docs / new plugin
 
 ## Verification

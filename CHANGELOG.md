@@ -5,7 +5,7 @@ All notable changes to the `antigravity-plugins` monorepo will be documented in 
 ## [1.0.0] - 2026-11-13
 
 ### Added
-- Initial monorepo release consolidating `mcp-manager` (`v1.0.0`) and `mattpocock-skills` (`v1.0.0`) under `plugins/` with unified MIT licensing.
+- Initial monorepo release consolidating `mcp-manager` (`v1.0.0`), `mattpocock-skills` (`v1.0.0`), and the modified `antigravity-context-viewer` (`v0.8.2`, derived from `elviscjn-cjn/antigravity-context-viewer`) under `plugins/` with unified MIT licensing.
 - Root `AGENTS.md`, `registry.json` auto-sync (`scripts/sync-registry.mjs`), and bilingual storefront docs (`README.md`, `README.en.md`).
 - Unified CLI (`scripts/cli.mjs`) supporting selective or full `--link` / `--copy` install, uninstall, `list`, `status`, and `doctor`, plus remote single-plugin `install.sh` (per-plugin release tarball or sparse git checkout).
 - Plugin scaffolding generator (`scripts/new-plugin.mjs`) with optional Sidecar Aux Pane UI boilerplate (`--ui`).

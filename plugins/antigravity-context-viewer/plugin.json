@@ -1,0 +1,21 @@
+{
+  "name": "antigravity-context-viewer",
+  "displayName": "Context Viewer",
+  "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, cost analytics & native Sidecar CDP auto-loader without app.asar patching.",
+  "version": "0.8.2",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "xinghaix (upstream: elviscjn-cjn)",
+    "url": "https://github.com/xinghaix"
+  },
+  "homepage": "https://github.com/xinghaix/antigravity-plugins/tree/main/plugins/antigravity-context-viewer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xinghaix/antigravity-plugins.git"
+  },
+  "suggestedPrompts": [
+    "检查 Context Viewer 当前运行状态与实时窗口连接情况",
+    "查看 Context Viewer 支持哪些上下文监控与界面增强模块",
+    "打开 Context Viewer 插件设置页"
+  ]
+}
