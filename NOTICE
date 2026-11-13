@@ -1,0 +1,10 @@
+THIRD-PARTY ATTRIBUTION NOTICE
+
+1. plugins/mattpocock-skills
+   Natively adapts and bundles agent skills derived from:
+     mattpocock/skills (https://github.com/mattpocock/skills)
+     Author: Matt Pocock (https://www.aihero.dev)
+     License: MIT License
+
+2. plugins/mcp-manager
+   Originally authored by xinghaix; unified into antigravity-plugins under the MIT License.
