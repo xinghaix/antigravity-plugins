@@ -8,6 +8,7 @@ See `registry.json` or run `node scripts/cli.mjs list --json` for the live inven
 
 - `mcp-manager` (`plugins/mcp-manager/`): Visual MCP server manager in the Aux Pane (`sidecar://mcp-manager/mcp_manager/`).
 - `mattpocock-skills` (`plugins/mattpocock-skills/`): Native Antigravity migration of `mattpocock/skills` (39 skills, 4 leaf subagents, Sidecar Studio at `sidecar://mattpocock-skills/mp_studio/`).
+- `antigravity-context-viewer` (`plugins/antigravity-context-viewer/`): Modified edition of upstream `elviscjn-cjn/antigravity-context-viewer` with native `live-loader` Sidecar CDP auto-injection, renderer enhancements, and cross-platform context unlock.
 
 ## Installing Plugins for the User
 
@@ -17,6 +18,7 @@ When the user asks you to install one or all plugins from this repository:
    ```bash
    node scripts/cli.mjs install mcp-manager
    node scripts/cli.mjs install mattpocock-skills
+   node scripts/cli.mjs install antigravity-context-viewer
    ```
 2. **Install all plugins**:
    ```bash

@@ -27,10 +27,11 @@ try {
   const reg = buildRegistry(MONOREPO_ROOT);
   assert.ok(reg.plugins.some((p) => p.id === 'mcp-manager'));
   assert.ok(reg.plugins.some((p) => p.id === 'mattpocock-skills'));
+  assert.ok(reg.plugins.some((p) => p.id === 'antigravity-context-viewer'));
 
   // 2. Selective install (--link and --copy) + third-party preservation + uninstall
   const fakeHome = join(tempRoot, 'home');
-  const thirdPartyDir = join(fakeHome, '.gemini', 'config', 'plugins', 'antigravity-context-viewer');
+  const thirdPartyDir = join(fakeHome, '.gemini', 'config', 'plugins', 'some-third-party-plugin');
   mkdirSync(thirdPartyDir, { recursive: true });
 
   // Selective install mcp-manager (--link)

@@ -4,6 +4,29 @@
   "version": "1.0.0",
   "plugins": [
     {
+      "id": "antigravity-context-viewer",
+      "dirName": "antigravity-context-viewer",
+      "path": "plugins/antigravity-context-viewer",
+      "displayName": "Context Viewer",
+      "version": "0.8.2",
+      "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, cost analytics & native Sidecar CDP auto-loader without app.asar patching.",
+      "logo": "assets/logo.svg",
+      "components": {
+        "skills": 1,
+        "agents": 0,
+        "sidecars": 1,
+        "rules": 0,
+        "mcp": false,
+        "hooks": false
+      },
+      "sidecarLinks": [],
+      "suggestedPrompts": [
+        "检查 Context Viewer 当前运行状态与实时窗口连接情况",
+        "查看 Context Viewer 支持哪些上下文监控与界面增强模块",
+        "打开 Context Viewer 插件设置页"
+      ]
+    },
+    {
       "id": "mattpocock-skills",
       "dirName": "mattpocock-skills",
       "path": "plugins/mattpocock-skills",

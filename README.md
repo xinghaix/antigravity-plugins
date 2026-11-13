@@ -12,10 +12,11 @@
 
 ## 插件矩阵
 
-| 插件 ID | 名称 | 能力简介 | 组件构成 | Aux Pane 面板链接 | 文档 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `mcp-manager` | **MCP Manager** | 多作用域 MCP 服务管理、宿主状态直连、Stdio/HTTP 实时协议探测、工具白/黑名单过滤与原子备份恢复 | 1 Skill · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [查看详情](plugins/mcp-manager/README.md) |
-| `mattpocock-skills` | **Mattpocock Skills** | 原生适配 [mattpocock/skills](https://github.com/mattpocock/skills)（39 技能 + 4 受限叶子子代理），带分桶编排、流程领航、项目初始化与票据前沿看板 | 28 默认技能 · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [查看详情](plugins/mattpocock-skills/README.md) |
+| 插件 ID | 名称 | 来源与协议 | 能力简介 | 组件构成 | 入口 / 面板 | 文档 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `mcp-manager` | **MCP Manager** | 自研 · MIT | 多作用域 MCP 服务管理、宿主状态直连、Stdio/HTTP 实时协议探测、工具白/黑名单过滤与原子备份恢复 | 1 Skill · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [查看详情](plugins/mcp-manager/README.md) |
+| `mattpocock-skills` | **Mattpocock Skills** | 自研原生迁移（上游技能 [`mattpocock/skills`](https://github.com/mattpocock/skills)）· MIT | 39 研发与生产力技能、4 受限叶子子代理、分桶编排、流程领航、项目初始化与票据前沿看板 | 28 默认技能 · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [查看详情](plugins/mattpocock-skills/README.md) |
+| `antigravity-context-viewer` | **Context Viewer** | 改版增强（上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)）· MIT | 顶栏上下文占用仪表、生成速度与 Token 历史热力图、API 等值费用估算及免改盘 Sidecar CDP 自动挂载 | 1 Skill · 1 Sidecar Auto-Loader | `customization://antigravity-context-viewer` | [查看详情](plugins/antigravity-context-viewer/README.md) |
 
 ---
 
@@ -33,6 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/i
 
 # 只安装 mattpocock-skills
 curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/install.sh | bash -s -- mattpocock-skills
+
+# 只安装 antigravity-context-viewer
+curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/install.sh | bash -s -- antigravity-context-viewer
 
 # 一键安装仓库内全部插件
 curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/install.sh | bash -s -- --all
@@ -87,8 +91,9 @@ antigravity-plugins/
 ├── install.sh / install.bat   # 支持远程单插件直装 & 本地一键安装
 ├── uninstall.sh / .bat        # 统一卸载脚本
 ├── plugins/
-│   ├── mcp-manager/           # MCP Manager 插件包
-│   └── mattpocock-skills/     # Mattpocock Skills 插件包
+│   ├── mcp-manager/                  # MCP Manager 插件包（自研）
+│   ├── mattpocock-skills/            # Mattpocock Skills 插件包（自研原生迁移）
+│   └── antigravity-context-viewer/   # Context Viewer 改版插件包（上游改版增强）
 ├── scripts/
 │   ├── cli.mjs                # 统一 list / status / install / uninstall / doctor 工具
 │   ├── new-plugin.mjs         # 新插件脚手架生成器（支持 --ui 生成 Sidecar 模板）

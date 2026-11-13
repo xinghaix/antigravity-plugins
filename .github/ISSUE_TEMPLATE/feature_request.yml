@@ -10,6 +10,7 @@ body:
       options:
         - mcp-manager
         - mattpocock-skills
+        - antigravity-context-viewer
         - New Plugin Proposal
         - monorepo CLI / tooling
     validations:

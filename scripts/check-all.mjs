@@ -80,12 +80,13 @@ export function runChecks(rootDir = MONOREPO_ROOT, { checkRegistry = true, runAg
         const scPkgPath = join(sidecarsDir, sd.name, 'package.json');
         assert.ok(existsSync(scJsonPath), `Missing sidecar.json in ${pluginId}/sidecars/${sd.name}`);
         const sc = JSON.parse(readFileSync(scJsonPath, 'utf-8'));
-        assert.equal(sc.has_web_ui, true, `${pluginId}/sidecars/${sd.name}: sidecar.json must declare has_web_ui: true`);
-        assert.equal(
-          sc.ui_config?.views?.[0]?.entrypoint,
-          'SIDECAR_UI_ENTRYPOINT_AUX_PANE',
-          `${pluginId}/sidecars/${sd.name}: must expose AUX_PANE entrypoint`,
-        );
+        if (sc.has_web_ui === true) {
+          assert.equal(
+            sc.ui_config?.views?.[0]?.entrypoint,
+            'SIDECAR_UI_ENTRYPOINT_AUX_PANE',
+            `${pluginId}/sidecars/${sd.name}: web UI sidecars must expose AUX_PANE entrypoint`,
+          );
+        }
         if (existsSync(scPkgPath)) {
           const scPkg = JSON.parse(readFileSync(scPkgPath, 'utf-8'));
           assert.equal(scPkg.version, manifest.version, `${pluginId}/sidecars/${sd.name}: package.json version mismatch`);

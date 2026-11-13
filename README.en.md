@@ -12,10 +12,11 @@ A curated monorepo of native **Google Antigravity** plugins (Desktop & IDE). Eve
 
 ## Plugin Catalog
 
-| Plugin ID | Name | Summary | Components | Aux Pane Link | Docs |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `mcp-manager` | **MCP Manager** | Multi-scope MCP server manager, host state integration, live Stdio/HTTP probing, tool filtering & `0600` backups | 1 Skill · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [Details](plugins/mcp-manager/README.en.md) |
-| `mattpocock-skills` | **Mattpocock Skills** | Native migration of [mattpocock/skills](https://github.com/mattpocock/skills) (39 skills + 4 leaf subagents) with visual Studio UI | 28 Default Skills · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [Details](plugins/mattpocock-skills/README.en.md) |
+| Plugin ID | Name | Origin & License | Summary | Components | Entry / Panel | Docs |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `mcp-manager` | **MCP Manager** | First-party · MIT | Multi-scope MCP server manager, host state integration, live Stdio/HTTP probing, tool filtering & `0600` backups | 1 Skill · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [Details](plugins/mcp-manager/README.en.md) |
+| `mattpocock-skills` | **Mattpocock Skills** | Native port (upstream skills: [`mattpocock/skills`](https://github.com/mattpocock/skills)) · MIT | 39 engineering/productivity skills, 4 leaf subagents, and visual Studio Aux Pane UI | 28 Default Skills · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [Details](plugins/mattpocock-skills/README.en.md) |
+| `antigravity-context-viewer` | **Context Viewer** | Modified edition (upstream: [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)) · MIT | Live context gauge, token history heatmap, cost estimator & zero-patch Sidecar CDP auto-loader | 1 Skill · 1 Sidecar Auto-Loader | `customization://antigravity-context-viewer` | [Details](plugins/antigravity-context-viewer/README.en.md) |
 
 ---
 
@@ -29,6 +30,9 @@ curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/i
 
 # Install mattpocock-skills only
 curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/install.sh | bash -s -- mattpocock-skills
+
+# Install antigravity-context-viewer only
+curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/install.sh | bash -s -- antigravity-context-viewer
 
 # Install all plugins
 curl -fsSL https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/install.sh | bash -s -- --all

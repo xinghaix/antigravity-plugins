@@ -6,5 +6,8 @@ THIRD-PARTY ATTRIBUTION NOTICE
      Author: Matt Pocock (https://www.aihero.dev)
      License: MIT License
 
-2. plugins/mcp-manager
-   Originally authored by xinghaix; unified into antigravity-plugins under the MIT License.
+2. plugins/antigravity-context-viewer
+   Modified & enhanced native Antigravity plugin edition derived from:
+     elviscjn-cjn/antigravity-context-viewer (https://github.com/elviscjn-cjn/antigravity-context-viewer)
+     Authors: Antigravity Context Viewer Contributors
+     License: MIT License
