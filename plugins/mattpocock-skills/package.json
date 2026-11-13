@@ -1,0 +1,43 @@
+{
+  "name": "antigravity-mattpocock-skills",
+  "version": "1.0.0",
+  "description": "Native Google Antigravity plugin for Matt Pocock's engineering & productivity skills with a visual Sidecar Aux Pane Studio.",
+  "type": "module",
+  "bin": {
+    "antigravity-mattpocock-skills": "./scripts/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "sync:upstream": "node scripts/sync-upstream.mjs",
+    "test": "node tests/mp_studio.test.mjs",
+    "install:plugin": "node scripts/cli.mjs install",
+    "install:link": "node scripts/cli.mjs install --link",
+    "install:copy": "node scripts/cli.mjs install --copy",
+    "uninstall:plugin": "node scripts/cli.mjs uninstall",
+    "status": "node scripts/cli.mjs status"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xinghaix/antigravity-plugins.git",
+    "directory": "plugins/mattpocock-skills"
+  },
+  "homepage": "https://github.com/xinghaix/antigravity-plugins/tree/main/plugins/mattpocock-skills#readme",
+  "bugs": {
+    "url": "https://github.com/xinghaix/antigravity-plugins/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "mattpocock-skills",
+    "skills",
+    "tdd",
+    "code-review",
+    "grilling",
+    "sidecar",
+    "plugin"
+  ],
+  "author": "xinghaix",
+  "license": "MIT"
+}

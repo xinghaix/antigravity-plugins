@@ -1,0 +1,28 @@
+name: Feature Request
+description: Propose a new plugin, enhancement, or UI improvement
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Target Plugin / Scope
+      options:
+        - mcp-manager
+        - mattpocock-skills
+        - New Plugin Proposal
+        - monorepo CLI / tooling
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature Summary
+      description: What capability or UX improvement would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use Case
+      description: Why is this useful in your workflow?

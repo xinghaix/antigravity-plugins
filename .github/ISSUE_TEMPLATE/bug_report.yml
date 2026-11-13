@@ -1,0 +1,39 @@
+name: Bug Report
+description: Report a bug in any plugin or the monorepo CLI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Affected Plugin / Component
+      options:
+        - mcp-manager
+        - mattpocock-skills
+        - monorepo CLI / installer
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem Description
+      description: Describe what happened and what you expected.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Antigravity version, Node.js version (`node -v`).
+      placeholder: macOS 15, Node v22.x
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Install plugin ...
+        2. Open panel / run command ...
+        3. Error appears

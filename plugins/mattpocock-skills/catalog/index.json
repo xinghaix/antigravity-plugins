@@ -1,0 +1,1125 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repo": "mattpocock/skills",
+    "version": "1.3.2",
+    "commit": "5863806dd4e15c63174bee4e7515a4256792ecfa",
+    "syncedAt": "2026-11-13T05:03:27.447Z"
+  },
+  "buckets": [
+    {
+      "id": "engineering",
+      "titleZh": "Engineering · 核心工程",
+      "titleEn": "Engineering · Core",
+      "descZh": "覆盖需求对齐 (/grill-with-docs)、领域建模、深模块架构、接缝驱动 TDD、双轴代码审查、Bug 诊断与拆单实施全链路。",
+      "descEn": "Idea-to-ship spine: grilling with docs, domain modeling, deep modules, TDD, two-axis code review, debugging, and ticket execution.",
+      "defaultEnabled": true,
+      "order": 1
+    },
+    {
+      "id": "productivity",
+      "titleZh": "Productivity · 通用生产力",
+      "titleEn": "Productivity · General",
+      "descZh": "覆盖极限采访 (/grill-me)、跨会话交接 (/handoff)、苏格拉底教学 (/teach)、结构化问卷、反问纠偏 (/wait-what) 与 Agent 文档写作。",
+      "descEn": "Non-code workflow tools: stateless grilling, session handoff, interactive teaching, questionnaires, and writing for agents.",
+      "defaultEnabled": true,
+      "order": 2
+    },
+    {
+      "id": "in-progress",
+      "titleZh": "In-Progress · 演进实验",
+      "titleEn": "In-Progress · Experimental",
+      "descZh": "包含软件工厂 (/software-factory)、多线幕僚长 (/chief-of-staff)、双轨循环对撞 (/loop-me)、TS 深模块门禁与三阶段长文写作。",
+      "descEn": "Public beta skills seeking feedback: software-factory, chief-of-staff, loop-me, TS deep-module checks, and long-form writing.",
+      "defaultEnabled": false,
+      "order": 3
+    },
+    {
+      "id": "misc",
+      "titleZh": "Misc · 工具栈扩展",
+      "titleEn": "Misc · Utilities",
+      "descZh": "包含危险 Git 命令拦截脚本、Husky Pre-commit 配置、测试断言 Shoehorn 迁移与练习题挖空脚手架生成。",
+      "descEn": "Standalone utilities: dangerous git guardrails, Husky pre-commit setup, Shoehorn test migration, and exercise scaffolding.",
+      "defaultEnabled": false,
+      "order": 4
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "interview-modeling",
+      "labelZh": "采访与建模",
+      "labelEn": "Interview & Modeling"
+    },
+    {
+      "id": "arch-prototype",
+      "labelZh": "架构与原型",
+      "labelEn": "Architecture & Prototype"
+    },
+    {
+      "id": "spec-wayfinding",
+      "labelZh": "规格与领航",
+      "labelEn": "Spec & Wayfinding"
+    },
+    {
+      "id": "tdd-implement",
+      "labelZh": "TDD 与实施",
+      "labelEn": "TDD & Implement"
+    },
+    {
+      "id": "review-guardrails",
+      "labelZh": "审查与门禁",
+      "labelEn": "Review & Guardrails"
+    },
+    {
+      "id": "handoff-automation",
+      "labelZh": "交接与自动化",
+      "labelEn": "Handoff & Automation"
+    },
+    {
+      "id": "teaching-writing",
+      "labelZh": "教学与写作",
+      "labelEn": "Teaching & Writing"
+    }
+  ],
+  "presets": {
+    "promoted": {
+      "id": "promoted",
+      "labelZh": "标准 27 技能",
+      "labelEn": "Promoted (27)",
+      "descZh": "启用 Engineering 与 Productivity 全部正式发布技能（与上游插件默认集一致）。",
+      "descEn": "All promoted Engineering and Productivity skills.",
+      "buckets": [
+        "engineering",
+        "productivity"
+      ]
+    },
+    "core": {
+      "id": "core",
+      "labelZh": "精简主干",
+      "labelEn": "Core Spine (10)",
+      "descZh": "仅启用高频 Idea-to-Ship 核心主干及其底层依赖原语，最大程度精简上下文。",
+      "descEn": "Minimal high-frequency Idea-to-Ship spine and required primitives.",
+      "skills": [
+        "setup-matt-pocock-skills",
+        "ask-matt",
+        "grill-with-docs",
+        "grilling",
+        "domain-modeling",
+        "to-spec",
+        "to-tickets",
+        "implement",
+        "tdd",
+        "code-review"
+      ]
+    },
+    "all": {
+      "id": "all",
+      "labelZh": "全量启用",
+      "labelEn": "All Skills",
+      "descZh": "启用全部 4 个分桶下的所有技能（含 In-Progress 与 Misc）。",
+      "descEn": "Enable every skill across all 4 buckets including beta & misc.",
+      "buckets": [
+        "engineering",
+        "productivity",
+        "in-progress",
+        "misc"
+      ]
+    }
+  },
+  "workflow": {
+    "mainFlow": [
+      {
+        "step": 0,
+        "id": "setup",
+        "skill": "setup-matt-pocock-skills",
+        "titleZh": "0. 仓库初始化 (Setup)",
+        "titleEn": "0. Repo Setup",
+        "descZh": "每个仓库只需跑一次（或在「项目工作台」可视化一键生成），配置 Issue Tracker、Triage 标签和术语表/ADR 路径。",
+        "descEn": "Run once per repo (or use the visual Workspace Hub) to configure tracker, labels, and domain docs.",
+        "phaseTipZh": "一次性配置，写完后可直接在当前会话进入需求对齐。",
+        "phaseTipEn": "One-time setup; proceed straight to grilling."
+      },
+      {
+        "step": 1,
+        "id": "grill",
+        "skill": "grill-with-docs",
+        "titleZh": "1. 极限追问与建模",
+        "titleEn": "1. Grill with Docs",
+        "descZh": "在写任何代码前，围绕决策树逐轮追问直到消除歧义，同时将领域词汇写入 GLOSSARY.md、重大取舍沉淀为 ADR。",
+        "descEn": "Interview round by round until the design tree settles; update GLOSSARY.md & ADRs inline.",
+        "phaseTipZh": "上下文保鲜：步骤 1→3 尽量保持在同一会话不断开，逼近 150k Smart Zone 再 /compact。",
+        "phaseTipEn": "Keep steps 1–3 in one unbroken context; use /compact if approaching context limit."
+      },
+      {
+        "step": 2,
+        "id": "prototype",
+        "skill": "prototype",
+        "titleZh": "2. (可选) 抛出式原型",
+        "titleEn": "2. (Optional) Prototype",
+        "descZh": "如果状态机手感或 UI 布局难以纸上谈兵，先用 /handoff 分叉到独立原型，验证后再将结论合回主线。",
+        "descEn": "When paper reasoning fails, fork via /handoff to a throwaway HTML/UI prototype and fold findings back.",
+        "phaseTipZh": "建议搭配 /handoff + 新开会话运行原型，避免污染主设计线程。",
+        "phaseTipEn": "Pair with /handoff in a fresh conversation to keep main thread clean."
+      },
+      {
+        "step": 3,
+        "id": "spec",
+        "skill": "to-spec",
+        "titleZh": "3. 综合规格书 (To-Spec)",
+        "titleEn": "3. To-Spec",
+        "descZh": "不额外追问，直接把已达成共识的讨论、测试接缝 (Seams) 与约束收敛为正式 Spec 发布到 Tracker。",
+        "descEn": "Synthesize aligned decisions and high-leverage test seams into a structured Spec.",
+        "phaseTipZh": "在同一个上下文紧接 Grill-with-Docs 执行。",
+        "phaseTipEn": "Run immediately after grilling in the same session."
+      },
+      {
+        "step": 4,
+        "id": "tickets",
+        "skill": "to-tickets",
+        "titleZh": "4. 垂直切片拆单 (To-Tickets)",
+        "titleEn": "4. To-Tickets",
+        "descZh": "把 Spec 拆成端到端可验证的 Tracer-Bullet 票据并标明 Blocked by 依赖边，形成可并发的 Ready Frontier。",
+        "descEn": "Split the Spec into vertical tracer-bullet tickets with explicit blocking edges.",
+        "phaseTipZh": "拆单完成后，每张票据自包含，适合开新会话或用 /implement-spec 并发执行！",
+        "phaseTipEn": "Once tickets are written, start a fresh session per ticket or run /implement-spec."
+      },
+      {
+        "step": 5,
+        "id": "implement",
+        "skill": "implement",
+        "titleZh": "5. 实施与 TDD (/implement)",
+        "titleEn": "5. Implement (TDD)",
+        "descZh": "单票据新会话用 /implement，整套 Spec 用 /implement-spec（原生 Workspace=\"share\" 并发派发子代理）；内部自动驱动 /tdd。",
+        "descEn": "Run /implement per ticket in a fresh conversation, or /implement-spec for parallel DAG execution.",
+        "phaseTipZh": "单票据完成后建议新开会话处理下一票据，保持在黄金推理区。",
+        "phaseTipEn": "Start a fresh conversation between tickets to stay in the smart zone."
+      },
+      {
+        "step": 6,
+        "id": "review",
+        "skill": "code-review",
+        "titleZh": "6. 双轴审查与 PR",
+        "titleEn": "6. Code Review & PR",
+        "descZh": "并行拉起 mp-standards-reviewer 与 mp-spec-reviewer 分别审查规范坏味道与规格符合度，再用 pr 技能生成清晰 PR 描述。",
+        "descEn": "Parallel Standards + Spec subagent review, followed by crisp PR body with evidence.",
+        "phaseTipZh": "双轴结果严格分列，防止代码整洁掩盖需求遗漏。",
+        "phaseTipEn": "Reports stay separate so clean style never hides missing spec requirements."
+      },
+      {
+        "step": 7,
+        "id": "retro",
+        "skill": "retro",
+        "titleZh": "7. 工程复盘 (/retro)",
+        "titleEn": "7. Retro",
+        "descZh": "在刚结束实施的当前会话内运行 /retro，把暴露出来的环境摩擦固化为自动化检查或规则文档改进。",
+        "descEn": "Run in the active session to turn friction into deterministic checks and better steering docs.",
+        "phaseTipZh": "务必在清空或结束会话前就地运行，效果最佳。",
+        "phaseTipEn": "Run before closing the session so lessons capture real friction."
+      }
+    ],
+    "onRamps": [
+      {
+        "id": "triage",
+        "skill": "triage",
+        "titleZh": "外部 Issue / PR 分诊入口",
+        "titleEn": "Incoming Issue / PR Triage",
+        "descZh": "对外部提交的缺陷报告或 PR 进行查重、复现验证并产出 Agent-Ready 简报，再无缝接入 /implement。",
+        "descEn": "Check duplicates, reproduce claims, grill gaps, and produce agent-ready briefs."
+      },
+      {
+        "id": "diagnosing-bugs",
+        "skill": "diagnosing-bugs",
+        "titleZh": "疑难 Bug 闭环诊断入口",
+        "titleEn": "Hard Bug Diagnosis Loop",
+        "descZh": "拒绝盲猜：先写一个稳定复现的红灯命令，再最小化隔离、加探针定位根因并补充回归测试。",
+        "descEn": "Establish a deterministic red reproducer first, minimize, instrument, fix, and test."
+      },
+      {
+        "id": "wayfinder",
+        "skill": "wayfinder",
+        "titleZh": "超大跨会话模糊工程领航",
+        "titleEn": "Multi-Session Wayfinder Map",
+        "descZh": "当项目大到单次会话装不下时，在 Tracker 建立决策票据地图，逐个消除未知迷雾后再合流到 /to-spec。",
+        "descEn": "Chart a decision-ticket map on your tracker for oversized foggy initiatives before /to-spec."
+      }
+    ],
+    "phaseBoundaries": [
+      {
+        "action": "继续当前会话 (Continue)",
+        "whenZh": "刚完成前置依赖且上下文充裕，继续留在原窗口成本最低。",
+        "whenEn": "Context is fresh and tightly coupled to the next step."
+      },
+      {
+        "action": "压缩 (/compact)",
+        "whenZh": "接近上下文上限但仍需保留主干决策脉络继续推导。",
+        "whenEn": "Approaching context limits mid-flow while needing summary continuity."
+      },
+      {
+        "action": "新建会话 (New Conversation)",
+        "whenZh": "已产出自包含的 Ticket / Spec 文件，下一阶段需要干净推理窗口。",
+        "whenEn": "Tickets/specs are persisted; ideal between /implement runs."
+      },
+      {
+        "action": "交接 (/handoff)",
+        "whenZh": "需要跨目录（如去原型分支）、换工具或把半途进度转给下一个 Agent。",
+        "whenEn": "Switching directories, tools, or forking a side exploration."
+      },
+      {
+        "action": "派发叶子子代理 (Subagent)",
+        "whenZh": "需要独立隔离大块读盘/调研/审查（mp-researcher / mp-explorer / 双轴审查）。",
+        "whenEn": "Isolate heavy reading, web research, or parallel code review."
+      }
+    ]
+  },
+  "skills": [
+    {
+      "name": "ask-matt",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Ask which skill or flow fits your situation. A router over the skills in this repo.",
+      "argumentHint": "",
+      "scenario": "spec-wayfinding",
+      "workflowStage": "router",
+      "zhSummary": "技能路由器：根据当前研发场景推荐最匹配的技能组合与阶段边界决策",
+      "enSummary": "Route your current task to the right skill flow and phase-boundary choice.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/ask-matt 我想给当前项目加一个新模块，不确定先走哪一步",
+      "companionFiles": [
+        "PHASE-BOUNDARIES.md"
+      ],
+      "adaptations": [
+        "mapped-clear-to-new-conversation",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "code-review",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\".",
+      "argumentHint": "",
+      "scenario": "review-guardrails",
+      "workflowStage": "review",
+      "zhSummary": "双子代理并发审查：沿「编码规范与 Fowler 坏味道」与「规格符合度」双轴独立出报告",
+      "enSummary": "Two-axis parallel diff review (Standards + Fowler smells vs Spec compliance).",
+      "dependsOnSkills": [],
+      "usesAgents": [
+        "mp-standards-reviewer",
+        "mp-spec-reviewer"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "Run code-review against main",
+      "companionFiles": [],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "codebase-design",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.",
+      "argumentHint": "",
+      "scenario": "arch-prototype",
+      "workflowStage": "vocab",
+      "zhSummary": "深模块架构设计词汇表：基于 module、interface、seam、leverage 设计简洁边界",
+      "enSummary": "Deep-module architecture vocabulary and design-it-twice parallel exploration pattern.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Apply codebase-design principles to deepen this module interface",
+      "companionFiles": [
+        "DEEPENING.md",
+        "DESIGN-IT-TWICE.md"
+      ],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "diagnosing-bugs",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Diagnosis loop for hard bugs and performance regressions. Use when the user says \"diagnose\"/\"debug this\", or reports something broken/throwing/failing/slow.",
+      "argumentHint": "",
+      "scenario": "tdd-implement",
+      "workflowStage": "onramp",
+      "zhSummary": "紧反馈闭环 Bug 诊断：先建立稳定复现红灯命令，再最小化定位根因并补回归测试",
+      "enSummary": "Disciplined bug loop: build a red reproducer first, minimize, instrument, fix, test.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use diagnosing-bugs to investigate this intermittent failure",
+      "companionFiles": [
+        "scripts/hitl-loop.template.sh"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "domain-modeling",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a GLOSSARY.md, or recording or editing an ADR.",
+      "argumentHint": "",
+      "scenario": "interview-modeling",
+      "workflowStage": "vocab",
+      "zhSummary": "领域建模与通用语言：提炼 Glossary 术语表并将不可逆架构决策沉淀为 ADR",
+      "enSummary": "Sharpen ubiquitous language in GLOSSARY.md and record hard-to-reverse decisions as ADRs.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use domain-modeling to audit overloaded terms in our GLOSSARY.md",
+      "companionFiles": [
+        "ADR-FORMAT.md",
+        "GLOSSARY-FORMAT.md"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "grill-with-docs",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.",
+      "argumentHint": "",
+      "scenario": "interview-modeling",
+      "workflowStage": "grill",
+      "zhSummary": "结合 grilling 与领域建模对方案进行极限采访，并将术语表与 ADR 决策落盘",
+      "enSummary": "Relentless design interview that sharpens GLOSSARY.md and ADRs inline.",
+      "dependsOnSkills": [
+        "grilling",
+        "domain-modeling"
+      ],
+      "usesAgents": [
+        "mp-explorer"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "/grill-with-docs 我们准备重构订单结算状态机",
+      "companionFiles": [],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "implement",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Implement a piece of work based on a spec or set of tickets.",
+      "argumentHint": "",
+      "scenario": "tdd-implement",
+      "workflowStage": "implement",
+      "zhSummary": "按 Spec 或单个 Ticket 实施交付：沿接缝驱动 TDD 并在收尾运行双轴 Code Review",
+      "enSummary": "Implement a spec or ticket with seam-driven TDD and close out with code-review.",
+      "dependsOnSkills": [
+        "tdd",
+        "code-review"
+      ],
+      "usesAgents": [
+        "mp-standards-reviewer",
+        "mp-spec-reviewer"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "/implement",
+      "companionFiles": [],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file"
+      ]
+    },
+    {
+      "name": "implement-spec",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Implement the result of /to-spec and /to-tickets in code.",
+      "argumentHint": "",
+      "scenario": "tdd-implement",
+      "workflowStage": "implement",
+      "zhSummary": "任务图并发编排：基于就绪前沿并行派发子代理在独立工作区完成整套 Spec 并合入主干",
+      "enSummary": "Orchestrate a whole spec DAG across concurrent subagents in shared workspaces.",
+      "dependsOnSkills": [
+        "tdd",
+        "code-review"
+      ],
+      "usesAgents": [
+        "mp-explorer",
+        "mp-standards-reviewer",
+        "mp-spec-reviewer"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "/implement-spec",
+      "companionFiles": [],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.",
+      "argumentHint": "",
+      "scenario": "arch-prototype",
+      "workflowStage": "health",
+      "zhSummary": "深模块架构巡检：定位浅层模块与耦合热点，生成可视化 HTML 报告并逐项追问重构",
+      "enSummary": "Scan codebase hotspots for deepening candidates, render HTML report, and grill choices.",
+      "dependsOnSkills": [
+        "codebase-design",
+        "grilling",
+        "domain-modeling"
+      ],
+      "usesAgents": [
+        "mp-explorer"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "/improve-codebase-architecture",
+      "companionFiles": [
+        "HTML-REPORT.md"
+      ],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "pr",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Use when writing a PR body.",
+      "argumentHint": "",
+      "scenario": "review-guardrails",
+      "workflowStage": "review",
+      "zhSummary": "PR 描述塑形器：最小可视化变更图、前后验证证据以及单向/双向门合并风险评估",
+      "enSummary": "Craft concise PR descriptions with visuals, verification proof, and merge-danger call.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Draft a PR description for this branch following pr skill",
+      "companionFiles": [
+        "CREDITS.md"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "prototype",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Build a throwaway prototype to answer a design question. Use when the user wants to sanity-check whether a state model or logic feels right, or explore what a UI should look like.",
+      "argumentHint": "",
+      "scenario": "arch-prototype",
+      "workflowStage": "prototype",
+      "zhSummary": "抛出式原型验证：生成可交互单文件 HTML 状态模型或可切换的多套 UI 方案变体",
+      "enSummary": "Build throwaway HTML state demos or multi-variation UI routes to settle design questions.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Build a throwaway logic prototype to verify this state machine",
+      "companionFiles": [
+        "LOGIC.md",
+        "UI.md"
+      ],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "research",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Investigate a question against high-trust primary sources and capture the findings as a Markdown file in the repo. Use when the user wants a topic researched, docs or API facts gathered, or reading legwork delegated to a background agent.",
+      "argumentHint": "",
+      "scenario": "spec-wayfinding",
+      "workflowStage": "standalone",
+      "zhSummary": "后台一手资料调研：通过 mp-researcher 联网溯源官方文档/源码并输出带引用的 Markdown",
+      "enSummary": "Delegate primary-source investigation to mp-researcher and save a cited Markdown note.",
+      "dependsOnSkills": [],
+      "usesAgents": [
+        "mp-researcher"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "Research the official specification for ... using mp-researcher",
+      "companionFiles": [],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "retro",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Conduct a retrospective on a coding session.",
+      "argumentHint": "",
+      "scenario": "handoff-automation",
+      "workflowStage": "retro",
+      "zhSummary": "会话工程复盘：从本次开发摩擦中提炼对导航文档、自动化门禁与规则文件的持久化改进",
+      "enSummary": "Post-session retrospective improving agent navigation, automated checks, and steering docs.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/retro",
+      "companionFiles": [],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file"
+      ]
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.",
+      "argumentHint": "",
+      "scenario": "handoff-automation",
+      "workflowStage": "setup",
+      "zhSummary": "仓库初始化向导：配置 Issue Tracker、Triage 标签词汇与领域文档 (GLOSSARY/ADR) 布局",
+      "enSummary": "Configure repo issue tracker, triage labels, and domain doc layout (GLOSSARY/ADR).",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/setup-matt-pocock-skills",
+      "companionFiles": [
+        "domain.md",
+        "issue-tracker-github.md",
+        "issue-tracker-gitlab.md",
+        "issue-tracker-local.md",
+        "triage-labels.md"
+      ],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "tdd",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions \"red-green-refactor\", or wants integration tests.",
+      "argumentHint": "",
+      "scenario": "tdd-implement",
+      "workflowStage": "implement",
+      "zhSummary": "严格红-绿-重构 TDD 循环：一次一个垂直行为切片，围绕公共接口而非内部实现测试",
+      "enSummary": "Strict red-green-refactor loop building vertical slices through public interfaces.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use tdd to implement this behavior one red-green slice at a time",
+      "companionFiles": [
+        "mocking.md",
+        "tests.md"
+      ],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file"
+      ]
+    },
+    {
+      "name": "to-spec",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Turn the current conversation into a spec and publish it to the project issue tracker: no interview, just synthesis of what you've already discussed.",
+      "argumentHint": "",
+      "scenario": "spec-wayfinding",
+      "workflowStage": "spec",
+      "zhSummary": "将当前对齐讨论直接综合为结构化 Spec 规格书并发布至项目 Issue Tracker",
+      "enSummary": "Synthesize the aligned discussion into a formal spec and publish to the issue tracker.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/to-spec",
+      "companionFiles": [],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "to-tickets",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker (edges as text in one file per ticket locally, or native blocking links on a real tracker).",
+      "argumentHint": "",
+      "scenario": "spec-wayfinding",
+      "workflowStage": "tickets",
+      "zhSummary": "将 Spec 拆解为带前置阻塞边 (Blocked by) 的 Tracer-Bullet 垂直切片任务票据",
+      "enSummary": "Break a spec into vertical tracer-bullet tickets with explicit blocking edges.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/to-tickets",
+      "companionFiles": [],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "triage",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Move issues and external PRs through a state machine of triage roles, categorise, verify, grill if needed, and write agent-ready briefs.",
+      "argumentHint": "",
+      "scenario": "spec-wayfinding",
+      "workflowStage": "onramp",
+      "zhSummary": "Issue/PR 分诊状态机：查重、验证复现、追问并将成熟诉求转为 Agent-Ready 简报",
+      "enSummary": "Evaluate incoming issues/PRs through triage roles and produce agent-ready briefs.",
+      "dependsOnSkills": [
+        "grilling",
+        "domain-modeling"
+      ],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/triage Show me anything that needs my attention",
+      "companionFiles": [
+        "AGENT-BRIEF.md",
+        "OUT-OF-SCOPE.md"
+      ],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "wayfinder",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Plan a huge chunk of work (more than one agent session can hold) as a shared map of decision tickets on your issue tracker, and resolve them one at a time until the way to the destination is clear.",
+      "argumentHint": "",
+      "scenario": "spec-wayfinding",
+      "workflowStage": "onramp",
+      "zhSummary": "大型模糊项目领航图：在 Tracker 上构建决策票据 DAG，逐个消除迷雾后再转入 Spec",
+      "enSummary": "Chart a multi-session decision map on your tracker to clear fog before building.",
+      "dependsOnSkills": [
+        "grilling",
+        "domain-modeling",
+        "research",
+        "prototype"
+      ],
+      "usesAgents": [
+        "mp-researcher"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "/wayfinder",
+      "companionFiles": [],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "wizard",
+      "bucket": "engineering",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Generate an interactive bash wizard that walks a human through steps only they can perform. Use when provisioning infrastructure, setting up credentials or CI secrets, walking an unfamiliar third-party dashboard, or running a one-off migration or cutover. Don't invoke this for steps the agent can perform itself.",
+      "argumentHint": "",
+      "scenario": "handoff-automation",
+      "workflowStage": "standalone",
+      "zhSummary": "人工兜底交互脚本生成器：为建库、配密钥或控制台操作生成可复用的 Bash 引导向导",
+      "enSummary": "Generate an interactive bash wizard for human-only setup steps and credential capture.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Create a setup wizard script for provisioning these CI secrets",
+      "companionFiles": [
+        "template.sh"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "grill-me",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "A relentless interview to sharpen a plan or design.",
+      "argumentHint": "",
+      "scenario": "interview-modeling",
+      "workflowStage": "standalone",
+      "zhSummary": "无状态极限采访：针对任意方案或写作大纲按决策树逐层追问（提示：内置同名，代码库推荐用 /grill-with-docs）",
+      "enSummary": "Stateless relentless design-tree interview (note: Antigravity also has a built-in /grill-me).",
+      "dependsOnSkills": [
+        "grilling"
+      ],
+      "usesAgents": [],
+      "collisionNote": "Antigravity 内置已有同名 /grill-me；代码库中建议优先用 /grill-with-docs，或点名 mattpocock-skills:grill-me。",
+      "samplePrompt": "Use mattpocock-skills:grill-me to stress-test this plan",
+      "companionFiles": [],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "grilling",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.",
+      "argumentHint": "",
+      "scenario": "interview-modeling",
+      "workflowStage": "vocab",
+      "zhSummary": "底层采访原语：按决策树前沿 (Frontier) 分轮提问并附推荐答案，查证事实绝不推给用户",
+      "enSummary": "Reusable frontier-by-frontier interview primitive behind grill-me and grill-with-docs.",
+      "dependsOnSkills": [],
+      "usesAgents": [
+        "mp-explorer"
+      ],
+      "collisionNote": "",
+      "samplePrompt": "Interview me using grilling one frontier round at a time",
+      "companionFiles": [],
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "handoff",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
+      "argumentHint": "What will the next session be used for?",
+      "scenario": "handoff-automation",
+      "workflowStage": "standalone",
+      "zhSummary": "跨会话交接文档：将当前上下文浓缩为便携 Markdown 存入临时目录供新会话无缝接棒",
+      "enSummary": "Compact current context into a portable OS-temp handoff doc for a fresh session.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/handoff Continue implementing ticket 03 in a fresh session",
+      "companionFiles": [],
+      "adaptations": [
+        "preserved-argument-hint",
+        "rewrote-skill-tool-to-read_file",
+        "added-native-runtime-notes"
+      ]
+    },
+    {
+      "name": "teach",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Teach the user a new skill or concept, within this workspace.",
+      "argumentHint": "What would you like to learn about?",
+      "scenario": "teaching-writing",
+      "workflowStage": "standalone",
+      "zhSummary": "苏格拉底式多会话教学：将当前目录变成状态化学习工作区，记录学习档案与关卡任务",
+      "enSummary": "Multi-session interactive tutor turning the workspace into a stateful learning studio.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/teach Teach me Effect-TS error modeling step by step",
+      "companionFiles": [
+        "GLOSSARY-FORMAT.md",
+        "LEARNING-RECORD-FORMAT.md",
+        "MISSION-FORMAT.md",
+        "RESOURCES-FORMAT.md"
+      ],
+      "adaptations": [
+        "preserved-argument-hint"
+      ]
+    },
+    {
+      "name": "to-questionnaire",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Turn a decision you can't fully answer into a questionnaire for someone else to fill in.",
+      "argumentHint": "",
+      "scenario": "interview-modeling",
+      "workflowStage": "standalone",
+      "zhSummary": "对外协同问卷生成：先反向盘问发给谁与缺什么信息，再产出给相关方的 Markdown 问卷",
+      "enSummary": "Grill you on the recipient and missing gaps, then emit a crisp async questionnaire.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/to-questionnaire Draft questions for the backend team about webhook retries",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "wait-what",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "user",
+      "description": "Stop. That last message did not land: re-pitch it.",
+      "argumentHint": "",
+      "scenario": "interview-modeling",
+      "workflowStage": "standalone",
+      "zhSummary": "实时术语纠偏器：当你没听懂上一段回复时触发，用 GLOSSARY 大白话重讲缺失的前置上下文",
+      "enSummary": "Re-pitch a confusing reply in plain English with missing context and GLOSSARY terms.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/wait-what",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "writing-for-agents",
+      "bucket": "productivity",
+      "defaultEnabled": true,
+      "invocation": "model",
+      "description": "Writing documents for agents. Use when creating or editing skills, or modifying AGENTS.md or CLAUDE.md.",
+      "argumentHint": "",
+      "scenario": "teaching-writing",
+      "workflowStage": "standalone",
+      "zhSummary": "面向 Agent 的文档写作规范：SKILL.md 触发描述、AGENTS.md 指针结构与渐进披露原则",
+      "enSummary": "Best practices for authoring SKILL.md, AGENTS.md, and agent-consumed pointer docs.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Review this SKILL.md using writing-for-agents principles",
+      "companionFiles": [
+        "SKILL-MECHANICS.md"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "chief-of-staff",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Pursue a long-running goal in a single session by co-ordinating subagents.",
+      "argumentHint": "",
+      "scenario": "handoff-automation",
+      "workflowStage": "beta",
+      "zhSummary": "个人/团队多线幕僚长：跨 GitHub、日程与个人 Wiki 统筹优先级、草拟回复与跟进事项",
+      "enSummary": "Multi-stream chief-of-staff orchestrating priorities across repos, wikis, and comms.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/chief-of-staff",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "claude-handoff",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Hand the current conversation off to a fresh background agent that picks up the work immediately.",
+      "argumentHint": "What will the next session be used for?",
+      "scenario": "handoff-automation",
+      "workflowStage": "beta",
+      "zhSummary": "会话交接变体（实验）：带特定格式锚点的交接备忘生成（在 Antigravity 中可参考 handoff）",
+      "enSummary": "Experimental session handoff variant with structured handover anchors.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/claude-handoff",
+      "companionFiles": [],
+      "adaptations": [
+        "preserved-argument-hint",
+        "rewrote-skill-tool-to-read_file"
+      ]
+    },
+    {
+      "name": "loop-me",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Grill me about specs for the workflows I want to build, within this workspace.",
+      "argumentHint": "A workflow to design, or nothing to go find one",
+      "scenario": "tdd-implement",
+      "workflowStage": "beta",
+      "zhSummary": "双轨循环对撞：围绕同一目标持续在「改进尝试 ↔ 严格验收」之间自动循环迭代直至过关",
+      "enSummary": "Iterative self-looping driver between execution attempts and strict verification.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/loop-me Fix all failing integration tests until green",
+      "companionFiles": [],
+      "adaptations": [
+        "preserved-argument-hint"
+      ]
+    },
+    {
+      "name": "setup-ts-deep-modules",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Wire dependency-cruiser into a TypeScript repo so each package is a deep module, with implementation hidden in subfolders and reachable only through its entry-point files. User-invoked.",
+      "argumentHint": "",
+      "scenario": "arch-prototype",
+      "workflowStage": "beta",
+      "zhSummary": "TypeScript 深模块架构门禁：接入 dependency-cruiser 规则防止跨层循环依赖与边界泄漏",
+      "enSummary": "Configure dependency-cruiser rules in TS repos to enforce deep module boundaries.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/setup-ts-deep-modules",
+      "companionFiles": [
+        "dependency-cruiser.config.cjs"
+      ],
+      "adaptations": [
+        "rewrote-skill-tool-to-read_file"
+      ]
+    },
+    {
+      "name": "software-factory",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Shared language for designing a software factory: the tasks it runs and the services it plugs into.",
+      "argumentHint": "",
+      "scenario": "handoff-automation",
+      "workflowStage": "beta",
+      "zhSummary": "无人值守软件工厂：串联可观测平台、Git 宿主、工单系统与自动化 Runner 闭环交付",
+      "enSummary": "End-to-end autonomous software factory wiring observability, trackers, and runners.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Consult software-factory to design an autonomous bugfix pipeline",
+      "companionFiles": [
+        "EXAMPLE-TASKS.md",
+        "GIT-HOSTS.md",
+        "OBSERVABILITY-PLATFORMS.md",
+        "RUNNERS.md",
+        "TICKET-TRACKERS.md"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "writing-beats",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Writing, exploit; assemble raw material into a journey of beats, grounding each term before a beat leans on it.",
+      "argumentHint": "",
+      "scenario": "teaching-writing",
+      "workflowStage": "beta",
+      "zhSummary": "三阶段长文写作 · 第一步节拍（Beats）：把零散观点组织成节奏清晰、逻辑递进的叙事节拍表",
+      "enSummary": "Long-form writing stage 1: organize raw ideas into clear narrative beats.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use writing-beats to structure the narrative flow for this article",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "writing-fragments",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Writing, explore: mine raw fragments, no structure yet.",
+      "argumentHint": "",
+      "scenario": "teaching-writing",
+      "workflowStage": "beta",
+      "zhSummary": "三阶段长文写作 · 第二步素材碎片（Fragments）：收集例证、金句与真实代码片段填充节拍",
+      "enSummary": "Long-form writing stage 2: gather concrete examples and code fragments per beat.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use writing-fragments to draft raw examples for each beat",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "writing-shape",
+      "bucket": "in-progress",
+      "defaultEnabled": false,
+      "invocation": "user",
+      "description": "Writing, exploit: shape raw material into an article, paragraph by paragraph.",
+      "argumentHint": "",
+      "scenario": "teaching-writing",
+      "workflowStage": "beta",
+      "zhSummary": "三阶段长文写作 · 第三步成稿塑形（Shape）：基于节拍与碎片锻造紧致有冲击力的终稿",
+      "enSummary": "Long-form writing stage 3: shape beats and fragments into tight final prose.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use writing-shape to polish these beats and fragments into a draft",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "git-guardrails-claude-code",
+      "bucket": "misc",
+      "defaultEnabled": false,
+      "invocation": "model",
+      "description": "Set up Claude Code hooks to block dangerous git commands (push, reset --hard, clean, branch -D, etc.) before they execute. Use when user wants to prevent destructive git operations, add git safety hooks, or block git push/reset in Claude Code.",
+      "argumentHint": "",
+      "scenario": "review-guardrails",
+      "workflowStage": "misc",
+      "zhSummary": "危险 Git 命令拦截脚本：提供 block-dangerous-git.sh 防止误执行 reset --hard / push -f",
+      "enSummary": "Provides block-dangerous-git.sh guardrail script blocking destructive git commands.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Inspect git-guardrails-claude-code scripts to adapt git safety checks",
+      "companionFiles": [
+        "scripts/block-dangerous-git.sh"
+      ],
+      "adaptations": []
+    },
+    {
+      "name": "migrate-to-shoehorn",
+      "bucket": "misc",
+      "defaultEnabled": false,
+      "invocation": "model",
+      "description": "Migrate test files from `as` type assertions to @total-typescript/shoehorn. Use when user mentions shoehorn, wants to replace `as` in tests, or needs partial test data.",
+      "argumentHint": "",
+      "scenario": "review-guardrails",
+      "workflowStage": "misc",
+      "zhSummary": "测试断言 Shoehorn 迁移：将冗长的 TypeScript Mock 构造代码重构为 @total-typescript/shoehorn",
+      "enSummary": "Migrate verbose TypeScript test mocks to @total-typescript/shoehorn helpers.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use migrate-to-shoehorn on our test helpers",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "scaffold-exercises",
+      "bucket": "misc",
+      "defaultEnabled": false,
+      "invocation": "model",
+      "description": "Create exercise directory structures with sections, problems, solutions, and explainers that pass linting. Use when user wants to scaffold exercises, create exercise stubs, or set up a new course section.",
+      "argumentHint": "",
+      "scenario": "teaching-writing",
+      "workflowStage": "misc",
+      "zhSummary": "教学练习题挖空脚手架：从完整参考解答自动拆出 problem / solution 双目录练习工程",
+      "enSummary": "Scaffold problem/solution coding exercises from reference implementations.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "/scaffold-exercises",
+      "companionFiles": [],
+      "adaptations": []
+    },
+    {
+      "name": "setup-pre-commit",
+      "bucket": "misc",
+      "defaultEnabled": false,
+      "invocation": "model",
+      "description": "Set up Husky pre-commit hooks with lint-staged (Prettier), type checking, and tests in the current repo. Use when user wants to add pre-commit hooks, set up Husky, configure lint-staged, or add commit-time formatting/typechecking/testing.",
+      "argumentHint": "",
+      "scenario": "review-guardrails",
+      "workflowStage": "misc",
+      "zhSummary": "Pre-commit 门禁一键配置：安装 Husky / lint-staged 并在提交前强制跑类型检查与单测",
+      "enSummary": "Set up Husky pre-commit hooks for typechecking, linting, and fast tests.",
+      "dependsOnSkills": [],
+      "usesAgents": [],
+      "collisionNote": "",
+      "samplePrompt": "Use setup-pre-commit to add typecheck & test hooks to this repo",
+      "companionFiles": [],
+      "adaptations": []
+    }
+  ]
+}
