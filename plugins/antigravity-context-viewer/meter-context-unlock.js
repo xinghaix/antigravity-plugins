@@ -1971,14 +1971,6 @@ function resolveUnlockTargetPath(options = {}) {
  * 执行上下文长度模式应用与已知态安全互切 (default / fixed / dynamic)
  */
 function applyUnlock(options = {}) {
-  if (process.platform !== 'win32' && process.platform !== 'darwin' && !options.targetPath) {
-    return {
-      ok: false,
-      code: 'PLATFORM_UNSUPPORTED',
-      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
-    };
-  }
-
   const targetSpec = normalizeUnlockTargetOptions(options);
   if (!targetSpec.ok) {
     return { ok: false, code: targetSpec.code || 'INVALID_INPUT', error: targetSpec.error };
@@ -1987,6 +1979,13 @@ function applyUnlock(options = {}) {
   const resolvedTarget = resolveUnlockTargetPath(options);
   if (!resolvedTarget.ok) {
     return resolvedTarget;
+  }
+  if (process.platform !== 'win32' && process.platform !== 'darwin' && !options.targetPath) {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
+    };
   }
   const target = resolvedTarget.target;
 
@@ -2241,17 +2240,16 @@ function restoreWithoutBackupBuffer(currentBuf, analysis, sidecar, target, conta
  * 恢复原版二进制 (Restore) — 严格校验路径、构建指纹与完整哈希匹配
  */
 function restoreUnlock(options = {}) {
+  const resolvedTarget = resolveUnlockTargetPath(options);
+  if (!resolvedTarget.ok) {
+    return resolvedTarget;
+  }
   if (process.platform !== 'win32' && process.platform !== 'darwin' && !options.targetPath) {
     return {
       ok: false,
       code: 'PLATFORM_UNSUPPORTED',
       error: `当前平台 (${process.platform}) 暂未通过安全写入验证，已自动拦截操作。`
     };
-  }
-
-  const resolvedTarget = resolveUnlockTargetPath(options);
-  if (!resolvedTarget.ok) {
-    return resolvedTarget;
   }
   const target = resolvedTarget.target;
 
@@ -2485,14 +2483,6 @@ function patchUnlockBuffer(buf, targetSpec, gate3a, gate3b, serializerGate, gate
  * 异步非阻塞上下文长度应用（同一目标串行加锁，保持备份、校验与回滚语义）
  */
 async function applyUnlockAsync(options = {}) {
-  if (process.platform !== 'win32' && process.platform !== 'darwin' && !options.targetPath) {
-    return {
-      ok: false,
-      code: 'PLATFORM_UNSUPPORTED',
-      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
-    };
-  }
-
   const targetSpec = normalizeUnlockTargetOptions(options);
   if (!targetSpec.ok) {
     return { ok: false, code: targetSpec.code || 'INVALID_INPUT', error: targetSpec.error };
@@ -2501,6 +2491,13 @@ async function applyUnlockAsync(options = {}) {
   const resolvedTarget = resolveUnlockTargetPath(options);
   if (!resolvedTarget.ok) {
     return resolvedTarget;
+  }
+  if (process.platform !== 'win32' && process.platform !== 'darwin' && !options.targetPath) {
+    return {
+      ok: false,
+      code: 'PLATFORM_UNSUPPORTED',
+      error: `当前平台 (${process.platform}) 暂未通过安全写入与签名验证验收，已自动拦截写入操作，确保客户端稳定。`
+    };
   }
   const target = resolvedTarget.target;
 
@@ -2698,17 +2695,16 @@ async function applyUnlockAsync(options = {}) {
  * 异步非阻塞恢复原版二进制 (Restore)
  */
 async function restoreUnlockAsync(options = {}) {
+  const resolvedTarget = resolveUnlockTargetPath(options);
+  if (!resolvedTarget.ok) {
+    return resolvedTarget;
+  }
   if (process.platform !== 'win32' && process.platform !== 'darwin' && !options.targetPath) {
     return {
       ok: false,
       code: 'PLATFORM_UNSUPPORTED',
       error: `当前平台 (${process.platform}) 暂未通过安全写入验证，已自动拦截操作。`
     };
-  }
-
-  const resolvedTarget = resolveUnlockTargetPath(options);
-  if (!resolvedTarget.ok) {
-    return resolvedTarget;
   }
   const target = resolvedTarget.target;
 
