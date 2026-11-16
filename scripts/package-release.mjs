@@ -216,7 +216,7 @@ function resolveTargetPlugin(plugins, refName, explicitPluginId) {
 
 export function packageRelease(rootDir = MONOREPO_ROOT, options = {}) {
   const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf-8'));
-  const refName = process.env.GITHUB_REF_NAME || '';
+  const refName = options.refName !== undefined ? String(options.refName) : (process.env.GITHUB_REF_NAME || '');
   const plugins = scanPlugins(rootDir);
   const targetPlugin = resolveTargetPlugin(plugins, refName, options.pluginId || '');
 
