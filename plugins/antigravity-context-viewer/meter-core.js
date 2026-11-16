@@ -1765,10 +1765,35 @@
     let officialPrice = null;
     let priceRange = null;
 
-    if (/ultra/i.test(rawTierName) || /ultra/i.test(userTier.id || '')) {
+    const rawTierId = String(userTier.id || '').trim();
+    const rawTierDesc = String(userTier.description || '').trim();
+    if (/ultra/i.test(rawTierName) || /ultra/i.test(rawTierId)) {
       tierKey = 'ultra';
-      const subTierMatch = rawTierName.match(/ultra\s*([0-9a-zA-Z\-_]+)/i);
-      if (subTierMatch && !['plan', 'tier'].includes(subTierMatch[1].toLowerCase())) {
+      const combinedUltraHints = `${rawTierId} ${rawTierName} ${rawTierDesc}`;
+      const explicitMultMatch = combinedUltraHints.match(/(?:^|[\s(\[（\-_:：])(\d+\s*x)(?:$|[\s)\]）\-_:：])/i);
+      const subTierMatch = rawTierName.match(/ultra[\s\-_:：(（]+([0-9a-zA-Z\-_]+)[\s)）]*/i);
+      if (explicitMultMatch) {
+        const mult = explicitMultMatch[1].replace(/\s+/g, '').toLowerCase();
+        tierDisplayName = `Google AI Ultra (${mult})`;
+        if (mult === '5x') {
+          officialPrice = 99.99;
+          priceRange = '$99.99/月（公开参考 · 5x 档）';
+        } else if (mult === '20x') {
+          officialPrice = 199.99;
+          priceRange = '$199.99/月（公开参考 · 20x 档）';
+        } else {
+          officialPrice = null;
+          priceRange = '子档定制费率未知';
+        }
+      } else if (/ultra[-_\s]*lite/i.test(combinedUltraHints)) {
+        tierDisplayName = 'Google AI Ultra (5x)';
+        officialPrice = 99.99;
+        priceRange = '$99.99/月（公开参考 · 5x 档）';
+      } else if (/^g1-ultra-tier$/i.test(rawTierId) || /ultra[-_\s]*(?:max|full|20x)/i.test(combinedUltraHints)) {
+        tierDisplayName = 'Google AI Ultra (20x)';
+        officialPrice = 199.99;
+        priceRange = '$199.99/月（公开参考 · 20x 档）';
+      } else if (subTierMatch && !['plan', 'tier', 'ai'].includes(subTierMatch[1].toLowerCase())) {
         tierDisplayName = `Google AI Ultra (${subTierMatch[1]})`;
         officialPrice = null;
         priceRange = '子档定制费率未知';
@@ -1777,7 +1802,7 @@
         officialPrice = null;
         priceRange = '参考区间 $99.99 ~ $249.99/月（子档未知）';
       }
-    } else if (/pro/i.test(rawTierName) || /pro/i.test(userTier.id || '')) {
+    } else if (/pro/i.test(rawTierName) || /pro/i.test(rawTierId)) {
       tierKey = 'pro';
       tierDisplayName = 'Google AI Pro';
       officialPrice = 19.99;
@@ -2206,6 +2231,18 @@
     const isCustomAccountMatched = !normCustomAcc || normCustomAcc === 'default' || !normCurrentEmail || normCurrentEmail === 'default' || normCustomAcc === normCurrentEmail;
     const effectiveCustom = isCustomAccountMatched ? rawCustom : null;
 
+    const upgradeUltraSubTierFromId = (tKey, tName, tId, offPrice) => {
+      if (tKey === 'ultra' && typeof tName === 'string' && tName.includes('子档未知') && typeof tId === 'string' && tId.trim()) {
+        if (/ultra[-_\s]*lite/i.test(tId)) {
+          return { tierName: 'Google AI Ultra (5x)', officialPriceMonthly: offPrice ?? 99.99 };
+        }
+        if (/^g1-ultra-tier$/i.test(tId.trim())) {
+          return { tierName: 'Google AI Ultra (20x)', officialPriceMonthly: offPrice ?? 199.99 };
+        }
+      }
+      return { tierName: tName, officialPriceMonthly: offPrice };
+    };
+
     // 1. 套餐名称与识别状态
     let status = 'unidentified';
     let tierKey = 'unknown';
@@ -2213,13 +2250,16 @@
     let tierId = null;
     let planName = '未知';
     let tierSource = 'unknown';
+    let upgradedOfficialPrice = null;
 
     if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
+      const up = upgradeUltraSubTierFromId(rawLive.tierKey, rawLive.tierName, rawLive.tierId, rawLive.officialPriceMonthly);
       status = 'identified';
       tierKey = rawLive.tierKey;
-      tierName = rawLive.tierName;
+      tierName = up.tierName;
       tierId = rawLive.tierId;
-      planName = rawLive.planName || rawLive.tierName;
+      planName = (rawLive.planName && rawLive.planName !== rawLive.tierName) ? rawLive.planName : up.tierName;
+      upgradedOfficialPrice = up.officialPriceMonthly;
       tierSource = 'live';
     } else if (effectiveCustom && effectiveCustom.tierName) {
       status = 'custom';
@@ -2228,11 +2268,13 @@
       planName = effectiveCustom.tierName;
       tierSource = 'custom';
     } else if (cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown') {
+      const up = upgradeUltraSubTierFromId(cachedLive.tierKey, cachedLive.tierName, cachedLive.tierId, cachedLive.officialPriceMonthly);
       status = 'identified';
       tierKey = cachedLive.tierKey;
-      tierName = cachedLive.tierName;
+      tierName = up.tierName;
       tierId = cachedLive.tierId;
-      planName = cachedLive.planName || cachedLive.tierName;
+      planName = (cachedLive.planName && cachedLive.planName !== cachedLive.tierName) ? cachedLive.planName : up.tierName;
+      upgradedOfficialPrice = up.officialPriceMonthly;
       tierSource = 'cached_live';
     }
 
@@ -2309,7 +2351,7 @@
     }
 
     let actualPricePaid = null;
-    let officialPriceMonthly = rawLive?.officialPriceMonthly ?? cachedLive?.officialPriceMonthly ?? null;
+    let officialPriceMonthly = upgradedOfficialPrice ?? rawLive?.officialPriceMonthly ?? cachedLive?.officialPriceMonthly ?? null;
     const matchedRegionPreset = findRegionPreset(region);
     let rawCur = (effectiveCustom?.subscriptionCurrency || effectiveCustom?.currency) ? String(effectiveCustom.subscriptionCurrency || effectiveCustom.currency).trim().toUpperCase() : '';
     if (rawCur === 'NTD') rawCur = 'TWD';
@@ -2791,7 +2833,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.5-2') {
+  function filterReleases(releasesList, currentVersion = '0.8.5-3') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {

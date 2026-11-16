@@ -471,6 +471,28 @@ test('parseUserPlanStatus treats empty status as unidentified and handles Ultra 
   assert.equal(ultraRes.tierDisplayName || ultraRes.tierName, 'Google AI Ultra（子档未知）');
   assert.equal(ultraRes.officialPriceMonthly, null);
   assert.ok(ultraRes.priceRangeNote);
+
+  const ultra5x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' } } });
+  assert.equal(ultra5x.status, 'identified');
+  assert.equal(ultra5x.tierName, 'Google AI Ultra (5x)');
+  assert.equal(ultra5x.officialPriceMonthly, 99.99);
+
+  const ultra20x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } } });
+  assert.equal(ultra20x.status, 'identified');
+  assert.equal(ultra20x.tierName, 'Google AI Ultra (20x)');
+  assert.equal(ultra20x.officialPriceMonthly, 199.99);
+
+  const upgradedFromCache = resolveEffectivePlanStatus(null, null, {
+    cachedLivePlan: {
+      status: 'identified',
+      tierKey: 'ultra',
+      tierName: 'Google AI Ultra（子档未知）',
+      tierId: 'g1-ultra-lite-tier',
+      officialPriceMonthly: null
+    }
+  });
+  assert.equal(upgradedFromCache.tierName, 'Google AI Ultra (5x)');
+  assert.equal(upgradedFromCache.officialPriceMonthly, 99.99);
 });
 
 test('recordModelCalls calibrates from partial streaming usage to final usage and preserves original date', () => {

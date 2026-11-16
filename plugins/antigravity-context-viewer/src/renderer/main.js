@@ -434,6 +434,13 @@
   let cachedMeasuredAvailWidth = null;
   let cachedMeasuredAvailAt = 0;
   let cachedMeasuredWinWidth = 0;
+  let lastToolbarPluginChildSig = '';
+
+  function computeToolbarPluginChildSig(topRightEl = null) {
+    const pCount = host.parentElement?.childElementCount ?? host.parentElement?.children?.length ?? 0;
+    const tCount = topRightEl?.childElementCount ?? topRightEl?.children?.length ?? 0;
+    return `${pCount}:${tCount}`;
+  }
 
   function ensureHostDocked() {
     if (state.disposed) return;
@@ -487,12 +494,17 @@
       host.style.right = '';
       host.style.top = '';
 
+      const topRightForObserve = findTopRightCluster();
+      lastToolbarPluginChildSig = computeToolbarPluginChildSig(topRightForObserve);
       if (observedTitlebar !== titlebar) {
         observedTitlebar = titlebar;
         try {
           if (resizeObserver) {
             resizeObserver.disconnect();
             resizeObserver.observe(titlebar);
+            if (topRightForObserve && topRightForObserve !== titlebar) {
+              resizeObserver.observe(topRightForObserve);
+            }
             if (document.body) resizeObserver.observe(document.body);
           }
         } catch { }
@@ -627,6 +639,15 @@
               rightPad = Math.max(8, (parseFloat(rightClusterVar) || 44) - 4);
             } else if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
               rightPad = parseFloat(window.getComputedStyle(rightGroup).paddingRight) || 0;
+            }
+            if (!auxOpen) {
+              const topRightCluster = findTopRightCluster();
+              if (topRightCluster && !rightGroup.contains?.(topRightCluster) && topRightCluster.getBoundingClientRect) {
+                const trRect = topRightCluster.getBoundingClientRect();
+                if (trRect && trRect.width > 0 && trRect.top < 50) {
+                  rightPad = Math.max(rightPad, Math.round(trRect.width) - 4);
+                }
+              }
             }
             if (rightGroup.children) {
               let sum = 0;
@@ -919,7 +940,16 @@
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
-    if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+    const topRight = findTopRightCluster();
+    const nextChildSig = computeToolbarPluginChildSig(topRight);
+    if (nextChildSig !== lastToolbarPluginChildSig) {
+      lastToolbarPluginChildSig = nextChildSig;
+      layoutMeasurementDirty = true;
+      if (resizeObserver && topRight && topRight !== observedTitlebar) {
+        try { resizeObserver.observe(topRight); } catch { }
+      }
+      scheduleLayoutSync();
+    } else if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
       scheduleLayoutSync();
     }
     scheduleHostModelSync();
@@ -1450,7 +1480,10 @@
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      const refRate = Number(ps.exchangeRateToCNY) > 0 ? Number(ps.exchangeRateToCNY) : 6.72;
+      const refCny = (targetNum * refRate).toFixed(1);
+      const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
+      targetCny = `(${prefix}¥${refCny} CNY)`;
     } else {
       targetSymbol = '$';
       targetNum = 19.99;
@@ -9275,7 +9308,7 @@
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-3';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -9386,7 +9419,7 @@
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-3';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl) vEl.textContent = `v${nextVer}`;
@@ -11314,8 +11347,19 @@
       badgeText = t('quota.short.stale');
     }
 
+    const liveTierName = ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName;
+    const resolvedPlanTierName = (
+      base.planTierName &&
+      String(base.planTierName).includes('子档未知') &&
+      liveTierName &&
+      !String(liveTierName).includes('子档未知')
+    )
+      ? liveTierName
+      : base.planTierName;
+
     return attachTokenEstimatesToQuotaView({
       ...base,
+      planTierName: resolvedPlanTierName,
       syncState,
       fetchedAtMs: lastOkMs,
       nextRefreshAtMs: quotaState.nextRefreshAtMs,
@@ -12311,7 +12355,7 @@
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch {}
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-3',
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {
       if (state.disposed) return false;

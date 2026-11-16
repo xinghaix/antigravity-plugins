@@ -1,5 +1,5 @@
 (function () {
-  const METER_VERSION = '0.8.5-2';
+  const METER_VERSION = '0.8.5-3';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
@@ -329,12 +329,12 @@
       stroke:var(--ag-ring-danger);
     }
 
-    /* 单元 1B: 模型额度圆环入口 */
+    /* 单元 1B: 模型额度圆环入口（与上下文圆环保持一致的克制原生顶栏语言） */
     #badge-quota.ag-unit-quota{
       width:auto;
       min-width:28px;
       height:28px;
-      padding:0 6px 0 5px;
+      padding:0 7px 0 5px;
       gap:4px;
       display:inline-flex;
       align-items:center;
@@ -348,21 +348,31 @@
       stroke:var(--ag-custom-ring-track,var(--ag-ring-track-default));
     }
     .quota-ring-fill{
-      stroke:#22c55e;
+      stroke:var(--ag-custom-ring-used,var(--ag-ring-used-default));
       transition:stroke-dashoffset .22s cubic-bezier(0.22,1,0.36,1),stroke .18s ease,opacity .15s ease;
     }
-    #badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:#22c55e; }
-    #badge-quota[data-quota-state="low"] .quota-ring-fill{ stroke:#f59e0b; }
-    #badge-quota[data-quota-state="exhausted"] .quota-ring-fill{ stroke:#ef4444; }
+    #badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:var(--ag-custom-ring-used,var(--ag-ring-used-default)); }
+    #badge-quota[data-quota-state="available"]:hover .quota-ring-fill,
+    #badge-quota[data-quota-state="available"]:focus-visible .quota-ring-fill,
+    #badge-quota[data-quota-state="available"][aria-expanded="true"] .quota-ring-fill{
+      stroke:var(--ag-custom-ring-used,var(--ag-toolbar-fg-hover));
+    }
+    #badge-quota[data-quota-state="low"] .quota-ring-fill{ stroke:var(--ag-ring-warn); }
+    #badge-quota[data-quota-state="exhausted"] .quota-ring-fill{ stroke:var(--ag-ring-danger); }
     #badge-quota[data-quota-state="no_permission"] .quota-ring-fill{ stroke:#a855f7; }
-    #badge-quota[data-quota-state="stale"] .quota-ring-fill{ stroke:#eab308; opacity:0.8; }
+    #badge-quota[data-quota-state="stale"] .quota-ring-fill{ stroke:var(--ag-ring-warn); opacity:0.78; }
     #badge-quota[data-quota-state="error"] .quota-ring-fill{ stroke:#f97316; }
-    #badge-quota[data-quota-state="unknown"] .quota-ring-fill{ stroke:var(--ag-text-muted); opacity:0.65; }
+    #badge-quota[data-quota-state="unknown"] .quota-ring-fill{ stroke:var(--ag-text-muted); opacity:0.55; }
     .quota-badge-val{
-      font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;
-      color:var(--ag-text-primary);
-      white-space:nowrap;
-      min-width:34px;text-align:center;
+      display:inline;white-space:nowrap;line-height:1;
+      font-size:12px;font-weight:500;font-variant-numeric:tabular-nums;
+      color:var(--ag-custom-context-text,var(--ag-context-text-default));
+      padding-left:2px;letter-spacing:-0.01em;
+    }
+    #badge-quota:not([data-quota-state="exhausted"]):not([data-quota-state="error"]):not([data-quota-state="no_permission"]):hover .quota-badge-val,
+    #badge-quota:not([data-quota-state="exhausted"]):not([data-quota-state="error"]):not([data-quota-state="no_permission"]):focus-visible .quota-badge-val,
+    #badge-quota:not([data-quota-state="exhausted"]):not([data-quota-state="error"]):not([data-quota-state="no_permission"])[aria-expanded="true"] .quota-badge-val{
+      color:var(--ag-custom-context-text,var(--ag-toolbar-fg-hover));
     }
     #badge-quota[data-quota-state="exhausted"] .quota-badge-val{ color:#f87171; }
     #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#fb923c; }
@@ -371,9 +381,22 @@
     :host([data-theme="light"]) #badge-quota[data-quota-state="error"] .quota-badge-val{ color:#ea580c; }
     :host([data-theme="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#7e22ce; }
     .quota-badge-tag{
-      font-size:10px;font-weight:600;padding:0 4px;border-radius:4px;
-      background:rgba(127,127,127,0.16);color:var(--ag-text-secondary);
-      line-height:15px;white-space:nowrap;
+      display:inline;white-space:nowrap;line-height:1;
+      font-size:11px;font-weight:400;padding:0;margin-left:-4px;
+      border-radius:0;background:transparent;
+      color:var(--ag-custom-context-text,var(--ag-context-text-default));
+      opacity:0.65;
+    }
+    .quota-badge-tag::before{
+      content:" · ";white-space:pre;
+    }
+    .quota-badge-tag[hidden]{
+      display:none!important;
+    }
+    #badge-quota:hover .quota-badge-tag,
+    #badge-quota:focus-visible .quota-badge-tag,
+    #badge-quota[aria-expanded="true"] .quota-badge-tag{
+      color:var(--ag-custom-context-text,var(--ag-toolbar-fg-hover));
     }
     :host([data-layout="compact"]) #badge-quota{ padding:0 5px 0 4px;gap:3px; }
     :host([data-layout="compact"]) .quota-badge-tag{ display:none!important; }
@@ -550,6 +573,20 @@
     /* 渐进式宽度收缩四阶段: wide -> compact -> minimal -> ring-only */
     :host([data-layout="compact"]){
       gap:1px;
+    }
+    :host([data-layout="compact"]) #badge.ag-unit-ring{
+      padding:0 5px 0 4px;gap:3px;
+    }
+    :host([data-layout="compact"]) .badge-ctx-pct{
+      display:none!important;
+    }
+    :host([data-layout="compact"]) #badge-speed,
+    :host([data-layout="compact"]) #badge-tokens{
+      min-width:0;
+    }
+    :host([data-layout="compact"]) #speed-amount,
+    :host([data-layout="compact"]) #token-amount{
+      min-width:0;
     }
     :host([data-layout="compact"]) #badge-speed,
     :host([data-layout="compact"]) #badge-tokens,
@@ -1974,7 +2011,7 @@
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-      <span id="v">v0.8.5-2</span>
+      <span id="v">v0.8.5-3</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -3967,7 +4004,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.5-2</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.5-3</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -8898,6 +8935,13 @@ function formatVendorLabel(vendor) {
   let cachedMeasuredAvailWidth = null;
   let cachedMeasuredAvailAt = 0;
   let cachedMeasuredWinWidth = 0;
+  let lastToolbarPluginChildSig = '';
+
+  function computeToolbarPluginChildSig(topRightEl = null) {
+    const pCount = host.parentElement?.childElementCount ?? host.parentElement?.children?.length ?? 0;
+    const tCount = topRightEl?.childElementCount ?? topRightEl?.children?.length ?? 0;
+    return `${pCount}:${tCount}`;
+  }
 
   function ensureHostDocked() {
     if (state.disposed) return;
@@ -8951,12 +8995,17 @@ function formatVendorLabel(vendor) {
       host.style.right = '';
       host.style.top = '';
 
+      const topRightForObserve = findTopRightCluster();
+      lastToolbarPluginChildSig = computeToolbarPluginChildSig(topRightForObserve);
       if (observedTitlebar !== titlebar) {
         observedTitlebar = titlebar;
         try {
           if (resizeObserver) {
             resizeObserver.disconnect();
             resizeObserver.observe(titlebar);
+            if (topRightForObserve && topRightForObserve !== titlebar) {
+              resizeObserver.observe(topRightForObserve);
+            }
             if (document.body) resizeObserver.observe(document.body);
           }
         } catch { }
@@ -9091,6 +9140,15 @@ function formatVendorLabel(vendor) {
               rightPad = Math.max(8, (parseFloat(rightClusterVar) || 44) - 4);
             } else if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
               rightPad = parseFloat(window.getComputedStyle(rightGroup).paddingRight) || 0;
+            }
+            if (!auxOpen) {
+              const topRightCluster = findTopRightCluster();
+              if (topRightCluster && !rightGroup.contains?.(topRightCluster) && topRightCluster.getBoundingClientRect) {
+                const trRect = topRightCluster.getBoundingClientRect();
+                if (trRect && trRect.width > 0 && trRect.top < 50) {
+                  rightPad = Math.max(rightPad, Math.round(trRect.width) - 4);
+                }
+              }
             }
             if (rightGroup.children) {
               let sum = 0;
@@ -9383,7 +9441,16 @@ function formatVendorLabel(vendor) {
   function flushHostDomMutationCheck() {
     domMutationThrottleTimer = null;
     if (state.disposed) return;
-    if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+    const topRight = findTopRightCluster();
+    const nextChildSig = computeToolbarPluginChildSig(topRight);
+    if (nextChildSig !== lastToolbarPluginChildSig) {
+      lastToolbarPluginChildSig = nextChildSig;
+      layoutMeasurementDirty = true;
+      if (resizeObserver && topRight && topRight !== observedTitlebar) {
+        try { resizeObserver.observe(topRight); } catch { }
+      }
+      scheduleLayoutSync();
+    } else if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
       scheduleLayoutSync();
     }
     scheduleHostModelSync();
@@ -11305,7 +11372,10 @@ function closeAllDropdowns(exceptWrap = null) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      const refRate = Number(ps.exchangeRateToCNY) > 0 ? Number(ps.exchangeRateToCNY) : 6.72;
+      const refCny = (targetNum * refRate).toFixed(1);
+      const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
+      targetCny = `(${prefix}¥${refCny} CNY)`;
     } else {
       targetSymbol = '$';
       targetNum = 19.99;
@@ -19130,7 +19200,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-3';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -19241,7 +19311,7 @@ function closeAllDropdowns(exceptWrap = null) {
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-3';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl) vEl.textContent = `v${nextVer}`;
@@ -21940,8 +22010,19 @@ function renderHeatmapGrid(forceRebuild = false) {
       badgeText = t('quota.short.stale');
     }
 
+    const liveTierName = ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName;
+    const resolvedPlanTierName = (
+      base.planTierName &&
+      String(base.planTierName).includes('子档未知') &&
+      liveTierName &&
+      !String(liveTierName).includes('子档未知')
+    )
+      ? liveTierName
+      : base.planTierName;
+
     return attachTokenEstimatesToQuotaView({
       ...base,
+      planTierName: resolvedPlanTierName,
       syncState,
       fetchedAtMs: lastOkMs,
       nextRefreshAtMs: quotaState.nextRefreshAtMs,
@@ -22937,7 +23018,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch {}
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-3',
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {
       if (state.disposed) return false;

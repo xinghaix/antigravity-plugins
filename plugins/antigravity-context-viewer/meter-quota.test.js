@@ -2271,3 +2271,17 @@ test('渲染层热加载兼容：旧主进程预置 Ultra 无权限快照在携�
     try { h.sandbox.__AGContextMeter.dispose(); } catch { }
   }
 });
+
+test('顶栏额度胶囊视觉样式统一与上游 textContent 兼容校验', () => {
+  const styles = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  assert.ok(styles.includes('.quota-badge-tag::before'), 'styles.css 应通过 ::before 渲染中点分隔');
+  assert.ok(styles.includes('content:" · "'), 'quota-badge-tag::before 应使用 " · " 分隔符');
+  assert.ok(
+    styles.includes('#badge-quota[data-quota-state="available"] .quota-ring-fill{ stroke:var(--ag-custom-ring-used,var(--ag-ring-used-default)); }'),
+    'available 状态圆环应跟随顶栏克制银灰主题色'
+  );
+  assert.ok(
+    styles.includes(':host([data-layout="compact"]) .badge-ctx-pct'),
+    'compact 模式下上下文副百分比与额度时间窗应同步收起'
+  );
+});

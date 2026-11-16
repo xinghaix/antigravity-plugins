@@ -4242,7 +4242,7 @@ function requestGithubUrl(rawUrl, options = {}) {
         }
       }
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.5-2',
+        'User-Agent': 'AntigravityContextMeter/0.8.5-3',
         'Accept': isApiHost ? 'application/vnd.github.v3+json' : (options.accept || '*/*')
       }, rawHeaders);
       const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -4740,7 +4740,7 @@ function shouldUseWebFallback(err, rawData) {
 }
 
 async function fetchOfficialReleasesWithFallback(options = {}) {
-  const effectiveCurrentVersion = options.currentVersion || '0.8.5-2';
+  const effectiveCurrentVersion = options.currentVersion || '0.8.5-3';
   const fetcher = options._requestGithubUrl || requestGithubUrl;
   const timeout = options.timeout || 8000;
   let primaryErr = null;
@@ -4816,7 +4816,7 @@ async function resolveAssetsForWebRelease(targetRelease, fetcher, timeout = 8000
 }
 
 async function checkUpdateAsync(options = {}) {
-  const runtimeVersion = options.currentVersion || '0.8.5-2';
+  const runtimeVersion = options.currentVersion || '0.8.5-3';
   const diskVersion = getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
@@ -4966,7 +4966,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.5-2';
+  const currentVersion = options.currentVersion || '0.8.5-3';
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;

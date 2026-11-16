@@ -1,8 +1,8 @@
-# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.8.5-2`）
+# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.8.5-3`）
 
 **简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.8.5`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.8.5-2`**）：
+> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.8.5`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.8.5-3`**）：
 > 1. **原生插件化与 Sidecar CDP 免改盘自动挂载**（`sidecars/live-loader` + `sidecar-live.js`）：通过 `antigravity-plugins` 的 `--link`（默认）或 `--copy` 挂载为原生插件后，随 Antigravity 启动/刷新自动通过 CDP 注入顶栏看板并托管 1:1 本地桥接生命周期，无需手动修补 `app.asar`。
 > 2. **渲染器界面与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：顶栏胶囊紧致上下文长度+比例双显示、默认隐藏 CLI 启动按钮（可在设置中切换）、免改盘中文热注入自愈，以及对 `v0.8.5` 额度圆环、分模型上下文预算和系统增强中心的全量同步。
 > 3. **多平台上下文加长解锁与 CLI 增强**（`meter-context-unlock.js`、`cli.js`）：支持 macOS (`arm64` Mach-O `tbnz` + `codesign`) / Linux / Windows 上下文窗口调整与独立 `sidecar:*` 生命周期管理。
@@ -54,7 +54,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 如果你将本仓库交给 AI 助手安装，只需对 AI 说：**“读取仓库里的 `AGENTS.md` 或 `README.md`，帮我安装这个上下文查看器与 Token 看板”**。
 
-AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.5-2）必须完全重启客户端**：
+AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.5-3）必须完全重启客户端**：
 
 ```bash
 # 1. 持久化写入 ASAR 与全部插件模块
@@ -147,7 +147,7 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.8.5-2)
+├── meter-renderer.js                       # 渲染层构建产物 (0.8.5-3)
 ├── src/renderer/                           # 渲染层源码
 ├── scripts/                                # 构建、发布打包与基准测试
 ├── meter-collector.js                      # 本地会话归档读取与附件提取收集器
