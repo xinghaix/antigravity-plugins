@@ -272,8 +272,11 @@ function mergeModelCapabilitiesIntoConfigs(configs, availableMap = null, stepCap
 
 function sanitizeCascadeModelConfig(c) {
   if (!c || typeof c !== 'object') return null;
+  const DECORATIVE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|最新|预览|預覽|推荐|推薦)$/i;
+  const cleanNonDecorative = v => (typeof v === 'string' && v.trim() && !DECORATIVE_TAG_RE.test(v.trim()) ? v.trim() : null);
   const tagTitle = typeof c.tagTitle === 'string' ? c.tagTitle.trim() : '';
   const tagDesc = typeof c.tagDescription === 'string' ? c.tagDescription.trim() : '';
+  const isDecorativeTag = DECORATIVE_TAG_RE.test(tagTitle);
   const isTagUnavailable = /unavailable|disabled|不可用/i.test(tagTitle);
   const isUnavail = Boolean(
     c.unavailable === true ||
@@ -290,6 +293,12 @@ function sanitizeCascadeModelConfig(c) {
     c.isDeprecated === true ||
     (typeof c.label === 'string' && /\(legacy\)|\(deprecated\)|\(old\)/i.test(c.label))
   );
+  const explicitUnavailReason = cleanNonDecorative(c.unavailabilityReason) || cleanNonDecorative(c.disabledReason) || cleanNonDecorative(c.reason);
+  const rawNoticeField = c.notice || c.clientNotice || c.warning;
+  const explicitNotice = typeof rawNoticeField === 'string' ? cleanNonDecorative(rawNoticeField) : (rawNoticeField || null);
+  const synthesizedNotice = !isUnavail && ((tagTitle && !isDecorativeTag) || cleanNonDecorative(tagDesc))
+    ? (tagTitle ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : cleanNonDecorative(tagDesc))
+    : null;
   return {
     modelId: c.modelId || c.model || '',
     label: c.label || c.modelDisplayName || c.modelId || '',
@@ -316,8 +325,8 @@ function sanitizeCascadeModelConfig(c) {
     disabled: c.disabled === true,
     allowedTiers: Array.isArray(c.allowedTiers) ? c.allowedTiers.slice() : undefined,
     unavailable: isUnavail,
-    unavailabilityReason: c.unavailabilityReason || c.disabledReason || c.reason || (isUnavail ? (tagDesc || tagTitle || null) : null),
-    notice: c.notice || c.clientNotice || c.warning || (!isUnavail && tagTitle ? `${tagTitle}${tagDesc ? `：${tagDesc}` : ''}` : null),
+    unavailabilityReason: explicitUnavailReason || (isUnavail ? (cleanNonDecorative(tagDesc) || (!isDecorativeTag ? (tagTitle || null) : null)) : null),
+    notice: explicitNotice || synthesizedNotice,
     isHistorical: isHist,
     releaseDate: c.releaseDate || null,
     family: c.family || null,
@@ -4233,7 +4242,7 @@ function requestGithubUrl(rawUrl, options = {}) {
         }
       }
       const headers = Object.assign({
-        'User-Agent': 'AntigravityContextMeter/0.8.5-1',
+        'User-Agent': 'AntigravityContextMeter/0.8.5-2',
         'Accept': isApiHost ? 'application/vnd.github.v3+json' : (options.accept || '*/*')
       }, rawHeaders);
       const token = options.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -4731,7 +4740,7 @@ function shouldUseWebFallback(err, rawData) {
 }
 
 async function fetchOfficialReleasesWithFallback(options = {}) {
-  const effectiveCurrentVersion = options.currentVersion || '0.8.5-1';
+  const effectiveCurrentVersion = options.currentVersion || '0.8.5-2';
   const fetcher = options._requestGithubUrl || requestGithubUrl;
   const timeout = options.timeout || 8000;
   let primaryErr = null;
@@ -4807,7 +4816,7 @@ async function resolveAssetsForWebRelease(targetRelease, fetcher, timeout = 8000
 }
 
 async function checkUpdateAsync(options = {}) {
-  const runtimeVersion = options.currentVersion || '0.8.5-1';
+  const runtimeVersion = options.currentVersion || '0.8.5-2';
   const diskVersion = getInstalledMeterVersion(options);
   const effectiveCurrentVersion = (diskVersion && compareVersions(diskVersion, runtimeVersion) > 0)
     ? diskVersion
@@ -4957,7 +4966,7 @@ async function applyUpdateAsync(options = {}) {
   }
   isApplyingUpdate = true;
 
-  const currentVersion = options.currentVersion || '0.8.5-1';
+  const currentVersion = options.currentVersion || '0.8.5-2';
   let tmpDir = null;
   let checksumStream = null;
   let zipStream = null;

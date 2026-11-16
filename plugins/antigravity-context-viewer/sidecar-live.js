@@ -12,9 +12,9 @@ const IDLE_POLL_MS = 5000;
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    return pkg.version || '0.8.5-1';
+    return pkg.version || '0.8.5-2';
   } catch {
-    return '0.8.5-1';
+    return '0.8.5-2';
   }
 }
 
@@ -224,7 +224,18 @@ function createManagedBridgeController(deps = {}) {
     isManagedAlive(origin) {
       return Boolean(activeBridge && (!origin || activeBridge.origin === origin));
     },
-    async ensure(origin) {
+    async ensure(origin, opts = {}) {
+      if (opts?.reload && activeBridge) {
+        try { await activeBridge.close(); } catch {}
+        activeBridge = null;
+        if (!deps.startManagedBridge) {
+          for (const modName of ['./live-host', './meter-collector', './meter-core', './modules-config']) {
+            try {
+              delete require.cache[require.resolve(modName)];
+            } catch {}
+          }
+        }
+      }
       if (activeBridge && (!origin || activeBridge.origin === origin)) {
         return activeBridge;
       }
@@ -320,7 +331,7 @@ async function tickSidecarLive(deps = {}) {
     };
   }
 
-  await ensureBridge(live.origin);
+  await ensureBridge(live.origin, { reload: bundleUpdated });
   const ok = await hotInject({ skipLiveSession: false, bundleStamp: currentStamp, injectChinese: wantChinese });
   if (ok && currentStamp) {
     writeSavedStamp(live.origin, currentStamp);
@@ -388,7 +399,7 @@ function startSidecarDaemon(options = {}) {
   const daemonDeps = bridgeCtrl ? {
     ...customDeps,
     isBridgeAlive: origin => bridgeCtrl.isManagedAlive(origin) || (customDeps.isBridgeAlive ? customDeps.isBridgeAlive(origin) : require('./cli').isLiveBridgeAlive(origin)),
-    ensureBridge: origin => bridgeCtrl.ensure(origin),
+    ensureBridge: (origin, opts) => bridgeCtrl.ensure(origin, opts),
     onInactive: () => bridgeCtrl.close()
   } : customDeps;
 

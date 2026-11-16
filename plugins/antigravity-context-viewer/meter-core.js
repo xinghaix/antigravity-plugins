@@ -196,6 +196,96 @@
     };
   }
 
+  const DECORATIVE_MODEL_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|最新|预览|預覽|推荐|推薦)$/i;
+
+  function inferTierFamily(rawVal) {
+    if (typeof rawVal !== 'string') return null;
+    const lower = rawVal.trim().toLowerCase();
+    if (!lower || lower === '[object object]' || /^\d+$/.test(lower)) return null;
+    const stripped = lower.replace(/^teams_tier_/, '');
+    if (stripped === 'unspecified' || stripped === 'unknown') return null;
+    if (/ultra|pro_ultimate|(?:^|[-_\s])ultimate(?:$|[-_\s])/.test(stripped)) return 'ultra';
+    if (/enterprise|hybrid/.test(stripped)) return 'enterprise';
+    if (stripped === 'teams' || /(?:^|[-_\s])teams(?:$|[-_\s])/.test(stripped)) return 'teams';
+    if (stripped === 'pro' || /(?:^|[-_\s])pro(?:$|[-_\s])|g1-pro/.test(stripped)) return 'pro';
+    if (stripped === 'plus' || /(?:^|[-_\s])plus(?:$|[-_\s])|g1-plus/.test(stripped)) return 'plus';
+    if (stripped === 'free' || /(?:^|[-_\s])free(?:$|[-_\s])|g1-free/.test(stripped)) return 'free';
+    return null;
+  }
+
+  function expandSatisfiedTierFamilies(families) {
+    const out = new Set();
+    const list = Array.isArray(families) ? families : [families];
+    for (const fam of list) {
+      if (fam === 'ultra') {
+        out.add('ultra');
+        out.add('pro');
+        out.add('plus');
+        out.add('free');
+      } else if (fam === 'enterprise') {
+        out.add('enterprise');
+        out.add('teams');
+        out.add('pro');
+        out.add('plus');
+        out.add('free');
+      } else if (fam === 'teams') {
+        out.add('teams');
+        out.add('pro');
+        out.add('plus');
+        out.add('free');
+      } else if (fam === 'pro') {
+        out.add('pro');
+        out.add('plus');
+        out.add('free');
+      } else if (fam === 'plus') {
+        out.add('plus');
+        out.add('free');
+      } else if (fam === 'free') {
+        out.add('free');
+      }
+    }
+    return out;
+  }
+
+  function extractAllowedTierSpecs(allowedTiers) {
+    const specs = [];
+    if (!Array.isArray(allowedTiers)) return specs;
+    for (const entry of allowedTiers) {
+      if (entry == null || typeof entry === 'number' || typeof entry === 'boolean') continue;
+      if (typeof entry === 'string') {
+        const trimmed = entry.trim();
+        const lower = trimmed.toLowerCase();
+        if (!lower || lower === '[object object]' || /^\d+$/.test(lower)) continue;
+        const stripped = lower.replace(/^teams_tier_/, '');
+        if (stripped === 'unspecified' || stripped === 'unknown') continue;
+        specs.push({
+          rawLower: lower,
+          family: inferTierFamily(trimmed),
+          label: trimmed
+        });
+        continue;
+      }
+      if (typeof entry === 'object') {
+        const strFields = [entry.name, entry.tierName, entry.label, entry.id, entry.tierId, entry.teamsTier, entry.tier, entry.slug, entry.key];
+        const labelCandidate = strFields.find(v => typeof v === 'string' && v.trim() && v.trim().toLowerCase() !== '[object object]' && !/^\d+$/.test(v.trim()));
+        for (const tok of strFields) {
+          if (typeof tok !== 'string') continue;
+          const trimmed = tok.trim();
+          const lower = trimmed.toLowerCase();
+          if (!lower || lower === '[object object]' || /^\d+$/.test(lower)) continue;
+          const stripped = lower.replace(/^teams_tier_/, '');
+          if (stripped === 'unspecified' || stripped === 'unknown') continue;
+          specs.push({
+            rawLower: lower,
+            family: inferTierFamily(trimmed),
+            label: (labelCandidate || trimmed).trim()
+          });
+        }
+      }
+    }
+    return specs;
+  }
+
   function classifyModelQuotaAvailability(config, planStatus = null) {
     if (!config || typeof config !== 'object') {
       return { noPermission: false, unavailable: false, reason: null, noticeTitle: null, noticeText: null };
@@ -203,49 +293,69 @@
     const tagTitle = typeof config.tagTitle === 'string' ? config.tagTitle.trim() : '';
     const tagDesc = typeof config.tagDescription === 'string' ? config.tagDescription.trim() : '';
     const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用/i.test(tagTitle);
-    const isDecorativeBadgeTag = /^(new|beta|preview|alpha|experimental|recommended|最新|预览|預覽|推荐|推薦)$/i.test(tagTitle);
+    const isDecorativeBadgeTag = DECORATIVE_MODEL_TAG_RE.test(tagTitle);
     const isExplicitNoticeTag = /^notice$/i.test(tagTitle);
     const isTagNotice = !isTagUnavailable && (Boolean(tagDesc) || isExplicitNoticeTag || (Boolean(tagTitle) && !isDecorativeBadgeTag));
 
-    let tierBlocked = false;
-    let tierReason = null;
-    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus && (planStatus.tierId || planStatus.teamsTier)) {
-      const myIds = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey]
-        .filter(Boolean)
-        .map(v => String(v).toLowerCase());
-      const allowedLower = config.allowedTiers.map(v => String(v).toLowerCase());
-      const hit = myIds.some(id => allowedLower.some(a => a === id || a.includes(id) || id.includes(a)));
-      if (!hit) {
-        tierBlocked = true;
-        tierReason = `仅限 ${config.allowedTiers.join(' / ')} 套餐可用`;
-      }
-    }
-
-    const explicitlyDisabled = Boolean(
+    const serverExplicitlyDisabled = Boolean(
       config.disabled === true ||
       config.enabled === false ||
       config.unavailable === true ||
       config.isUnavailable === true ||
       config.status === 'unavailable' ||
-      isTagUnavailable ||
-      tierBlocked
+      isTagUnavailable
+    );
+    const hasServerGrantedQuota = Boolean(
+      !serverExplicitlyDisabled &&
+      typeof config.quotaInfo?.remainingFraction === 'number' &&
+      Number.isFinite(config.quotaInfo.remainingFraction)
     );
 
-    const hasConfigNotice = typeof config.notice === 'string' && config.notice.trim() && !explicitlyDisabled;
+    let tierBlocked = false;
+    let tierReason = null;
+    if (!serverExplicitlyDisabled && !hasServerGrantedQuota && Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus) {
+      const specs = extractAllowedTierSpecs(config.allowedTiers);
+      const recognizedSpecs = specs.filter(sp => sp.family !== null);
+      const userCandidates = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey, planStatus.planName, planStatus.tierName]
+        .filter(v => typeof v === 'string')
+        .map(v => v.trim())
+        .filter(v => v && !['unknown', 'unidentified', 'custom', '未知'].includes(v.toLowerCase()));
+      const myExactIds = new Set(userCandidates.map(v => v.toLowerCase()));
+      const myFamilies = expandSatisfiedTierFamilies(userCandidates.map(inferTierFamily).filter(Boolean));
+      if ((myFamilies.size > 0 || myExactIds.size > 0) && recognizedSpecs.length > 0) {
+        const hit = specs.some(sp => myExactIds.has(sp.rawLower) || (sp.family && myFamilies.has(sp.family)));
+        if (!hit) {
+          const uniqueLabels = [...new Set(specs.map(sp => sp.label).filter(Boolean))];
+          tierBlocked = true;
+          tierReason = `仅限 ${uniqueLabels.join(' / ')} 套餐可用`;
+        }
+      }
+    }
+
+    const explicitlyDisabled = Boolean(serverExplicitlyDisabled || tierBlocked);
+
+    const safeUnavailReason = (typeof config.unavailabilityReason === 'string' && config.unavailabilityReason.trim() && !DECORATIVE_MODEL_TAG_RE.test(config.unavailabilityReason.trim()))
+      ? config.unavailabilityReason.trim()
+      : null;
+    const safeTagDesc = (tagDesc && !DECORATIVE_MODEL_TAG_RE.test(tagDesc)) ? tagDesc : null;
+    const safeTagTitle = (isTagUnavailable && tagTitle && !isDecorativeBadgeTag) ? tagTitle : null;
+
+    const rawConfigNotice = typeof config.notice === 'string' ? config.notice.trim() : '';
+    const hasConfigNotice = Boolean(rawConfigNotice && !DECORATIVE_MODEL_TAG_RE.test(rawConfigNotice) && !explicitlyDisabled);
     const noticeText = isTagNotice
-      ? (tagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
-      : (hasConfigNotice ? config.notice.trim() : null);
+      ? (safeTagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
+      : (hasConfigNotice ? rawConfigNotice : null);
 
     return {
       noPermission: explicitlyDisabled,
       unavailable: explicitlyDisabled,
-      reason: explicitlyDisabled ? (config.unavailabilityReason || tagDesc || tagTitle || tierReason || '当前套餐无权访问该模型') : null,
+      reason: explicitlyDisabled ? (safeUnavailReason || safeTagDesc || tierReason || safeTagTitle || '当前套餐无权访问该模型') : null,
       noticeTitle: (noticeText && (isTagNotice || hasConfigNotice)) ? (tagTitle || 'Notice') : null,
       noticeText: noticeText || null
     };
   }
 
-  function resolveModelQuota(modelIdOrName, cascadeModelConfigs) {
+  function resolveModelQuota(modelIdOrName, cascadeModelConfigs, planStatus = null) {
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
     }
@@ -275,7 +385,7 @@
 
     if (!matched) return null;
 
-    const avail = classifyModelQuotaAvailability(matched);
+    const avail = classifyModelQuotaAvailability(matched, planStatus);
     const qi = matched.quotaInfo || {};
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
@@ -1595,6 +1705,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier: null,
         planName: '未知',
         email: null,
         region: '未知',
@@ -1615,6 +1726,7 @@
     const planStatus = us.planStatus || {};
     const planInfo = planStatus.planInfo || {};
     const email = us.email || null;
+    const teamsTier = planInfo.teamsTier || us.teamsTier || null;
     const rawTierName = String(userTier.name || planInfo.planName || '').trim();
 
     // 只有具备明确权益证据时才识别套餐，避免空对象或缺省状态被当成 Free
@@ -1631,6 +1743,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
+        teamsTier,
         planName: '未知',
         email,
         region: '未知',
@@ -1691,6 +1804,7 @@
       tierKey,
       tierName: tierDisplayName,
       tierId: userTier.id || null,
+      teamsTier,
       planName: planInfo.planName || tierDisplayName,
       email,
       region: '未知',
@@ -2677,7 +2791,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.5-1') {
+  function filterReleases(releasesList, currentVersion = '0.8.5-2') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {

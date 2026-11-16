@@ -1991,3 +1991,283 @@ test('上下文面板后台刷新与下拉展开不触发 scrollIntoView，scrol
     try { h.sandbox.__AGContextMeter.dispose(); } catch { }
   }
 });
+
+test('Google AI Ultra 套餐 allowedTiers 与 New 装饰标签端到端判定不误报无权限', () => {
+  const nowMs = Date.parse('2026-11-16T05:35:00Z');
+  const f5h = '2026-11-16T08:38:00Z';
+  const fWeek = '2026-11-23T03:38:00Z';
+
+  const rawConfigs = [
+    {
+      label: 'Gemini 4 Hydrogen (High)',
+      modelId: 'MODEL_PLACEHOLDER_M28',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' },
+      tagTitle: 'New',
+      allowedTiers: ['TEAMS_TIER_PRO'],
+      quotaInfo: { remainingFraction: 0.2, resetTime: f5h }
+    },
+    {
+      label: 'Gemini 4 Carbon (High)',
+      modelId: 'MODEL_PLACEHOLDER_M671',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M671' },
+      tagTitle: 'New',
+      allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'],
+      quotaInfo: {}
+    },
+    {
+      label: 'Orchestrator (Carbon)',
+      modelId: 'MODEL_PLACEHOLDER_M672',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M672' },
+      tagTitle: 'New',
+      allowedTiers: [{ id: 'g1-ultra-tier', name: 'Google AI Ultra' }],
+      quotaInfo: {}
+    },
+    {
+      label: 'Claude Opus 5.5 (High)',
+      modelId: 'MODEL_PLACEHOLDER_M41',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M41' },
+      tagTitle: 'New',
+      allowedTiers: [1, 2, 8],
+      quotaInfo: {}
+    }
+  ];
+
+  const sanitizedConfigs = rawConfigs.map(collector.sanitizeCascadeModelConfig).filter(Boolean);
+  for (const cfg of sanitizedConfigs) {
+    assert.equal(cfg.notice, null, `${cfg.label} 纯 New 装饰标签不得被 sanitize 成 notice`);
+    assert.equal(cfg.unavailabilityReason, null);
+  }
+
+  const userStatusRes = {
+    userStatus: {
+      email: 'ultra.user@example.com',
+      userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } },
+      cascadeModelConfigData: { clientModelConfigs: sanitizedConfigs }
+    }
+  };
+  const parsedPlan = core.parseUserPlanStatus(userStatusRes);
+  assert.equal(parsedPlan.tierKey, 'ultra');
+  assert.equal(parsedPlan.teamsTier, 'TEAMS_TIER_PRO');
+
+  const quotaSummaryRes = {
+    response: {
+      groups: [
+        {
+          groupId: 'gemini',
+          displayName: 'Gemini Models',
+          description: 'Models within this group: Gemini 4 Hydrogen, Gemini 4 Carbon, Orchestrator (Carbon)',
+          buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.85, resetTime: fWeek },
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.2, resetTime: f5h }
+          ]
+        },
+        {
+          groupId: '3p',
+          displayName: 'Claude and GPT models',
+          description: 'Models within this group: Claude Opus 5.5',
+          buckets: [
+            { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.9, resetTime: fWeek }
+          ]
+        }
+      ]
+    }
+  };
+
+  const snap = core.buildModelQuotaSnapshot({
+    userStatusRes,
+    quotaSummaryRes,
+    currentModel: 'MODEL_PLACEHOLDER_M28',
+    fetchMeta: { fetchedAtMs: nowMs },
+    nowMs
+  });
+
+  assert.equal(snap.activeStatus, 'low');
+  assert.equal(snap.badge.text, '20%');
+  assert.equal(snap.currentModel.noPermission, false);
+  assert.equal(snap.currentModel.unavailabilityReason, null);
+  assert.equal(snap.currentModel.noticeText, null);
+  for (const pool of snap.pools) {
+    assert.equal(pool.noPermission, false, `${pool.title} 在 Ultra 套餐下不应无权限`);
+    assert.equal(pool.unavailabilityReason, null);
+    for (const m of pool.models) {
+      assert.equal(m.noPermission, false, `${m.productLabel} 在 Ultra 套餐下不应无权限`);
+      assert.equal(m.noticeText, null);
+      assert.equal(m.unavailabilityReason, null);
+    }
+  }
+});
+
+test('Google AI Pro 访问 Ultra 专属 allowedTiers 时阻断并展示真实套餐名而非 New 或 [object Object]', () => {
+  const proPlan = core.parseUserPlanStatus({
+    userStatus: {
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      planStatus: { planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' } }
+    }
+  });
+
+  const availEnum = core.classifyModelQuotaAvailability({
+    label: 'Gemini 4 Carbon',
+    tagTitle: 'New',
+    allowedTiers: ['TEAMS_TIER_PRO_ULTIMATE'],
+    quotaInfo: {}
+  }, proPlan);
+  assert.equal(availEnum.noPermission, true);
+  assert.equal(availEnum.noticeText, null);
+  assert.ok(availEnum.reason.includes('TEAMS_TIER_PRO_ULTIMATE'));
+  assert.equal(availEnum.reason, '仅限 TEAMS_TIER_PRO_ULTIMATE 套餐可用');
+
+  const availObj = core.classifyModelQuotaAvailability({
+    label: 'Orchestrator (Carbon)',
+    tagTitle: 'New',
+    allowedTiers: [{ id: 'g1-ultra-tier', name: 'Google AI Ultra' }],
+    quotaInfo: {}
+  }, proPlan);
+  assert.equal(availObj.noPermission, true);
+  assert.equal(availObj.noticeText, null);
+  assert.ok(availObj.reason.includes('Google AI Ultra'));
+  assert.equal(availObj.reason.includes('[object Object]'), false);
+  assert.notEqual(availObj.reason, 'New');
+});
+
+test('渲染层热加载兼容：旧主进程预置 Ultra 无权限快照在携带 cascadeModelConfigs 时自动纠偏为 20%', async () => {
+  const nowMs = Date.now();
+  const f5h = new Date(nowMs + 3 * 3600000).toISOString();
+  const fWeek = new Date(nowMs + 6 * 86400000).toISOString();
+  const f5hText = core.formatQuotaResetMeta(f5h, nowMs).resetTimeText;
+  const fWeekText = core.formatQuotaResetMeta(fWeek, nowMs).resetTimeText;
+
+  const sanitizedConfigs = [
+    {
+      label: 'Gemini 4 Hydrogen (High)',
+      modelId: 'MODEL_PLACEHOLDER_M28',
+      modelOrAlias: { model: 'MODEL_PLACEHOLDER_M28' },
+      tagTitle: 'New',
+      allowedTiers: ['TEAMS_TIER_PRO'],
+      quotaInfo: { remainingFraction: 0.2, resetTime: f5h }
+    }
+  ].map(collector.sanitizeCascadeModelConfig);
+
+  const legacyPoisonedSnapshot = {
+    schemaVersion: 1,
+    syncState: 'fresh',
+    fetchedAtMs: nowMs,
+    staleThresholdMs: 180000,
+    lastError: null,
+    errorKind: null,
+    activeStatus: 'no_permission',
+    activeStatusLabel: '权限不足',
+    badge: { text: '无权限', tag: '', fraction: null, status: 'no_permission', statusLabel: '权限不足' },
+    activeReset: { hasResetTime: false, resetTimeText: null, countdownText: null, isResetPassed: false },
+    browsePoolKey: 'shared_gemini_main',
+    planTierName: 'Google AI Ultra（子档未知）',
+    currentModel: {
+      productKey: 'google:gemini4hydrogen',
+      productLabel: 'Gemini 4 Hydrogen',
+      poolKey: 'shared_gemini_main',
+      poolTitle: 'Gemini Models',
+      noPermission: true,
+      unavailabilityReason: 'New',
+      noticeText: null
+    },
+    pools: [
+      {
+        poolKey: 'shared_gemini_main',
+        title: 'Gemini Models',
+        sourceType: 'quota_summary_and_configs',
+        buckets: [
+          {
+            bucketId: 'gemini-weekly',
+            windowKey: 'weekly',
+            windowShort: '7d',
+            windowLabel: '每周限额',
+            remainingFraction: 0.85,
+            percentText: '85%',
+            isExhausted: false,
+            hasResetTime: true,
+            resetTimeIso: fWeek,
+            resetAtMs: Date.parse(fWeek),
+            resetTimeText: fWeekText,
+            countdownText: '6天0小时',
+            isResetPassed: false
+          },
+          {
+            bucketId: 'gemini-5h',
+            windowKey: '5h',
+            windowShort: '5h',
+            windowLabel: '5小时限额',
+            remainingFraction: 0.2,
+            percentText: '20%',
+            isExhausted: false,
+            hasResetTime: true,
+            resetTimeIso: f5h,
+            resetAtMs: Date.parse(f5h),
+            resetTimeText: f5hText,
+            countdownText: '3小时0分',
+            isResetPassed: false
+          }
+        ],
+        models: [
+          {
+            productKey: 'google:gemini4hydrogen',
+            productLabel: 'Gemini 4 Hydrogen',
+            vendor: 'Google',
+            efforts: ['High'],
+            modelIds: ['MODEL_PLACEHOLDER_M28'],
+            aliases: ['MODEL_PLACEHOLDER_M28'],
+            noPermission: true,
+            unavailabilityReason: 'New',
+            noticeTitle: null,
+            noticeText: null,
+            remainingFraction: null,
+            percentText: '无权限',
+            isExhausted: false
+          }
+        ],
+        status: 'no_permission',
+        statusLabel: '权限不足',
+        primaryBucket: null,
+        remainingFraction: null,
+        percentText: '无权限',
+        isExhausted: false,
+        noPermission: true,
+        unavailabilityReason: 'New',
+        hasResetTime: false
+      }
+    ]
+  };
+
+  const h = createQuotaRendererHarness();
+  try {
+    const api = h.sandbox.__AGContextMeter;
+    api.setContextLatestForTest(
+      { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 21000, budget: 1000000 },
+      sanitizedConfigs
+    );
+    api.showQuotaPanelForTest(true);
+    assert.ok(h.quotaRequests.length > 0);
+    for (const req of h.quotaRequests) {
+      req.resolve({
+        ok: true,
+        data: {
+          ok: true,
+          accountScopeKey: 'acct_ultra_legacy',
+          fetchedAtMs: nowMs,
+          lastSuccessAtMs: nowMs,
+          snapshot: legacyPoisonedSnapshot,
+          cascadeModelConfigs: sanitizedConfigs
+        }
+      });
+    }
+    await h.flush();
+
+    assert.equal(h.elements.get('quota-badge-val').textContent, '20%');
+    assert.equal(h.elements.get('badge-quota').getAttribute('data-quota-state'), 'low');
+    assert.equal(h.elements.get('quota-cur-alert').hidden, true);
+    const view = api.getModelQuotaStateForTest(nowMs).view;
+    assert.equal(view.pools[0].noPermission, false);
+    assert.equal(view.pools[0].percentText, '20%');
+  } finally {
+    try { h.sandbox.__AGContextMeter.dispose(); } catch { }
+  }
+});

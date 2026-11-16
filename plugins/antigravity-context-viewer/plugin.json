@@ -2,7 +2,7 @@
   "name": "antigravity-context-viewer",
   "displayName": "Context Viewer",
   "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, cost analytics & native Sidecar CDP auto-loader without app.asar patching.",
-  "version": "0.8.5-1",
+  "version": "0.8.5-2",
   "logo": "assets/logo.svg",
   "author": {
     "name": "xinghaix (upstream: elviscjn-cjn)",

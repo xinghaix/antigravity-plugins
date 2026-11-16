@@ -1,5 +1,5 @@
 (function () {
-  const METER_VERSION = '0.8.5-1';
+  const METER_VERSION = '0.8.5-2';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
@@ -1974,7 +1974,7 @@
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-      <span id="v">v0.8.5-1</span>
+      <span id="v">v0.8.5-2</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -3967,7 +3967,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.5-1</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.5-2</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -12699,6 +12699,8 @@ function closeAllDropdowns(exceptWrap = null) {
     };
 
     if (Array.isArray(configs)) {
+      const DECORATIVE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|最新|预览|預覽|推荐|推薦)$/i;
+      const stripDecorativeTag = v => (typeof v === 'string' && v.trim() && !DECORATIVE_TAG_RE.test(v.trim()) ? v.trim() : null);
       for (const c of configs) {
         const stableId = resolveStableModelKeyClient(c) || c?.modelId || c?.modelOrAlias?.model;
         ensureProduct({
@@ -12714,8 +12716,8 @@ function closeAllDropdowns(exceptWrap = null) {
           supportsModelInfoOverride: c?.supportsModelInfoOverride,
           capabilitySource: c?.capabilitySource,
           unavailable: Boolean(c?.unavailable || c?.disabled),
-          unavailabilityReason: c?.unavailabilityReason || c?.tagDescription || null,
-          notice: c?.notice,
+          unavailabilityReason: stripDecorativeTag(c?.unavailabilityReason) || stripDecorativeTag(c?.tagDescription) || null,
+          notice: typeof c?.notice === 'string' ? stripDecorativeTag(c.notice) : c?.notice,
           isHistorical: c?.isHistorical
         }, true);
       }
@@ -19128,7 +19130,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
@@ -19239,7 +19241,7 @@ function closeAllDropdowns(exceptWrap = null) {
         throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-1';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl) vEl.textContent = `v${nextVer}`;
@@ -21144,6 +21146,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     accountScopeKey: null,
     snapshot: null,
     rawInput: null,
+    cascadeModelConfigs: null,
     browsePoolKey: null,
     busy: false,
     lastFetchedAtMs: null,
@@ -21463,6 +21466,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     quotaBadgeLastHasFraction = false;
     quotaState.snapshot = null;
     quotaState.rawInput = null;
+    quotaState.cascadeModelConfigs = null;
     quotaState.browsePoolKey = null;
     quotaState.busy = false;
     quotaState.lastFetchedAtMs = null;
@@ -21699,6 +21703,33 @@ function renderHeatmapGrid(forceRebuild = false) {
       };
     }
 
+    const cfgCatalog = Array.isArray(quotaState.cascadeModelConfigs) && quotaState.cascadeModelConfigs.length > 0
+      ? quotaState.cascadeModelConfigs
+      : (Array.isArray(state.cascadeModelConfigs) ? state.cascadeModelConfigs : []);
+    const inferTierKeyFromLabel = name => {
+      const s = typeof name === 'string' ? name.toLowerCase() : '';
+      if (!s) return null;
+      if (/ultra/.test(s)) return 'ultra';
+      if (/enterprise|hybrid/.test(s)) return 'enterprise';
+      if (/\bteams\b/.test(s)) return 'teams';
+      if (/\bpro\b/.test(s)) return 'pro';
+      if (/\bplus\b/.test(s)) return 'plus';
+      if (/\bfree\b/.test(s)) return 'free';
+      return null;
+    };
+    const rawPlan = ANTIGRAVITY_TOKEN_DATA.planStatus;
+    const hasPlanStatus = Boolean(
+      rawPlan && (
+        rawPlan.tierId ||
+        rawPlan.teamsTier ||
+        (rawPlan.tierKey && rawPlan.tierKey !== 'unknown') ||
+        (rawPlan.tierName && rawPlan.tierName !== '未知')
+      )
+    );
+    const effectivePlan = hasPlanStatus
+      ? rawPlan
+      : (base.planTierName ? { tierKey: inferTierKeyFromLabel(base.planTierName), tierName: base.planTierName } : null);
+
     const updatedPools = (base.pools || []).map(p => {
       const nextBuckets = (p.buckets || []).map(b => {
         if (!b.resetTimeIso || !core?.formatQuotaResetMeta) return { ...b };
@@ -21714,8 +21745,105 @@ function renderHeatmapGrid(forceRebuild = false) {
       });
       const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
       const pb = priced[0] || nextBuckets[0] || p.primaryBucket || null;
+
+      let nextModels = Array.isArray(p.models) ? p.models : [];
+      let nextNoPerm = Boolean(p.noPermission);
+      let nextReason = p.unavailabilityReason || null;
+      let nextRem = p.remainingFraction;
+      let nextPct = p.percentText;
+      let nextExh = Boolean(p.isExhausted);
+      let nextStatus = p.status;
+      let nextStatusLabel = p.statusLabel;
+
+      if (cfgCatalog.length > 0 && core?.classifyModelQuotaAvailability && nextModels.some(m => m?.noPermission)) {
+        nextModels = nextModels.map(m => {
+          if (!m?.noPermission) return m;
+          const mIds = new Set(
+            [...(m.modelIds || []), ...(m.aliases || [])]
+              .map(x => String(x || '').trim().toLowerCase())
+              .filter(Boolean)
+              .flatMap(x => [x, x.replace(/^model_/, '')])
+          );
+          const matchedConfigs = cfgCatalog.filter(c => {
+            if (!c || typeof c !== 'object') return false;
+            const cIds = [c.modelId, c.model, c.modelOrAlias?.model, c.modelOrAlias?.alias]
+              .map(x => String(x || '').trim().toLowerCase())
+              .filter(Boolean);
+            if (cIds.some(id => mIds.has(id) || mIds.has(id.replace(/^model_/, '')))) return true;
+            if (m.productKey && core.groupModelProduct?.(c)?.productKey === m.productKey) return true;
+            return false;
+          });
+          if (!matchedConfigs.length) return m;
+          const okEntries = matchedConfigs
+            .map(cfg => ({ cfg, avail: core.classifyModelQuotaAvailability(cfg, effectivePlan) }))
+            .filter(entry => !entry.avail.noPermission);
+          if (!okEntries.length) return m;
+
+          let minFrac = null;
+          let minExh = false;
+          if (core.parseQuotaFraction) {
+            for (const entry of okEntries) {
+              const pf = core.parseQuotaFraction(entry.cfg.quotaInfo || {}, { unavailable: false, schemaKind: 'codeium_quota_info' });
+              if (pf.hasValue && (minFrac === null || pf.fraction < minFrac)) {
+                minFrac = pf.fraction;
+                minExh = pf.isExhausted;
+              }
+            }
+          }
+          const resolvedFrac = minFrac !== null ? minFrac : (m.remainingFraction ?? pb?.remainingFraction ?? null);
+          const noticeEntry = okEntries.find(entry => entry.avail.noticeText);
+          return {
+            ...m,
+            noPermission: false,
+            unavailabilityReason: null,
+            noticeTitle: noticeEntry ? noticeEntry.avail.noticeTitle : null,
+            noticeText: noticeEntry ? noticeEntry.avail.noticeText : null,
+            remainingFraction: resolvedFrac,
+            isExhausted: minFrac !== null ? minExh : (resolvedFrac === 0),
+            percentText: core.formatQuotaPercentText ? core.formatQuotaPercentText(resolvedFrac) : (resolvedFrac != null ? `${Math.round(resolvedFrac * 100)}%` : '未知')
+          };
+        });
+
+        if (nextNoPerm && nextModels.some(m => !m.noPermission)) {
+          nextNoPerm = false;
+          nextReason = null;
+          if (priced.length > 0) {
+            const best = priced[0];
+            nextRem = best.remainingFraction;
+            nextPct = core.formatQuotaPercentText ? core.formatQuotaPercentText(best.remainingFraction) : best.percentText;
+            nextExh = Boolean(best.isExhausted || best.remainingFraction === 0);
+          } else {
+            const availFracs = nextModels.filter(m => !m.noPermission && m.remainingFraction !== null).map(m => m.remainingFraction);
+            nextRem = availFracs.length > 0 ? Math.min(...availFracs) : null;
+            nextPct = core.formatQuotaPercentText ? core.formatQuotaPercentText(nextRem) : (nextRem != null ? `${Math.round(nextRem * 100)}%` : '未知');
+            nextExh = nextRem === 0;
+          }
+          if (nextRem === null) {
+            nextStatus = 'unknown';
+            nextStatusLabel = '未知';
+          } else if (nextExh || nextRem === 0) {
+            nextStatus = 'exhausted';
+            nextStatusLabel = '额度耗尽';
+          } else if (nextRem <= 0.2) {
+            nextStatus = 'low';
+            nextStatusLabel = '余量较低';
+          } else {
+            nextStatus = 'available';
+            nextStatusLabel = '正常可用';
+          }
+        }
+      }
+
       return {
         ...p,
+        models: nextModels,
+        noPermission: nextNoPerm,
+        unavailabilityReason: nextReason,
+        remainingFraction: nextRem,
+        percentText: nextPct,
+        isExhausted: nextExh,
+        status: nextStatus,
+        statusLabel: nextStatusLabel,
         buckets: nextBuckets,
         primaryBucket: pb,
         hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
@@ -22649,6 +22777,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           clearQuotaBarChargeAnimations();
           quotaState.snapshot = null;
           quotaState.rawInput = null;
+          quotaState.cascadeModelConfigs = null;
           quotaState.browsePoolKey = null;
           quotaState.lastResetRequeryKey = null;
           quotaLastEstComputeSig = '';
@@ -22659,6 +22788,9 @@ function renderHeatmapGrid(forceRebuild = false) {
         if (payload.ok !== false) {
           quotaState.snapshot = payload.snapshot || null;
           quotaState.rawInput = null;
+          quotaState.cascadeModelConfigs = Array.isArray(payload.cascadeModelConfigs)
+            ? payload.cascadeModelConfigs
+            : quotaState.cascadeModelConfigs;
           quotaState.lastSuccessAtMs = payload.lastSuccessAtMs || payload.fetchedAtMs || nowMs;
           quotaState.error = null;
           quotaState.errorKind = null;
@@ -22805,7 +22937,7 @@ function renderHeatmapGrid(forceRebuild = false) {
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch {}
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-1',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-2',
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -22997,6 +23129,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       } else if (payload.snapshot !== undefined) {
         quotaState.snapshot = payload.snapshot;
         quotaState.rawInput = null;
+        quotaState.cascadeModelConfigs = null;
         if (!payload.error && payload.lastSuccessAtMs === undefined && payload.snapshot?.fetchedAtMs) {
           quotaState.lastSuccessAtMs = payload.snapshot.fetchedAtMs;
         }
