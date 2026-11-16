@@ -2,16 +2,17 @@
 // Preserve Electron ASAR support in the host process.
 // Context Meter Preload API Exposure Contract:
 // recordCalls: (calls) => electron_1.ipcRenderer.invoke("context-meter:record-calls", calls)
-// getContextUnlockStatus: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status")
-// applyContextUnlock: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply")
-// restoreContextUnlock: () => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore")
+// getContextUnlockStatus: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-status", opts)
+// applyContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-apply", opts)
+// restoreContextUnlock: (opts) => electron_1.ipcRenderer.invoke("context-meter:context-unlock-restore", opts)
+// restartHost: () => electron_1.ipcRenderer.invoke("context-meter:restart-host")
 // additions: 'asar-engine.js', 'local-api.js', 'meter-context-unlock.js'
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { loadAsarEngine, builtinAsar, getStateDir, findAsarPath } = require('./asar-engine');
+const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, findAsarPath } = require('./asar-engine');
 const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
 const {
   TAGS,
@@ -90,14 +91,22 @@ function getChineseLiveScript() {
   try {
     const dictStat = fs.statSync(assets.dictPath);
     const rtStat = fs.statSync(assets.runtimePath);
-    const key = `${assets.dictPath}:${dictStat.size}:${Math.trunc(dictStat.mtimeMs)}|${assets.runtimePath}:${rtStat.size}:${Math.trunc(rtStat.mtimeMs)}`;
+    let brandTitle = 'english';
+    try {
+      brandTitle = loadModulesConfig()?.modules?.chinese?.brandTitle || 'english';
+    } catch {}
+    const key = `${assets.dictPath}:${dictStat.size}:${Math.trunc(dictStat.mtimeMs)}|${assets.runtimePath}:${rtStat.size}:${Math.trunc(rtStat.mtimeMs)}|${brandTitle}`;
     if (cachedChineseLive.key === key && cachedChineseLive.script) {
       return cachedChineseLive.script;
     }
     const dictContent = fs.readFileSync(assets.dictPath, 'utf8');
     const runtimeContent = fs.readFileSync(assets.runtimePath, 'utf8');
+    const cfgObj = { enabled: true, language: 'zh-CN', brandTitle };
     const script = `(function() {
   try {
+    var _cfg = ${JSON.stringify(cfgObj)};
+    if (typeof window !== 'undefined') window.__AGY_I18N_CONFIG__ = _cfg;
+    if (typeof globalThis !== 'undefined') globalThis.__AGY_I18N_CONFIG__ = _cfg;
     if (typeof window !== 'undefined' && window.__AGY_TRANSLATE_EL__ && window.__AGY_I18N_DATA__) {
       if (typeof window.__AGY_RUN_FULL_SCAN__ === 'function') window.__AGY_RUN_FULL_SCAN__();
       return true;
@@ -230,6 +239,16 @@ async function tryHotInject(options = {}) {
 }
 
 async function install(options = {}) {
+  if (options && typeof options === 'object') {
+    if (options.path === undefined) {
+      const misnamedKey = ['asarPath', 'targetPath', 'target', 'file', 'asar'].find(k => options[k] !== undefined);
+      if (misnamedKey) {
+        throw new Error(`无效的安装选项字段 "${misnamedKey}"：请使用 { path: "<app.asar>" } 指定安装目标，已拒绝回落至默认宿主路径。`);
+      }
+    } else if (options.path !== null && (typeof options.path !== 'string' || !options.path.trim())) {
+      throw new Error('安装选项 path 必须为非空字符串。');
+    }
+  }
   const customPathIdx = process.argv.indexOf('--path');
   const customPath = options.path || (customPathIdx >= 0 ? process.argv[customPathIdx + 1] : null);
   const customBackupIdx = process.argv.indexOf('--backup');
@@ -379,11 +398,22 @@ async function install(options = {}) {
     const modulesConfig = loadModulesConfig();
     if (options.modules) {
       if (options.modules.meter) Object.assign(modulesConfig.modules.meter, options.modules.meter);
-      if (options.modules.chinese) Object.assign(modulesConfig.modules.chinese, options.modules.chinese);
+      if (options.modules.chinese) {
+        Object.assign(modulesConfig.modules.chinese, options.modules.chinese);
+        if (options.modules.chinese.language === undefined && typeof options.modules.chinese.enabled === 'boolean') {
+          modulesConfig.modules.chinese.language = options.modules.chinese.enabled ? 'zh-CN' : 'en';
+        }
+      }
       if (options.modules.proxy) Object.assign(modulesConfig.modules.proxy, options.modules.proxy);
     }
-    if (process.argv.includes('--enable-chinese')) modulesConfig.modules.chinese.enabled = true;
-    if (process.argv.includes('--disable-chinese')) modulesConfig.modules.chinese.enabled = false;
+    if (process.argv.includes('--enable-chinese')) {
+      modulesConfig.modules.chinese.enabled = true;
+      modulesConfig.modules.chinese.language = 'zh-CN';
+    }
+    if (process.argv.includes('--disable-chinese')) {
+      modulesConfig.modules.chinese.enabled = false;
+      modulesConfig.modules.chinese.language = 'en';
+    }
     if (process.argv.includes('--enable-proxy')) modulesConfig.modules.proxy.enabled = true;
     if (process.argv.includes('--disable-proxy')) modulesConfig.modules.proxy.enabled = false;
     const proxyUrlIdx = process.argv.indexOf('--proxy-url');
@@ -403,12 +433,23 @@ async function install(options = {}) {
     const snapshotFile = path.join(snapshotDir, `app-${version}-preinstall-${stamp}-${currentInstalledSha.slice(0, 8)}.asar`);
     fs.copyFileSync(installed, snapshotFile);
 
-    // 5. 建立长期官方原版备份（基于当前目标路径与宿主版本严格物理隔离）
+    // 5. 建立长期官方原版备份（基于当前目标路径与宿主版本严格物理隔离，若旧备份已损坏则从安全基线重建）
     const targetKey = crypto.createHash('sha256').update(path.resolve(installed)).digest('hex').slice(0, 8);
     const backup = path.join(backupDir, `app-${version}-${targetKey}-base.asar`);
 
-    if (!fs.existsSync(backup)) {
-      if (sourceArchive !== installed) {
+    const isReadableAsar = (filePath) => {
+      try {
+        if (!filePath || !fs.existsSync(filePath)) return false;
+        const pkgBuf = extractAsarFile(filePath, 'package.json');
+        const pkg = JSON.parse(pkgBuf.toString('utf8'));
+        return Boolean(pkg && pkg.name);
+      } catch {
+        return false;
+      }
+    };
+
+    if (!isReadableAsar(backup)) {
+      if (sourceArchive !== installed && isReadableAsar(sourceArchive)) {
         fs.copyFileSync(sourceArchive, backup);
       } else if (!extractAsarFile(sourceArchive, 'dist/utils.js').toString('utf8').includes('installContextMeter')) {
         fs.copyFileSync(sourceArchive, backup);
@@ -471,10 +512,31 @@ async function install(options = {}) {
       // 模块 C: Chinese (桌面端界面汉化组件注入)
       const shouldInjectChinese = !isPureMeterOnly && (modulesConfig.modules.chinese.enabled || options.injectChinese !== false);
       if (shouldInjectChinese) {
-        const assets = resolveChineseAssetPaths();
-        if (assets) {
-          const dictContent = fs.readFileSync(assets.dictPath, 'utf8');
-          const runtimeContent = fs.readFileSync(assets.runtimePath, 'utf8');
+        const homeDir = os.homedir();
+        const localAppDir = process.platform === 'win32'
+          ? (process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local'))
+          : (process.platform === 'darwin'
+            ? path.join(homeDir, 'Library', 'Application Support')
+            : path.join(homeDir, '.local', 'state'));
+        const dictCandidates = [
+          path.join(__dirname, 'i18n', 'zh-CN.json'),
+          path.join(__dirname, 'src', 'i18n', 'zh-CN.json'),
+          path.join(__dirname, 'dist', 'i18n', 'zh-CN.json'),
+          path.join(__dirname, '..', 'i18n', 'zh-CN.json'),
+          path.join(localAppDir, 'AntigravityContextMeter', 'i18n', 'zh-CN.json')
+        ];
+        const runtimeCandidates = [
+          path.join(__dirname, 'i18n', 'i18n-runtime.js'),
+          path.join(__dirname, 'src', 'i18n', 'i18n-runtime.js'),
+          path.join(__dirname, 'dist', 'i18n', 'i18n-runtime.js'),
+          path.join(__dirname, '..', 'i18n', 'i18n-runtime.js'),
+          path.join(localAppDir, 'AntigravityContextMeter', 'i18n', 'i18n-runtime.js')
+        ];
+        const dictP = dictCandidates.find(p => fs.existsSync(p));
+        const rtP = runtimeCandidates.find(p => fs.existsSync(p));
+        if (dictP && rtP) {
+          const dictContent = fs.readFileSync(dictP, 'utf8');
+          const runtimeContent = fs.readFileSync(rtP, 'utf8');
           finalPreload += generateChinesePreloadCode(dictContent, runtimeContent);
         } else {
           throw new Error('未找到客户端汉化字典 (zh-CN.json) 或运行时脚本 (i18n-runtime.js)，拒绝在缺少必要资源时完成安装。');
@@ -507,6 +569,7 @@ async function install(options = {}) {
         'meter-proxy.js',
         'meter-cli-launcher.js',
         'meter-context-unlock.js',
+        'meter-enhance.js',
         'local-api.js',
         'attachment_scan.py'
       ];
@@ -534,13 +597,9 @@ async function install(options = {}) {
       }
 
       const originalEntries = asar.listPackage(sourceArchive);
-      const hasUnpacked = originalEntries.some(file => {
-        const s = asar.statFile(sourceArchive, file.slice(1));
-        return s && s.unpacked;
-      });
-
-      if (hasUnpacked) {
-        await builtinAsar.createPackageWithOptions(staging, packed, { unpackDir: '**/chrome-devtools-mcp' });
+      const unpackedPaths = collectUnpackedPaths(asar, sourceArchive);
+      if (unpackedPaths.size > 0) {
+        await builtinAsar.createPackageWithOptions(staging, packed, { unpackedPaths });
       } else {
         await builtinAsar.createPackageWithOptions(staging, packed, {});
       }
@@ -571,11 +630,11 @@ async function install(options = {}) {
         ? previousManifest.previousInstalledBackup
         : path.join(backupDir, `pre-meter-${version}-${targetKey}.asar`);
 
-      if (fs.existsSync(backup) && !fs.existsSync(previousInstalledBackup)) {
+      if (isReadableAsar(backup) && !isReadableAsar(previousInstalledBackup)) {
         try { fs.copyFileSync(backup, previousInstalledBackup); } catch {}
       }
-      const previousInstalledSha256 = fs.existsSync(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
-      const origSha = fs.existsSync(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
+      const previousInstalledSha256 = isReadableAsar(previousInstalledBackup) ? sha(fs.readFileSync(previousInstalledBackup)) : null;
+      const origSha = isReadableAsar(backup) ? sha(fs.readFileSync(backup)) : (previousInstalledSha256 || previousManifest?.originalSha256);
 
       const { PROJECT_VERSION } = require('./modules-config');
       const pkgVersion = PROJECT_VERSION;
@@ -584,6 +643,8 @@ async function install(options = {}) {
         meterVersion: pkgVersion,
         version,
         installed,
+        installerDir: __dirname,
+        cliPath: path.join(__dirname, 'cli.js'),
         backup,
         previousInstalledBackup,
         previousInstalledSha256,
@@ -640,7 +701,7 @@ async function install(options = {}) {
         if (extractedLauncher.includes("spawnSync('powershell.exe'") || extractedLauncher.includes('timeout: 8000')) {
           throw new Error('ASAR 内仍然残留旧版同步 PowerShell 启动逻辑，拒绝完成安装！');
         }
-        if (!extractedLauncher.includes('0.8.2-helper-v2')) {
+        if (!extractedLauncher.includes('0.8.4-helper-v2')) {
           throw new Error('ASAR 内未包含最新的 LAUNCHER_VERSION 标识，拒绝完成安装！');
         }
 

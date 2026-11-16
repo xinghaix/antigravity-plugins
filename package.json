@@ -1,6 +1,6 @@
 {
   "name": "antigravity-plugins",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Curated monorepo of native Google Antigravity plugins (MCP Manager, Mattpocock Skills, Sidecar UI extensions & agent workflows).",
   "type": "module",
   "bin": {

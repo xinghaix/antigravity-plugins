@@ -14,9 +14,11 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { getStateDir } = require('./asar-engine');
+const { safeWriteJsonSync } = require('./meter-storage');
+const { parseAndValidateProxyUrl } = require('./meter-proxy');
 
-const SCHEMA_VERSION = '0.8.2';
-const PROJECT_VERSION = '0.8.2';
+const SCHEMA_VERSION = '0.8.5';
+const PROJECT_VERSION = '0.8.5-1';
 
 const DEFAULT_CONFIG = {
   schemaVersion: SCHEMA_VERSION,
@@ -26,6 +28,8 @@ const DEFAULT_CONFIG = {
     },
     chinese: {
       enabled: false,
+      language: 'en', // 'zh-CN' | 'en'（zh-TW 因上游词典缺少开源授权暂不内置）
+      brandTitle: 'english', // 'english' | 'hidden' | 'translated'
       desktopOnly: true,
       lastUpdated: null
     },
@@ -34,28 +38,59 @@ const DEFAULT_CONFIG = {
       proxyUrl: 'http://127.0.0.1:7897',
       bypassList: 'localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,<local>',
       lastTestedAt: null
+    },
+    enhance: {
+      promptTier: null,
+      chineseTitle: null,
+      lastAppliedAt: null,
+      targetBuilds: {}
     }
   }
 };
 
-function getModulesConfigPath() {
-  return path.join(getStateDir(), 'modules.json');
+function normalizeBrandTitle(val) {
+  const s = String(val || '').trim().toLowerCase();
+  if (s === 'hidden' || s === 'hide' || s === 'off' || s === 'none') return 'hidden';
+  if (s === 'translated' || s === 'zh' || s === 'cn' || s === 'fanzhongli' || s === 'anti-gravity') return 'translated';
+  return 'english';
+}
+
+function normalizeClientLanguage(val, enabledHint) {
+  const s = String(val || '').trim().toLowerCase();
+  if (s === 'zh-cn' || s === 'zh' || s === 'zh-hans' || s === 'cn') return 'zh-CN';
+  if (s === 'en' || s === 'english' || s === 'en-us') return 'en';
+  if (enabledHint === true) return 'zh-CN';
+  return 'en';
+}
+
+function resolveModulesStateDir(options = {}) {
+  if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
+    return path.resolve(options.stateDir.trim());
+  }
+  return getStateDir();
+}
+
+function getModulesConfigPath(options = {}) {
+  return path.join(resolveModulesStateDir(options), 'modules.json');
 }
 
 /**
  * 迁移旧独立版配置（识别已有独立版的机器状态，避免静默改变用户偏好）
  */
-function detectAndMigrateLegacyConfigs() {
+function detectAndMigrateLegacyConfigs(options = {}) {
   const migrations = [];
-  const home = os.homedir();
-  const localApp = process.platform === 'win32'
-    ? (process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'))
-    : path.join(home, '.local', 'state');
+  const home = options.homeDir || os.homedir();
+  const platform = options.platform || process.platform;
+  const localApp = options.localAppData || process.env.LOCALAPPDATA || process.env.XDG_STATE_HOME || (platform === 'win32'
+    ? path.join(home, 'AppData', 'Local')
+    : platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : path.join(home, '.local', 'state'));
 
   // 1. 检查独立版 AntigravityProxyNoTun 配置
   const legacyProxyPaths = [
     path.join(localApp, 'AntigravityProxyNoTun', 'config.json'),
-    path.join(getStateDir(), 'proxy.json')
+    path.join(resolveModulesStateDir(options), 'proxy.json')
   ];
   let legacyProxyFound = null;
   for (const lp of legacyProxyPaths) {
@@ -97,27 +132,99 @@ function detectAndMigrateLegacyConfigs() {
   };
 }
 
+function isPlainObject(val) {
+  return Boolean(val && typeof val === 'object' && !Array.isArray(val));
+}
+
+function validateModulesSchema(parsed) {
+  if (!isPlainObject(parsed)) return { ok: false, error: '配置文件根节点必须是 JSON 对象' };
+  if (!isPlainObject(parsed.modules)) return { ok: false, error: '配置文件缺少有效的 modules 对象' };
+  const mods = parsed.modules;
+  for (const key of ['meter', 'chinese', 'proxy', 'enhance']) {
+    if (mods[key] !== undefined && !isPlainObject(mods[key])) {
+      return { ok: false, error: `配置文件中 modules.${key} 字段格式非法` };
+    }
+  }
+  if (mods.proxy) {
+    if (mods.proxy.enabled !== undefined && typeof mods.proxy.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.proxy.enabled 必须为布尔值' };
+    }
+    if (mods.proxy.proxyUrl !== undefined && mods.proxy.proxyUrl !== null && typeof mods.proxy.proxyUrl !== 'string') {
+      return { ok: false, error: '配置文件中 modules.proxy.proxyUrl 必须为字符串' };
+    }
+  }
+  if (mods.chinese) {
+    if (mods.chinese.enabled !== undefined && typeof mods.chinese.enabled !== 'boolean') {
+      return { ok: false, error: '配置文件中 modules.chinese.enabled 必须为布尔值' };
+    }
+    if (mods.chinese.language !== undefined && mods.chinese.language !== null && typeof mods.chinese.language !== 'string') {
+      return { ok: false, error: '配置文件中 modules.chinese.language 必须为字符串' };
+    }
+  }
+  return { ok: true };
+}
+
+function attachConfigCorruptionMeta(target, cfgPath, errorMsg) {
+  Object.defineProperties(target, {
+    __configCorrupted: { value: true, enumerable: false, configurable: true },
+    __configError: { value: errorMsg, enumerable: false, configurable: true },
+    __corruptedConfigPath: { value: cfgPath, enumerable: false, configurable: true }
+  });
+  return target;
+}
+
 /**
- * 读取统一模块配置，自动合并默认值与旧版迁移记录
+ * 读取统一模块配置；配置文件不存在时迁移旧版，已存在但损坏时 fail-closed 并保留损坏原件
  */
-function loadModulesConfig() {
-  const cfgPath = getModulesConfigPath();
-  let current = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+function loadModulesConfig(options = {}) {
+  const cfgPath = getModulesConfigPath(options);
+  const current = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
   if (fs.existsSync(cfgPath)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      if (parsed && parsed.modules) {
-        current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
-        current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
-        current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
-        return current;
+      const rawText = fs.readFileSync(cfgPath, 'utf8');
+      if (!rawText || !rawText.trim()) {
+        return attachConfigCorruptionMeta(current, cfgPath, '配置文件为空，已保持模块默认关闭状态并保留原文件');
       }
-    } catch {}
+      const parsed = JSON.parse(rawText);
+      const schemaCheck = validateModulesSchema(parsed);
+      if (!schemaCheck.ok) {
+        return attachConfigCorruptionMeta(
+          current,
+          cfgPath,
+          `${schemaCheck.error}，已保持模块默认关闭状态并保留原文件`
+        );
+      }
+
+      current.modules.meter = Object.assign({}, DEFAULT_CONFIG.modules.meter, parsed.modules.meter || {});
+      current.modules.chinese = Object.assign({}, DEFAULT_CONFIG.modules.chinese, parsed.modules.chinese || {});
+      current.modules.chinese.language = normalizeClientLanguage(
+        parsed.modules.chinese?.language,
+        current.modules.chinese.enabled === true
+      );
+      current.modules.chinese.brandTitle = normalizeBrandTitle(parsed.modules.chinese?.brandTitle);
+      current.modules.chinese.enabled = current.modules.chinese.language === 'zh-CN';
+      current.modules.proxy = Object.assign({}, DEFAULT_CONFIG.modules.proxy, parsed.modules.proxy || {});
+      current.modules.enhance = Object.assign(
+        {},
+        DEFAULT_CONFIG.modules.enhance,
+        parsed.modules.enhance || {},
+        {
+          targetBuilds: Object.assign({}, parsed.modules.enhance?.targetBuilds || {})
+        }
+      );
+      return current;
+    } catch (e) {
+      return attachConfigCorruptionMeta(
+        current,
+        cfgPath,
+        `配置文件解析失败 (${e?.message || 'JSON 语法错误'})，已保持模块默认关闭状态并保留原文件`
+      );
+    }
   }
 
-  // 若无统一配置，尝试识别旧独立版并平滑继承
-  const legacy = detectAndMigrateLegacyConfigs();
+  // 仅当统一配置尚不存在时，才尝试识别旧独立版并平滑继承
+  const legacy = detectAndMigrateLegacyConfigs(options);
   if (legacy.proxy) {
     current.modules.proxy.enabled = legacy.proxy.enabled;
     current.modules.proxy.proxyUrl = legacy.proxy.proxyUrl;
@@ -126,27 +233,131 @@ function loadModulesConfig() {
   }
   if (legacy.chinese && legacy.chinese.detected) {
     current.modules.chinese.enabled = true;
+    current.modules.chinese.language = 'zh-CN';
     current.modules.chinese.migratedFrom = legacy.chinese.source;
   }
 
-  saveModulesConfig(current);
+  saveModulesConfig(current, options);
   return current;
 }
 
 /**
- * 持久化保存统一配置
+ * 持久化保存统一配置（使用同目录临时文件 + 读回校验 + 原子替换，防止半写入文件；原文件已损坏时先留存 .corrupt.*.bak）
  */
-function saveModulesConfig(cfg) {
-  const cfgPath = getModulesConfigPath();
+function saveModulesConfig(cfg, options = {}) {
+  const cfgPath = getModulesConfigPath(options);
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+  if (fs.existsSync(cfgPath)) {
+    try {
+      const existingRaw = fs.readFileSync(cfgPath, 'utf8');
+      const parsed = existingRaw && existingRaw.trim() ? JSON.parse(existingRaw) : null;
+      if (!parsed || !validateModulesSchema(parsed).ok) {
+        const bakPath = `${cfgPath}.corrupt.${Date.now()}.bak`;
+        fs.copyFileSync(cfgPath, bakPath);
+      }
+    } catch {
+      try {
+        const bakPath = `${cfgPath}.corrupt.${Date.now()}.bak`;
+        fs.copyFileSync(cfgPath, bakPath);
+      } catch {}
+    }
+  }
+  const res = safeWriteJsonSync(cfgPath, cfg, {
+    validate: (data) => isPlainObject(data) && validateModulesSchema(data).ok
+  });
+  if (!res.ok) {
+    throw new Error(`保存模块配置失败 (${res.phase || 'write'}): ${res.error || '未知错误'}`);
+  }
+}
+
+/**
+ * 通过 SOCKS5 协议验证代理握手与到目标主机的隧道建立
+ */
+function testSocks5Proxy(host, port, targetHost = null, targetPort = 80, timeoutMs = 2500) {
+  const net = require('net');
+  return new Promise((resolve) => {
+    let settled = false;
+    const sock = net.createConnection({ host, port });
+    const done = (ok, detail = null) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch {}
+      resolve({ ok, detail });
+    };
+    const timer = setTimeout(() => done(false, 'timeout'), timeoutMs);
+    sock.setTimeout(timeoutMs, () => {
+      clearTimeout(timer);
+      done(false, 'timeout');
+    });
+    sock.on('error', (e) => {
+      clearTimeout(timer);
+      done(false, e?.code || e?.message || 'socket_error');
+    });
+
+    let stage = 'greeting';
+    let chunks = [];
+    sock.on('connect', () => {
+      // SOCKS5 greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
+      sock.write(Buffer.from([0x05, 0x01, 0x00]));
+    });
+    sock.on('data', (chunk) => {
+      chunks.push(chunk);
+      const buf = Buffer.concat(chunks);
+      if (stage === 'greeting') {
+        if (buf.length < 2) return;
+        if (buf[0] !== 0x05 || buf[1] === 0xff) {
+          clearTimeout(timer);
+          return done(false, 'socks5_greeting_rejected');
+        }
+        if (!targetHost) {
+          clearTimeout(timer);
+          return done(true, null);
+        }
+        chunks = [buf.subarray(2)];
+        stage = 'connect';
+        const hostBuf = Buffer.from(targetHost, 'utf8');
+        const req = Buffer.alloc(7 + hostBuf.length);
+        req[0] = 0x05; // VER
+        req[1] = 0x01; // CONNECT
+        req[2] = 0x00; // RSV
+        req[3] = 0x03; // DOMAINNAME
+        req[4] = hostBuf.length;
+        hostBuf.copy(req, 5);
+        req.writeUInt16BE(targetPort, 5 + hostBuf.length);
+        sock.write(req);
+        return;
+      }
+      if (stage === 'connect') {
+        if (buf.length < 4) return;
+        if (buf[0] === 0x05 && buf[1] === 0x00) {
+          stage = 'http';
+          chunks = [];
+          sock.write(
+            `GET /generate_204 HTTP/1.1\r\nHost: ${targetHost}\r\nConnection: close\r\n\r\n`
+          );
+          return;
+        }
+        clearTimeout(timer);
+        return done(false, `socks5_connect_err_${buf[1]}`);
+      }
+      if (stage === 'http') {
+        const text = buf.toString('latin1');
+        const m = text.match(/^HTTP\/\d\.\d\s+(\d{3})/);
+        if (m) {
+          const code = Number(m[1]);
+          clearTimeout(timer);
+          done(code >= 200 && code < 400, `http_${code}`);
+        }
+      }
+    });
+  });
 }
 
 /**
  * 分层检测代理配置健康状态
  * 分级：
  * 1. configValid: 配置格式合法
- * 2. proxyReachable: 本地代理服务端口 TCP 可达 / CONNECT 握手成功
+ * 2. proxyReachable: 本地代理服务端口 TCP/代理握手可达
  * 3. internetReachable: 实际外网/Google 连通
  * 4. modelCallVerified: 实际模型交互通过 (需真实模型会话，此项由真实请求证明)
  */
@@ -160,40 +371,48 @@ async function testProxyHealth(proxyUrlStr) {
     testedAt: new Date().toISOString()
   };
 
-  if (!proxyUrlStr || typeof proxyUrlStr !== 'string') {
-    report.error = '代理地址为空或格式无效';
+  const parsedCheck = parseAndValidateProxyUrl(proxyUrlStr);
+  if (!parsedCheck.ok) {
+    report.error = parsedCheck.error;
     return report;
   }
-
-  let u = null;
-  try {
-    u = new URL(proxyUrlStr);
-    if (!['http:', 'https:', 'socks5:'].includes(u.protocol)) {
-      report.error = `不支持的代理协议: ${u.protocol}`;
-      return report;
-    }
-    report.configValid = true;
-  } catch (e) {
-    report.error = `代理地址格式错误: ${e.message}`;
-    return report;
-  }
+  report.configValid = true;
+  const u = new URL(parsedCheck.value);
+  const isSocks = parsedCheck.isSocks;
+  const port = parsedCheck.port;
 
   // 阶段 2: 本地代理端口可达性检测
   try {
-    const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
-    const reachable = await new Promise(resolve => {
-      const req = http.request({
-        host: u.hostname,
-        port: port,
-        method: 'CONNECT',
-        path: 'www.google.com:443',
-        timeout: 2500
+    let reachable = false;
+    if (isSocks) {
+      const sRes = await testSocks5Proxy(u.hostname, port, null, 80, 2500);
+      reachable = sRes.ok;
+    } else {
+      reachable = await new Promise(resolve => {
+        let done = false;
+        const finish = (v) => { if (!done) { done = true; resolve(v); } };
+        const req = http.request({
+          host: u.hostname,
+          port: port,
+          method: 'CONNECT',
+          path: 'www.google.com:443',
+          timeout: 2500
+        });
+        req.on('connect', (_res, socket) => {
+          try { socket?.destroy(); } catch {}
+          req.destroy();
+          finish(true);
+        });
+        req.on('response', (res) => {
+          res.resume();
+          req.destroy();
+          finish(res.statusCode >= 200 && res.statusCode < 500);
+        });
+        req.on('error', () => { req.destroy(); finish(false); });
+        req.on('timeout', () => { req.destroy(); finish(false); });
+        req.end();
       });
-      req.on('connect', () => { req.destroy(); resolve(true); });
-      req.on('error', () => { req.destroy(); resolve(false); });
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.end();
-    });
+    }
 
     report.proxyReachable = reachable;
     if (!reachable) {
@@ -207,21 +426,30 @@ async function testProxyHealth(proxyUrlStr) {
 
   // 阶段 3: 外网连通性检测 (通过代理探测 Google)
   try {
-    const internetOk = await new Promise(resolve => {
-      const req = http.request({
-        host: u.hostname,
-        port: Number(u.port) || 80,
-        method: 'GET',
-        path: 'http://www.google.com/generate_204',
-        timeout: 3500,
-        headers: { Host: 'www.google.com' }
-      }, res => {
-        resolve(res.statusCode >= 200 && res.statusCode < 400);
+    let internetOk = false;
+    if (isSocks) {
+      const netRes = await testSocks5Proxy(u.hostname, port, 'www.google.com', 80, 3500);
+      internetOk = netRes.ok;
+    } else {
+      internetOk = await new Promise(resolve => {
+        let done = false;
+        const finish = (v) => { if (!done) { done = true; resolve(v); } };
+        const req = http.request({
+          host: u.hostname,
+          port: port,
+          method: 'GET',
+          path: 'http://www.google.com/generate_204',
+          timeout: 3500,
+          headers: { Host: 'www.google.com' }
+        }, res => {
+          res.resume();
+          finish(res.statusCode >= 200 && res.statusCode < 400);
+        });
+        req.on('error', () => finish(false));
+        req.on('timeout', () => { req.destroy(); finish(false); });
+        req.end();
       });
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.end();
-    });
+    }
     report.internetReachable = internetOk;
     if (!internetOk) {
       report.error = '代理端口可连接，但外网访问无响应，可能节点异常或未接通公网';
@@ -272,15 +500,38 @@ function acquireFileLock(targetPath, timeoutMs = 6000) {
   }
 }
 
+const diskModulesCache = new Map();
+
+function invalidateDiskModulesCache(customPath = null) {
+  if (!customPath) {
+    diskModulesCache.clear();
+    return;
+  }
+  diskModulesCache.delete(path.resolve(String(customPath)));
+}
+
 /**
  * 核实磁盘 ASAR 是否真正具备各模块的代码注入、字典资源及配置读取能力
  */
-function inspectDiskModules(customPath = null) {
-  const { findAsarPath, builtinAsar, loadAsarEngine } = require('./asar-engine');
+function inspectDiskModules(customPath = null, options = {}) {
+  const { findAsarPath, builtinAsar, loadAsarEngine, getRawFs } = require('./asar-engine');
   const { TAGS } = require('./modular-installer');
+  const rawFs = typeof getRawFs === 'function' ? getRawFs() : fs;
   let asarPath = null;
   try { asarPath = findAsarPath(customPath); } catch {}
-  if (!asarPath || !fs.existsSync(asarPath)) {
+  if ((!asarPath || !rawFs.existsSync(asarPath)) && !customPath) {
+    try {
+      const manifestPath = path.join(resolveModulesStateDir(options), 'installation.json');
+      if (rawFs.existsSync(manifestPath)) {
+        const m = JSON.parse(rawFs.readFileSync(manifestPath, 'utf8'));
+        const recPath = m && (m.installed || m.targetPath);
+        if (typeof recPath === 'string' && recPath.trim() && rawFs.existsSync(recPath.trim())) {
+          asarPath = recPath.trim();
+        }
+      }
+    } catch {}
+  }
+  if (!asarPath || !rawFs.existsSync(asarPath)) {
     return {
       found: false,
       asarPath: null,
@@ -297,23 +548,38 @@ function inspectDiskModules(customPath = null) {
     };
   }
 
+  const useCache = !options._asar && !options._builtinAsar && options.forceRefresh !== true;
+  const cacheKey = path.resolve(asarPath);
+  let statSig = null;
+  if (useCache) {
+    try {
+      const st = rawFs.statSync(asarPath);
+      statSig = `${st.size}:${st.mtimeMs}`;
+      const hit = diskModulesCache.get(cacheKey);
+      if (hit && hit.statSig === statSig) {
+        return { ...hit.result };
+      }
+    } catch {}
+  }
+
   let utilsStr = '';
   let preloadStr = '';
   let entries = [];
   try {
-    const asar = loadAsarEngine();
+    const asar = options._asar || loadAsarEngine();
+    const primaryAsar = options._builtinAsar || builtinAsar;
     try {
-      utilsStr = builtinAsar.extractFile(asarPath, 'dist/utils.js').toString('utf8');
+      utilsStr = primaryAsar.extractFile(asarPath, 'dist/utils.js').toString('utf8');
     } catch {
       utilsStr = asar.extractFile(asarPath, 'dist/utils.js').toString('utf8');
     }
     try {
-      preloadStr = builtinAsar.extractFile(asarPath, 'dist/preload.js').toString('utf8');
+      preloadStr = primaryAsar.extractFile(asarPath, 'dist/preload.js').toString('utf8');
     } catch {
       preloadStr = asar.extractFile(asarPath, 'dist/preload.js').toString('utf8');
     }
     try {
-      entries = builtinAsar.listPackage(asarPath);
+      entries = primaryAsar.listPackage(asarPath);
     } catch {
       entries = asar.listPackage(asarPath);
     }
@@ -334,10 +600,18 @@ function inspectDiskModules(customPath = null) {
     };
   }
 
+  // 统一归一化 ASAR 内部路径格式（兼容正反斜杠及无前导斜杠的列表输出）
+  const normalizedEntries = new Set(
+    (Array.isArray(entries) ? entries : []).map(item => {
+      const clean = String(item || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      return clean ? '/' + clean : '';
+    }).filter(Boolean)
+  );
+
   // 1. 上下文监控模块判定
   const meterInjected = utilsStr.includes(TAGS.METER_UTILS_START) || utilsStr.includes('installContextMeter');
   const meterPreload = preloadStr.includes(TAGS.METER_PRELOAD_START) || preloadStr.includes('contextMeterAPI');
-  const meterFilesOk = entries.includes('/dist/meter-main.js') && entries.includes('/dist/meter-core.js');
+  const meterFilesOk = normalizedEntries.has('/dist/meter-main.js') && normalizedEntries.has('/dist/meter-core.js');
   const meterReady = meterInjected && meterPreload && meterFilesOk;
 
   // 2. 汉化模块深度判定
@@ -356,12 +630,19 @@ function inspectDiskModules(customPath = null) {
     const hasRuntimeEngine = preloadStr.includes('createI18nEngine') || preloadStr.includes('translateSingleUnit') || preloadStr.includes('MutationObserver');
     const hasGateLogic = preloadStr.includes('chinese.enabled === false') && preloadStr.includes('modules.json');
 
-    // 检查字典是否包含有效条目（防止仅注入了空字典或空占位）
-    const dictMatch = preloadStr.match(/_dictData\s*=\s*(\{[\s\S]*?\});/);
+    // 检查字典是否包含有效条目（防止被值内的 `};` 提前截断而误判空字典）
+    const dictStartIdx = preloadStr.indexOf('_dictData');
     let dictNonEmpty = false;
-    if (dictMatch && dictMatch[1]) {
-      dictNonEmpty = dictMatch[1].length > 500 && dictMatch[1].includes('"');
-    } else if (entries.includes('/dist/i18n/zh-CN.json')) {
+    if (dictStartIdx >= 0) {
+      const afterDict = preloadStr.slice(dictStartIdx, dictStartIdx + 500000);
+      const eqIdx = afterDict.indexOf('{');
+      const endWinIdx = afterDict.indexOf('window.__AGY_I18N_CONFIG__');
+      const sliceLen = endWinIdx > eqIdx ? (endWinIdx - eqIdx) : (eqIdx >= 0 ? afterDict.length - eqIdx : 0);
+      if (eqIdx >= 0 && sliceLen > 500 && afterDict.slice(eqIdx, eqIdx + Math.min(sliceLen, 2000)).includes('"')) {
+        dictNonEmpty = true;
+      }
+    }
+    if (!dictNonEmpty && normalizedEntries.has('/dist/i18n/zh-CN.json')) {
       dictNonEmpty = true;
     }
 
@@ -408,7 +689,7 @@ function inspectDiskModules(customPath = null) {
     }
   }
 
-  return {
+  const result = {
     found: true,
     asarPath,
     meter: meterInjected,
@@ -423,17 +704,25 @@ function inspectDiskModules(customPath = null) {
     proxyStatus,
     proxyReason
   };
+  if (useCache && statSig) {
+    diskModulesCache.set(cacheKey, { statSig, result });
+  }
+  return result;
 }
 
 module.exports = {
   SCHEMA_VERSION,
   PROJECT_VERSION,
   DEFAULT_CONFIG,
+  normalizeBrandTitle,
+  normalizeClientLanguage,
+  parseAndValidateProxyUrl,
   getModulesConfigPath,
   loadModulesConfig,
   saveModulesConfig,
   detectAndMigrateLegacyConfigs,
   testProxyHealth,
   acquireFileLock,
-  inspectDiskModules
+  inspectDiskModules,
+  invalidateDiskModulesCache
 };

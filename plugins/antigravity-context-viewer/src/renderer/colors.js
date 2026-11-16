@@ -128,12 +128,23 @@
   function normalizeHex(input) {
     if (!input || typeof input !== 'string') return null;
     const s = input.trim();
+    if (!s || /^transparent$/i.test(s)) return null;
     const direct = hexToRgb(s);
     if (direct) return rgbToHex(direct.r, direct.g, direct.b);
-    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (mRgb) return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
-    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?/i);
+    const mRgb = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+%?))?/i);
+    if (mRgb) {
+      if (mRgb[4] !== undefined) {
+        const alphaRaw = mRgb[4].endsWith('%') ? Number(mRgb[4].slice(0, -1)) / 100 : Number(mRgb[4]);
+        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+      }
+      return rgbToHex(Number(mRgb[1]), Number(mRgb[2]), Number(mRgb[3]));
+    }
+    const mHsl = s.match(/hsla?\(\s*([\d.]+)\s*,\s*([\d.]+)%?\s*,\s*([\d.]+)%?(?:\s*[,/]\s*([\d.]+%?))?/i);
     if (mHsl) {
+      if (mHsl[4] !== undefined) {
+        const alphaRaw = mHsl[4].endsWith('%') ? Number(mHsl[4].slice(0, -1)) / 100 : Number(mHsl[4]);
+        if (!Number.isNaN(alphaRaw) && alphaRaw <= 0.01) return null;
+      }
       const rgb = hslToRgb(Number(mHsl[1]), Number(mHsl[2]), Number(mHsl[3]));
       return rgbToHex(rgb.r, rgb.g, rgb.b);
     }
@@ -215,18 +226,28 @@
   }
 
   function getHostZeroLevelBg(isLight) {
+    const fallback = isLight ? '#ffffff' : '#181818';
     try {
       if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
         const rootEl = document.body || document.documentElement;
         if (rootEl) {
           const cs = window.getComputedStyle(rootEl);
-          const raw = cs.getPropertyValue('--background')?.trim() || cs.backgroundColor?.trim();
-          const norm = normalizeHex(raw);
-          if (norm) return norm;
+          const candidates = [
+            cs.getPropertyValue('--background')?.trim(),
+            cs.backgroundColor?.trim()
+          ].filter(Boolean);
+          for (const raw of candidates) {
+            const norm = normalizeHex(raw);
+            if (!norm) continue;
+            const lum = parseRgbLuminance(norm);
+            const normIsLight = lum != null ? lum > 0.55 : Boolean(isLight);
+            if (normIsLight === Boolean(isLight)) return norm;
+            return fallback;
+          }
         }
       }
     } catch {}
-    return isLight ? '#ffffff' : '#181818';
+    return fallback;
   }
 
   function getSystemTheme() {
@@ -358,11 +379,11 @@
       if (resetBtn) {
         resetBtn.setAttribute('data-mode', val ? 'custom' : 'auto');
         if (key.startsWith('heatLvl')) {
-          resetBtn.textContent = val ? '恢复' : '预设';
+          resetBtn.textContent = val ? t('colors.btn.restore') : t('colors.btn.preset');
         } else if (key === 'heatLow' || key === 'heatHigh') {
-          resetBtn.textContent = val ? '恢复预设' : '预设';
+          resetBtn.textContent = val ? t('colors.btn.restorePreset') : t('colors.btn.preset');
         } else {
-          resetBtn.textContent = val ? '恢复默认' : '跟随主题';
+          resetBtn.textContent = val ? t('colors.btn.restoreDefault') : t('cp.followTheme');
         }
       }
     }
@@ -392,7 +413,7 @@
     if (resetBgTokens) {
       const hasBg = Boolean(customColors.panelBg);
       resetBgTokens.setAttribute('data-mode', hasBg ? 'custom' : 'auto');
-      resetBgTokens.textContent = hasBg ? '恢复默认' : '跟随主题';
+      resetBgTokens.textContent = hasBg ? t('colors.btn.restoreDefault') : t('cp.followTheme');
     }
   }
 
@@ -470,13 +491,13 @@
     btns.forEach(btn => {
       if (currentThemeMode === 'auto') {
         btn.textContent = activeTheme === 'light' ? '🌗' : '🌓';
-        btn.title = `当前主题：跟随宿主 (${activeTheme === 'light' ? '浅色' : '深色'})\n点击切换为：浅色模式`;
+        btn.title = t('theme.autoTitle', { mode: activeTheme === 'light' ? t('theme.light') : t('theme.dark') });
       } else if (currentThemeMode === 'light') {
         btn.textContent = '☀️';
-        btn.title = '当前主题：浅色模式 (固定)\n点击切换为：深色模式';
+        btn.title = t('theme.lightTitle');
       } else {
         btn.textContent = '🌙';
-        btn.title = '当前主题：深色模式 (固定)\n点击切换为：跟随宿主';
+        btn.title = t('theme.darkTitle');
       }
     });
     applyHeatmapPalette();
@@ -634,7 +655,7 @@
     if (lbl) lbl.textContent = labelText ? `· ${labelText}` : `· ${slotKey}`;
     const cpResetBtn = el('cp-reset-slot');
     if (cpResetBtn) {
-      cpResetBtn.textContent = slotKey.startsWith('heat') ? '恢复该档预设' : '跟随主题';
+      cpResetBtn.textContent = slotKey.startsWith('heat') ? t('colors.resetLevel') : t('colors.followTheme');
     }
     const startHex = getEffectiveSlotColor(slotKey);
     const rgb = hexToRgb(startHex) || { r: 101, g: 42, b: 183 };
@@ -690,13 +711,7 @@
     }, 130);
   }
 
-  const HEAT_LVL_LABELS = [
-    '色阶第 1 档（少/无用量）',
-    '色阶第 2 档（低用量）',
-    '色阶第 3 档（中等用量）',
-    '色阶第 4 档（高用量）',
-    '色阶第 5 档（多/峰值用量）'
-  ];
+  const getHeatLvlLabel = (idx) => t(`colors.lvl${idx}`);
 
   // 绑定所有颜色色块与恢复按钮事件
   for (const key of Object.keys(COLOR_SLOTS)) {
@@ -728,7 +743,7 @@
       e?.stopPropagation?.();
       toggleTokenColorsDrawer(true);
       const swatchBtn = el(`swatch-${slotKey}`) || legBtn;
-      openColorPicker(slotKey, swatchBtn, legBtn.getAttribute('data-color-label') || HEAT_LVL_LABELS[i]);
+      openColorPicker(slotKey, swatchBtn, getHeatLvlLabel(i));
     });
   }
   el('reset-heat-lvls')?.addEventListener('click', () => {
@@ -798,11 +813,11 @@
         const res = await dropper.open();
         if (res?.sRGBHex) {
           applyPickerHex(res.sRGBHex);
-          if (statusEl) statusEl.textContent = `已吸取 ${res.sRGBHex.toUpperCase()}`;
+          if (statusEl) statusEl.textContent = t('colors.eyedropperPicked', { hex: res.sRGBHex.toUpperCase() });
         }
       } else {
         el('cp-input-hex')?.focus?.();
-        if (statusEl) statusEl.textContent = '当前环境不支持原生吸管，可直接粘贴 HEX';
+        if (statusEl) statusEl.textContent = t('colors.eyedropperUnsupported');
       }
     } catch {}
   });
@@ -813,7 +828,7 @@
     if (norm) {
       applyPickerHex(norm, 'cp-input-hex');
       const statusEl = el('cp-status-msg');
-      if (statusEl) statusEl.textContent = `已应用 ${norm.toUpperCase()}`;
+      if (statusEl) statusEl.textContent = t('colors.appliedHex', { hex: norm.toUpperCase() });
     }
   });
   el('cp-input-hex')?.addEventListener('change', e => {
@@ -839,7 +854,7 @@
       navigator?.clipboard?.writeText?.(val);
     } catch {}
     const statusEl = el('cp-status-msg');
-    if (statusEl) statusEl.textContent = `✔ 已复制 ${label}: ${val}`;
+    if (statusEl) statusEl.textContent = t('colors.copied', { label, val });
   }
   el('cp-copy-hex')?.addEventListener('click', () => copyPickerText('cp-input-hex', 'HEX'));
   el('cp-copy-rgb')?.addEventListener('click', () => copyPickerText('cp-input-rgb', 'RGB'));

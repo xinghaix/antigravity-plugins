@@ -375,7 +375,7 @@ test('6 independent custom color slots support custom values, reset to theme def
 test('window controls overlay spacer, convPane flex-grow self-healing, and clean dispose', () => {
   const h = harness();
   const api = h.sandbox.__AGContextMeter;
-  assert.equal(api.version, '0.8.2');
+  assert.equal(api.version, '0.8.5-1');
 
   // 1. Antigravity 1.x: class contains 'top-0'
   const cluster1x = h.sandbox.document.createElement();
@@ -823,7 +823,7 @@ test('default current period API reference amount, independent subscription spen
 
   assert.equal(customForm.style.display, 'none');
   assert.equal(h.elements.get('p-det-region').textContent, '日本 (JP)');
-  assert.match(h.elements.get('p-det-acq').textContent, /学生认证优惠/);
+  assert.match(h.elements.get('p-det-acq').textContent, /学生.*优惠/);
   assert.match(h.elements.get('p-det-price').textContent, /\$0/);
   assert.equal(h.elements.get('p-det-price-tag').textContent, '手动确认 · 免费');
 
@@ -912,7 +912,7 @@ test('integrated verification: legacy payload without referenceCost calculates d
   // 点击展开
   toggleBtn.click();
   assert.equal(detailsPane.style.display, 'block');
-  assert.equal(toggleBtn.textContent, '收起详情 ▲');
+  assert.equal(toggleBtn.textContent, '收起详情 ▴');
   const expandedLeft = parseInt(pTokens.style.left, 10);
   assert.ok(expandedLeft <= compactLeft); // 宽度增加时向左下方展开，left 变小
 
@@ -1506,6 +1506,3153 @@ test('online update and GitHub entry points: openExternal whitelist enforcement 
   api.dispose();
 });
 
+test('按稳定模型 ID 持久化上下文偏好、损坏隔离与模型切换独立加载', () => {
+  const tmpDir = fs.mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'ctx-pref-test-'));
+  try {
+    const collector = require('./meter-collector');
+    const stableA = core.resolveStableModelId({ model: 'MODEL_PLACEHOLDER_M37', modelDisplayName: 'Gemini 3.8 Flash' });
+    const stableB = core.resolveStableModelId({ model: 'claude-opus-5-5-thinking', modelDisplayName: 'Claude Opus 5.5' });
+    assert.equal(stableA, 'model_placeholder_m37');
+    assert.equal(stableB, 'claude-opus-5-5-thinking');
+
+    // 无效参数必须直接拦截拒写
+    const badFixed = collector.savePluginSettings({
+      contextPreference: { modelId: stableA, mode: 'fixed', limitTokens: 5000 }
+    }, { agDir: tmpDir });
+    assert.equal(badFixed.ok, false);
+
+    // 分别保存模型 A (512,000) 与 模型 B (动态透传)
+    const saveA = collector.savePluginSettings({
+      contextPreference: { modelId: stableA, label: 'Gemini 3.8 Flash', mode: 'fixed', limitTokens: 512000 }
+    }, { agDir: tmpDir });
+    assert.equal(saveA.ok, true);
+
+    const saveB = collector.savePluginSettings({
+      contextPreference: { modelId: stableB, label: 'Claude Opus 5.5', mode: 'dynamic' }
+    }, { agDir: tmpDir });
+    assert.equal(saveB.ok, true);
+
+    // 重新读取验证双方互相独立不覆盖
+    const loaded1 = collector.getPluginSettings({ agDir: tmpDir });
+    assert.equal(loaded1.contextPreferences[stableA].limitTokens, 512000);
+    assert.equal(loaded1.contextPreferences[stableB].mode, 'dynamic');
+
+    // 单模型恢复默认只移除 A，保留 B
+    const resetA = collector.savePluginSettings({
+      clearContextPreference: true,
+      modelId: stableA
+    }, { agDir: tmpDir });
+    assert.equal(resetA.ok, true);
+    const loaded2 = collector.getPluginSettings({ agDir: tmpDir });
+    assert.equal(loaded2.contextPreferences[stableA], undefined);
+    assert.equal(loaded2.contextPreferences[stableB].mode, 'dynamic');
+
+    // 配置文件损坏保护：破坏文件后触发备份隔离不崩溃
+    const cfgPath = collector.getCustomPlanPath(tmpDir);
+    fs.writeFileSync(cfgPath, '{ BROKEN_JSON !!!', 'utf8');
+    const recovered = collector.getPluginSettings({ agDir: tmpDir });
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.recoveredFromCorruption, true);
+    assert.ok(fs.existsSync(cfgPath.replace(/\.json$/i, '.corrupt.bak.json')));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('3 分页布局、设置视图迁移、7.1 禁用词与查看模型选择器契约', async () => {
+  const savedPayloads = [];
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, contextPreferences: {} }),
+    saveSettings: async (payload) => {
+      savedPayloads.push(payload);
+      return { ok: true, contextPreferences: {} };
+    },
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: { status: 'not_patched', arch: 'x86-64', configuredMode: 'default', configuredLimitTokens: 256000 }
+    }),
+    getModulesStatus: async () => ({
+      ok: true,
+      data: { modules: { chinese: { enabled: true }, proxy: { enabled: false, proxyUrl: 'http://127.0.0.1:7890' } } },
+      disk: { chineseReady: true, proxyReady: true }
+    }),
+    toggleModule: async () => ({ ok: true })
+  };
+
+  // 打开面板，验证 3 分页与当前会话核心字段保留
+  h.elements.get('badge').click();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest({
+    model: 'Gemini 4 Argon (Low)',
+    modelId: 'gemini-4-argon-low',
+    status: 'reported',
+    used: 42000,
+    budget: 256000,
+    remaining: 214000,
+    speed: { tps: 88.5, durationSec: 2.0, ttftSec: 0.4, outputTokens: 177 }
+  }, [
+    { modelId: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+    { modelId: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }
+  ]);
+  await h.flush();
+
+  assert.equal(h.elements.get('ctx-model-selector-role').textContent, '查看模型');
+  assert.equal(h.elements.get('pane-ctx-session').hidden, false);
+  assert.equal(h.elements.get('pane-ctx-models').hidden, true);
+  assert.equal(h.elements.get('pane-ctx-speed').hidden, true);
+  assert.equal(h.elements.get('speed-val').textContent, '88.5 tok/s');
+
+  // 切换到“模型设置”分页并验证选择器切换不写配置、且出现“回到当前模型”
+  h.elements.get('tab-ctx-models').click();
+  await h.flush();
+  assert.equal(h.elements.get('pane-ctx-models').hidden, false);
+  assert.equal(h.elements.get('pane-ctx-session').hidden, true);
+  const saveCountBeforeSwitch = savedPayloads.length;
+  const selectEl = h.elements.get('ctx-model-select');
+  selectEl.value = 'product:anthropic:claude-sonnet-4.6';
+  selectEl.trigger('change', { target: { value: 'product:anthropic:claude-sonnet-4.6' } });
+  await h.flush();
+  assert.equal(h.elements.get('btn-ctx-back-current').hidden, false);
+  assert.equal(savedPayloads.length, saveCountBeforeSwitch, '查看其他模型不得自动改写配置');
+  h.elements.get('btn-ctx-back-current').click();
+  assert.equal(api.getContextPreferencesState().selectedProductKey, 'product:google:gemini-4-argon');
+  assert.equal(h.elements.get('btn-ctx-back-current').hidden, true);
+
+  // 打开 ⚙ 设置视图，验证汉化、代理、外观 DOM ID 与事件仍在且 ‹ 返回有效
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+  assert.equal(h.elements.get('pane-ctx-settings').hidden, false);
+  assert.equal(h.elements.get('ctx-tabs-bar').hidden, false);
+  assert.ok(h.elements.get('btn-toggle-chinese'));
+  assert.ok(h.elements.get('btn-toggle-chinese-module'));
+  assert.ok(h.elements.get('btn-toggle-proxy'));
+  assert.ok(h.elements.get('input-proxy-url'));
+  assert.ok(h.elements.get('input-proxy-bypass'));
+  assert.ok(h.elements.get('btn-toggle-proxy-module'));
+  assert.ok(h.elements.get('btn-toggle-colors'));
+  assert.ok(h.elements.get('color-panelBg'));
+  assert.ok(h.elements.get('btn-panel-palette'));
+
+  // 验证汉化切换按钮事件仍然有效
+  let toggleCalled = false;
+  h.sandbox.window.contextMeterAPI.toggleModule = async (mod) => {
+    if (mod === 'chinese') toggleCalled = true;
+    return { ok: true, data: { modules: { chinese: { enabled: false }, proxy: { enabled: false } } } };
+  };
+  h.elements.get('btn-toggle-chinese-module').click();
+  await h.flush();
+  assert.equal(toggleCalled, true);
+
+  h.elements.get('btn-ctx-settings-back').click();
+  assert.equal(h.elements.get('pane-ctx-settings').hidden, true);
+  assert.equal(h.elements.get('pane-ctx-models').hidden, false);
+
+  // 7.1 禁用词检查：模板中 #panel 区域及普通视图动态 DOM 文本均不可出现技术黑话
+  const tplHtml = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'template.html'), 'utf8');
+  const panelSection = tplHtml.slice(tplHtml.indexOf('id="panel"'), tplHtml.indexOf('id="token-panel"'));
+  const forbiddenTerms = ['共享后端', '动态透传', 'Gate', 'sidecar', 'PE 指纹', '补丁', '二进制', 'language_server', 'manifest'];
+  const collectedRuntimeText = [
+    h.elements.get('ctx-compact-saved')?.textContent || '',
+    h.elements.get('ctx-compact-client')?.textContent || '',
+    h.elements.get('ctx-client-status-text')?.textContent || '',
+    h.elements.get('unlock-badge')?.textContent || '',
+    h.elements.get('ctx-card-saved')?.textContent || '',
+    h.elements.get('ctx-card-client')?.textContent || '',
+    h.elements.get('ctx-card-client-tag')?.textContent || '',
+    h.elements.get('ctx-card-observed-budget')?.textContent || '',
+    h.elements.get('ctx-card-observed-speed')?.textContent || '',
+    h.elements.get('unlock-status-desc')?.textContent || ''
+  ].join('\n');
+  for (const term of forbiddenTerms) {
+    assert.equal(panelSection.includes(term), false, `template.html 面板区不可包含禁用词: ${term}`);
+    assert.equal(collectedRuntimeText.includes(term), false, `运行时普通视图不可包含禁用词: ${term}`);
+  }
+  api.dispose();
+});
+
+test('产品级偏好、旧档位同值直显与异值冲突迁移、预设 512K/524288/983040 边界与 K 统一', async () => {
+  const savedStore = {
+    // 1. Hydrogen 同值旧键 -> 应直接合并显示 512K，且用户点击保存后清旧键写产品键
+    'gemini-4-hydrogen-low': { modelId: 'gemini-4-hydrogen-low', mode: 'fixed', limitTokens: 512000 },
+    'gemini-4-hydrogen-high': { modelId: 'gemini-4-hydrogen-high', mode: 'fixed', limitTokens: 512000 },
+    // 2. Argon 异值旧键 -> 应显示冲突横幅，用户未确认前绝不写回
+    'gemini-4-argon-low': { modelId: 'gemini-4-argon-low', mode: 'fixed', limitTokens: 524288 },
+    'gemini-4-argon-high': { modelId: 'gemini-4-argon-high', mode: 'fixed', limitTokens: 983040 }
+  };
+  let saveCalls = 0;
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, contextPreferences: { ...savedStore } }),
+    saveSettings: async (payload) => {
+      saveCalls++;
+      if (payload?.contextPreference) {
+        if (Array.isArray(payload.contextPreference.clearLegacyKeys)) {
+          for (const k of payload.contextPreference.clearLegacyKeys) delete savedStore[k];
+        }
+        const k = payload.contextPreference.productKey || payload.contextPreference.modelId;
+        savedStore[k] = { ...payload.contextPreference };
+      }
+      return { ok: true, contextPreferences: { ...savedStore } };
+    },
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: { status: 'not_patched', arch: 'x86-64', configuredMode: 'default', configuredLimitTokens: 256000 }
+    })
+  };
+  const api = h.sandbox.__AGContextMeter;
+  h.elements.get('ctx-conflict-rows').replaceChildren = function(...nodes) { this.children = nodes; };
+  h.elements.get('ctx-card-observed-speed').replaceChildren = function(...nodes) { this.children = nodes; };
+  const cascadeConfigs = [
+    { modelId: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+    { modelId: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { modelId: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+    { modelId: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+    { modelId: 'orchestrator-carbon', label: 'Orchestrator (Carbon)' },
+    { modelId: 'orchestrator-argon', label: 'Orchestrator (Argon)' }
+  ];
+
+  // 先从宿主 mock 恢复测试配置，再切换至 Argon (触发异值冲突) -> 确认未写入、冲突横幅可见
+  await api.restoreSettingsFromHost();
+  api.setContextLatestForTest({
+    model: 'Gemini 4 Argon (Low)',
+    modelId: 'gemini-4-argon-low',
+    status: 'reported',
+    used: 12000,
+    budget: 256000,
+    serviceLimit: 1000000
+  }, cascadeConfigs);
+  api.switchContextTabForTest('models');
+  await h.flush();
+  assert.equal(h.elements.get('ctx-conflict-banner').hidden, false);
+  assert.equal(saveCalls, 0, '展示冲突时绝不能自动写入');
+  // 验证 budget 与 serviceLimit 分开显示（默认短 K 格式 + 悬浮完整数字）
+  assert.match(h.elements.get('ctx-card-observed-budget').textContent, /256K/);
+  assert.match(h.elements.get('ctx-card-observed-budget').title || '', /256,000/);
+  assert.match(h.elements.get('ctx-card-service-limit').textContent, /服务端报错上限：1M/);
+  assert.match(h.elements.get('ctx-card-service-limit').title || '', /1,000,000/);
+  assert.equal(h.elements.get('ctx-card-service-limit').hidden, false);
+
+  // 点击第一个冲突行的“用这个”(524288) -> 验证清掉旧档位键，写入产品键，并显示“自定义 524.3K（524,288）”
+  const conflictRows = h.elements.get('ctx-conflict-rows').children;
+  assert.ok(conflictRows.length >= 2);
+  const useBtn = conflictRows[0].children.find(c => c.textContent === '用这个');
+  useBtn.click();
+  await h.flush();
+  assert.equal(h.elements.get('ctx-conflict-banner').hidden, true);
+  assert.equal(savedStore['gemini-4-argon-low'], undefined);
+  assert.equal(savedStore['gemini-4-argon-high'], undefined);
+  assert.equal(savedStore['product:google:gemini-4-argon'].limitTokens, 524288);
+  assert.match(h.elements.get('ctx-card-saved').textContent, /自定义 524\.3K（524,288）/);
+
+  // B. 校验固定 983040 与动态跟随 (mode: 'dynamic') 是不同的存储结构
+  const customInput = h.elements.get('ctx-custom-limit-input');
+  customInput.value = '983040';
+  customInput.trigger('input');
+  h.elements.get('btn-save-model-ctx').click();
+  await h.flush();
+  assert.equal(savedStore['product:google:gemini-4-argon'].mode, 'fixed');
+  assert.equal(savedStore['product:google:gemini-4-argon'].limitTokens, 983040);
+  assert.match(h.elements.get('ctx-card-saved').textContent, /自定义 983K（983,040）/);
+
+  const dynBtn = { getAttribute: (k) => (k === 'data-ctx-mode' ? 'dynamic' : ''), dataset: { ctxMode: 'dynamic', ctxLimit: '' } };
+  h.elements.get('ctx-preset-grid').trigger('click', { target: { closest: () => dynBtn } });
+  h.elements.get('btn-save-model-ctx').click();
+  await h.flush();
+  assert.equal(savedStore['product:google:gemini-4-argon'].mode, 'dynamic');
+  assert.equal(savedStore['product:google:gemini-4-argon'].limitTokens, null);
+
+  // C. 切换 Hydrogen (同值 512,000 旧档位自动直显，不报冲突)，切换其 High 档位也共享同产品偏好，且预算/速度不跨档位借用
+  api.setContextLatestForTest({
+    model: 'Gemini 4 Hydrogen (Low)',
+    modelId: 'gemini-4-hydrogen-low',
+    status: 'reported',
+    used: 5000,
+    budget: 512000
+  }, cascadeConfigs);
+  await h.flush();
+  assert.equal(h.elements.get('ctx-conflict-banner').hidden, true);
+  assert.match(h.elements.get('ctx-card-saved').textContent, /^512K$/);
+  assert.match(h.elements.get('ctx-card-saved').title || '', /512,000/);
+
+  // 点击 512K 预设确认写入值是 512000 而非 524288
+  const p512Btn = { getAttribute: (k) => (k === 'data-ctx-mode' ? 'fixed' : (k === 'data-ctx-limit' ? '512000' : '')), dataset: { ctxMode: 'fixed', ctxLimit: '512000' } };
+  h.elements.get('ctx-preset-grid').trigger('click', { target: { closest: () => p512Btn } });
+  h.elements.get('btn-save-model-ctx').click();
+  await h.flush();
+  assert.equal(savedStore['product:google:gemini-4-hydrogen'].limitTokens, 512000);
+  assert.equal(savedStore['gemini-4-hydrogen-low'], undefined);
+
+  // 切换到未观测过的 Orchestrator (Carbon)，确保缺失预算与速度不跨档位借用且显示规定文案
+  api.setContextLatestForTest({
+    model: 'Orchestrator (Carbon)',
+    modelId: 'orchestrator-carbon',
+    status: 'reported',
+    used: 1000
+  }, cascadeConfigs);
+  await h.flush();
+  assert.equal(h.elements.get('ctx-card-observed-budget').textContent, '尚未观测');
+  assert.equal(h.elements.get('ctx-card-observed-speed').children[0]?.textContent, '暂无实测数据');
+
+  api.dispose();
+});
+
+test('安全应用、重启确认、手动重启说明与三条件已加载核验', async () => {
+  let restartCalls = 0;
+  let nextRestartSupported = true;
+  let mockStatusData = {
+    status: 'not_patched',
+    arch: 'x86-64',
+    configuredMode: 'default',
+    configuredLimitTokens: 256000,
+    runtimeEvidence: { restartDetected: false }
+  };
+  let nextApplyResponse = { ok: false, error: 'EBUSY: 占用中' };
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, contextPreferences: {} }),
+    saveSettings: async () => ({ ok: true }),
+    getContextUnlockStatus: async () => ({ ok: true, data: { ...mockStatusData } }),
+    applyContextUnlock: async () => nextApplyResponse,
+    restartHost: async () => {
+      restartCalls++;
+      return { ok: true, supported: nextRestartSupported };
+    }
+  };
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest({ model: 'Gemini 4 Flash', modelId: 'gemini-4-flash', status: 'reported', used: 1000, budget: 256000 });
+  api.switchContextTabForTest('models');
+  await h.flush();
+
+  // 1. 保存 / 应用失败 -> 不出现重启按钮，不调用重启 IPC
+  const p512Btn = { getAttribute: (k) => (k === 'data-ctx-mode' ? 'fixed' : (k === 'data-ctx-limit' ? '512000' : '')), dataset: { ctxMode: 'fixed', ctxLimit: '512000' } };
+  h.elements.get('ctx-preset-grid').trigger('click', { target: { closest: () => p512Btn } });
+  h.elements.get('btn-apply-unlock').click();
+  await h.flush();
+  assert.equal(h.elements.get('btn-restart-host').hidden, true, '应用失败绝不出现重启按钮');
+  assert.equal(restartCalls, 0);
+
+  // 2. 应用成功且 needsRestart: true -> 自动出现重启按钮，但绝不自动重启
+  nextApplyResponse = { ok: true, needsRestart: true };
+  mockStatusData = {
+    status: 'patched_pending_restart',
+    arch: 'x86-64',
+    configuredMode: 'fixed',
+    configuredLimitTokens: 512000,
+    runtimeEvidence: { restartDetected: false }
+  };
+  h.elements.get('btn-apply-unlock').click();
+  await h.flush();
+  assert.equal(restartCalls, 0, '保存并应用后不能自动重启');
+  assert.equal(h.elements.get('btn-restart-host').hidden, false);
+
+  // 3. 当宿主不支持重启 (supported: false) -> 点击确认后显示手动重启说明
+  nextRestartSupported = false;
+  h.elements.get('btn-restart-host').click();
+  assert.equal(h.elements.get('ctx-restart-confirm').hidden, false);
+  h.elements.get('btn-restart-confirm-go').click();
+  await h.flush();
+  assert.equal(restartCalls, 1);
+  assert.equal(h.elements.get('ctx-manual-restart-note').hidden, false);
+
+  // 4. 三条件核验：仅 patched_loaded + 未重启 => 状态未确认；
+  // 重启过但配置不一致 (实际 256000 vs 目标 512000) => 状态未确认；
+  // 三条件全满足 => 已加载
+  api.setRestartVerificationForTest({ mode: 'fixed', limitTokens: 512000, requestedAt: new Date().toISOString() });
+  mockStatusData = { status: 'patched_loaded', arch: 'x86-64', configuredMode: 'fixed', configuredLimitTokens: 512000, runtimeEvidence: { restartDetected: false } };
+  await api.refreshUnlockStatusForTest();
+  assert.equal(h.elements.get('unlock-badge').textContent, '状态未确认');
+
+  mockStatusData = { status: 'patched_loaded', arch: 'x86-64', configuredMode: 'fixed', configuredLimitTokens: 256000, runtimeEvidence: { restartDetected: true } };
+  await api.refreshUnlockStatusForTest();
+  assert.equal(h.elements.get('unlock-badge').textContent, '状态未确认');
+  assert.equal(h.elements.get('ctx-restart-mismatch-note').hidden, false);
+
+  // 重新应用匹配目标并满足全部三条件
+  api.setRestartVerificationForTest({ mode: 'fixed', limitTokens: 512000, requestedAt: new Date().toISOString() });
+  mockStatusData = { status: 'patched_loaded', arch: 'x86-64', configuredMode: 'fixed', configuredLimitTokens: 512000, runtimeEvidence: { restartDetected: true } };
+  await api.refreshUnlockStatusForTest();
+  assert.equal(h.elements.get('unlock-badge').textContent, '已加载');
+
+  api.dispose();
+});
+
+test('速度对比分页：零网络请求与零 IPC 发送，正确绘制柱状图/折线图并标注样本少', async () => {
+  const h = harness();
+  h.finishScan();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+
+  h.elements.get('badge').click();
+  h.elements.get('tab-ctx-speed').click();
+  await h.flush();
+  // harness 默认 replaceChildren 不保留子节点，此处启用以检查 SVG 绘制元素
+  h.elements.get('speed-bar-svg').replaceChildren = function(...nodes) { this.children = nodes; };
+  h.elements.get('speed-line-svg').replaceChildren = function(...nodes) { this.children = nodes; };
+
+  const fetchBefore = h.pending.length;
+  const scansBefore = h.scans.length;
+
+  const now = Date.now();
+  api.setSpeedRecordsForTest([
+    { callId: 'c1', modelExactId: 'gemini-4-argon-low', modelLabel: 'Gemini 4 Argon (Low)', status: 'final', outputTokens: 120, durationSec: 2, tps: 60, ttftSec: 0.5, timestamp: now - 5000 },
+    { callId: 'c2', modelExactId: 'gemini-4-argon-low', modelLabel: 'Gemini 4 Argon (Low)', status: 'final', outputTokens: 200, durationSec: 2, tps: 100, ttftSec: 0.7, timestamp: now - 3000 },
+    { callId: 'c3', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', outputTokens: 160, durationSec: 2, tps: 80, ttftSec: 0.9, timestamp: now - 4000 },
+    { callId: 'c4', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', outputTokens: 180, durationSec: 2, tps: 90, ttftSec: 1.0, timestamp: now - 2000 },
+    { callId: 'c5', modelExactId: 'claude-sonnet-4-6', modelLabel: 'Claude Sonnet 4.6', status: 'final', outputTokens: 200, durationSec: 2, tps: 100, ttftSec: 1.1, timestamp: now - 1000 }
+  ]);
+  // 再切换到其他分页切回“速度对比”，确认打开页面不触发网络请求与 IPC
+  h.elements.get('tab-ctx-session').click();
+  h.elements.get('tab-ctx-speed').click();
+  await h.flush();
+
+  assert.equal(h.pending.length, fetchBefore, '打开速度对比页不得发起任何 fetch 请求');
+  assert.equal(h.scans.length, scansBefore, '打开速度对比页不得发起任何 scan/IPC');
+  assert.equal(h.elements.get('speed-bar-empty').hidden, true);
+  assert.equal(h.elements.get('speed-line-empty').hidden, true);
+
+  const collectNodeTexts = (node) => {
+    if (!node) return [];
+    const arr = [];
+    if (node.textContent) arr.push(node.textContent);
+    if (Array.isArray(node.children)) {
+      for (const ch of node.children) arr.push(...collectNodeTexts(ch));
+    }
+    return arr;
+  };
+  const barTexts = collectNodeTexts(h.elements.get('speed-bar-svg')).join(' | ');
+  assert.match(barTexts, /样本少/);
+  assert.ok(h.elements.get('speed-line-svg').children.length > 0, '折线图 SVG 应生成绘制节点');
+
+  // 切换指标到首字延迟
+  h.elements.get('speed-metric-ttft').click();
+  assert.equal(h.elements.get('speed-bar-title').textContent, '首字延迟对比');
+
+  api.dispose();
+});
+
+test('插件面板三语言切换、持久化、动态文案、模型名保留与客户端语言分离', async () => {
+  let savedSettingsPayload = null;
+  let storedSettings = {
+    contextPreferences: { 'gemini-3-1-pro': { mode: 'fixed', limitTokens: 512000 } }
+  };
+  let restartCalls = 0;
+
+  const h = harness();
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, ...storedSettings }),
+    saveSettings: async (payload) => {
+      savedSettingsPayload = payload;
+      storedSettings = {
+        ...storedSettings,
+        panelLanguage: payload.panelLanguage,
+        uiPreferences: { ...(storedSettings.uiPreferences || {}), ...(payload.uiPreferences || {}) }
+      };
+      return { ok: true, ...storedSettings };
+    },
+    restartHost: async () => {
+      restartCalls += 1;
+      return { ok: true, supported: true };
+    },
+    getModulesStatus: async () => ({
+      ok: true,
+      chinese: { enabled: true, applied: true, active: true, asarPatched: true, targetLanguage: 'zh-CN' },
+      proxy: { enabled: false, active: false }
+    })
+  };
+  h.finishScan();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+  await api.restoreSettingsForTest();
+
+  // 1. 老用户未设置 panelLanguage 时默认保持简体中文 (zh-CN)
+  assert.equal(api.getPanelLanguage(), 'zh-CN');
+  assert.equal(api.translateForTest('tab.session'), '当前会话');
+  assert.equal(api.translateForTest('tab.models'), '模型设置');
+  assert.equal(api.translateForTest('tab.speed'), '速度对比');
+  assert.equal(h.elements.get('status').textContent, '请求用量与会话累计分别统计；会话 token 数始终为本地估算。');
+
+  // 打开上下文面板与设置页，验证客户端语言选项仅提供简体中文和 English（无虚假繁體中文客户端按钮）
+  h.elements.get('badge').click();
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+  assert.ok(h.elements.get('btn-panel-lang-zh-CN'), '面板应提供简体中文按钮');
+  assert.ok(h.elements.get('btn-panel-lang-zh-TW'), '面板应提供繁體中文按钮');
+  assert.ok(h.elements.get('btn-panel-lang-en'), '面板应提供 English 按钮');
+  assert.ok(h.elements.get('btn-client-lang-zh-CN'), '客户端语言应提供简体中文按钮');
+  assert.ok(h.elements.get('btn-client-lang-en'), '客户端语言应提供 English 按钮');
+  assert.equal(h.elements.get('btn-client-lang-zh-TW'), undefined, '客户端暂不交付繁體中文词典，不得出现无效选择项');
+  assert.match(api.translateForTest('settings.clientLang.licenseNote'), /qqxpee\/antigravity2-cn/, '应展示客户端词典授权说明');
+
+  // 准备模型数据与最新请求数据（含官方模型名与准确 ID）
+  api.setContextLatestForTest({
+    model: 'Gemini 3.1 Pro (High)',
+    modelId: 'MODEL_PLACEHOLDER_M26',
+    status: 'reported',
+    used: 120000,
+    budget: 512000,
+    speed: { tps: 45, duration: 2.0, ttft: 0.4, streamingSec: 1.6, outputTokens: 90 }
+  });
+  await h.flush();
+
+  // 2. 切换为繁體中文 -> 立即更新静态+动态文案，不改写上下文长度，不触发重启
+  h.elements.get('btn-panel-lang-zh-TW').click();
+  await h.flush();
+  assert.equal(api.getPanelLanguage(), 'zh-TW');
+  assert.equal(api.translateForTest('tab.session'), '目前工作階段');
+  assert.equal(api.translateForTest('tab.models'), '模型設定');
+  assert.equal(api.translateForTest('tab.speed'), '速度對比');
+  assert.equal(h.elements.get('panel-lang-save-badge').textContent, '已切換並儲存');
+  assert.equal(savedSettingsPayload.panelLanguage, 'zh-TW');
+  assert.equal(savedSettingsPayload.contextPreferences, undefined, '切换面板语言不得改写上下文偏好');
+  assert.equal(restartCalls, 0, '切换面板语言不得触发重启');
+  assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '模型正式名称应保持原样不被翻译');
+  assert.equal(h.elements.get('speed-badge').textContent, '流暢');
+
+  // 验证静态属性遍历器在标准 DOM 下会同步更新 data-i18n 节点
+  const mockStaticNode = {
+    getAttribute: (k) => (k === 'data-i18n' ? 'tab.session' : null),
+    textContent: ''
+  };
+  api.applyStaticTranslationsForTest({
+    querySelectorAll: (sel) => (sel === '[data-i18n]' ? [mockStaticNode] : [])
+  });
+  assert.equal(mockStaticNode.textContent, '目前工作階段');
+
+  // 3. 切换为 English -> 验证静态标签、动态状态、模型名称原样保留
+  h.elements.get('btn-panel-lang-en').click();
+  await h.flush();
+  assert.equal(api.getPanelLanguage(), 'en');
+  assert.equal(api.translateForTest('tab.session'), 'Session');
+  assert.equal(api.translateForTest('tab.models'), 'Models');
+  assert.equal(api.translateForTest('tab.speed'), 'Speed');
+  assert.equal(api.translateForTest('models.btn.saveApply'), 'Save & Apply');
+  assert.equal(h.elements.get('speed-bar-title').textContent, 'Output Speed Comparison');
+  assert.equal(h.elements.get('panel-lang-save-badge').textContent, api.translateForTest('settings.panelLang.saved'));
+  assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '切换为 English 后模型正式名称应保持原样');
+  assert.equal(h.elements.get('speed-badge').textContent, 'Smooth');
+  assert.equal(storedSettings.contextPreferences['gemini-3-1-pro'].limitTokens, 512000, '已有模型上下文偏好必须保持原值');
+
+  // 4. 模拟重启恢复：重新挂载并从 getSettings 恢复为 en
+  api.dispose();
+  const h2 = harness();
+  h2.sandbox.window.contextMeterAPI = {
+    ...h2.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({ ok: true, ...storedSettings })
+  };
+  await h2.sandbox.__AGContextMeter.restoreSettingsForTest();
+  await h2.flush();
+  assert.equal(h2.sandbox.__AGContextMeter.getPanelLanguage(), 'en');
+  assert.equal(h2.elements.get('status').textContent, 'Request usage and cumulative session totals are tracked separately; session totals are local estimates.');
+  h2.sandbox.__AGContextMeter.dispose();
+});
+
+test('0.8.3 UI & restart & i18n regression: model selector moved into tab, details collapsed, restart button persists on patched_runtime_unconfirmed', async () => {
+  const pathMod = require('path');
+  const html = fs.readFileSync(pathMod.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const headerStart = html.indexOf('<div class="panel-header-bar">');
+  const tabsStart = html.indexOf('<div id="ctx-tabs-bar"');
+  assert.ok(headerStart >= 0 && tabsStart > headerStart);
+  const headerSlice = html.slice(headerStart, tabsStart);
+  assert.equal(headerSlice.includes('ctx-model-dropdown-wrap'), false, '标题栏第一行不应再包含模型下拉选择器');
+  const modelsPaneStart = html.indexOf('<div id="pane-ctx-models"');
+  const speedPaneStart = html.indexOf('<div id="pane-ctx-speed"');
+  const modelsPaneSlice = html.slice(modelsPaneStart, speedPaneStart);
+  assert.equal(modelsPaneSlice.includes('ctx-model-dropdown-wrap'), true, '模型选择器应位于模型设置页内');
+  assert.equal(modelsPaneSlice.includes('ctx-card-details-drawer'), true, '实测预算与速度详情应位于下层折叠抽屉');
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  assert.notEqual(h.elements.get('ctx-card-drawer-body').style.display, 'block');
+  h.elements.get('btn-toggle-card-details').click();
+  assert.equal(h.elements.get('ctx-card-drawer-body').style.display, 'block');
+  h.elements.get('btn-toggle-card-details').click();
+  assert.equal(h.elements.get('ctx-card-drawer-body').style.display, 'none');
+
+  // 模拟应用 1000000 后刷新状态返回 patched_runtime_unconfirmed，重启按钮必须保持可见
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: {
+        status: 'patched_runtime_unconfirmed',
+        arch: 'x86-64',
+        clientMode: 'fixed',
+        clientLimitTokens: 1000000,
+        hasBackup: true
+      }
+    }),
+    applyContextUnlock: async () => ({
+      ok: true,
+      status: 'patched_pending_restart',
+      arch: 'x86-64',
+      configuredMode: 'fixed',
+      configuredLimitTokens: 1000000,
+      needsRestart: true,
+      hasBackup: true
+    }),
+    saveSettings: async (p) => ({ ok: true, contextPreferences: {} })
+  };
+
+  api.setContextLatestForTest({
+    model: 'Gemini 3.8 Flash (Medium)',
+    modelId: 'gemini-3-8-flash-medium',
+    cascadeModelConfigs: [
+      { label: 'Gemini 3.8 Flash (Medium)', modelOrAlias: { model: 'gemini-3-8-flash-medium' } }
+    ]
+  });
+  await h.flush();
+
+  const limitInput = h.elements.get('ctx-custom-limit-input');
+  limitInput.value = '1000000';
+  limitInput.trigger('input');
+  h.elements.get('btn-apply-unlock').click();
+  await h.flush();
+  assert.equal(h.elements.get('btn-restart-host').hidden, false, '应用成功后即使状态为 patched_runtime_unconfirmed，重启按钮也必须可见');
+
+  // 切换至英文后确认新增 i18n 键非空且不等于中文
+  h.elements.get('btn-panel-lang-en').click();
+  await h.flush();
+  assert.equal(api.translateForTest('models.card.detailsToggle'), 'Observed budget, speed & details');
+  assert.equal(api.translateForTest('cost.subSpendLabel'), 'Your Actual Spend');
+  assert.equal(api.translateForTest('diag.ctx.badge'), 'Limit');
+  api.dispose();
+});
+
+test('0.8.3 增强设置中心全流程：品牌三态、0~4档矩阵、推荐配置勾选确认与恢复官方默认', async () => {
+  const calls = { enhanceApply: [], enhanceRestore: 0, toggleMod: [], unlockApply: [], unlockRestore: 0, restartLs: 0 };
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getEnhanceStatus: async () => ({
+      ok: true,
+      data: {
+        supported: true,
+        summary: {
+          promptTier: 0,
+          chineseTitleEnabled: false,
+          chineseTitleMode: 'en',
+          slotCount: 10,
+          activeSlotBytes: 3100,
+          totalCapacityBytes: 8192,
+          allBackedUp: false
+        }
+      }
+    }),
+    applyEnhancePatch: async (p) => {
+      calls.enhanceApply.push(p);
+      return { ok: true, needsRestart: true };
+    },
+    restoreAllEnhance: async () => {
+      calls.enhanceRestore++;
+      return { ok: true, needsRestart: true };
+    },
+    restartLanguageServers: async () => {
+      calls.restartLs++;
+      return { ok: true, killed: ['language_server.exe'] };
+    },
+    getModulesStatus: async () => ({
+      ok: true,
+      data: { modules: { chinese: { enabled: false, brandTitle: 'english' }, proxy: { enabled: false } } },
+      disk: { chinese: false, proxy: false }
+    }),
+    toggleModule: async (name, enable, opts) => {
+      calls.toggleMod.push({ name, enable, opts });
+      return { ok: true };
+    },
+    applyContextUnlock: async (p) => {
+      calls.unlockApply.push(p);
+      return { ok: true, needsRestart: true };
+    },
+    restoreContextUnlock: async () => {
+      calls.unlockRestore++;
+      return { ok: true };
+    }
+  };
+
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+  assert.equal(h.elements.get('enhance-stat-backup').textContent, '无（未改写）');
+
+  // 1. 切换品牌展示为「隐藏」
+  h.elements.get('btn-brand-hidden').click();
+  await h.flush();
+  assert.equal(calls.toggleMod.length, 1);
+  assert.equal(calls.toggleMod[0].opts.brandTitle, 'hidden');
+
+  // 2. 选择 4 档，核对保留/清空/替换矩阵文案更新
+  h.elements.get('enhance-tier-4').click();
+  assert.match(h.elements.get('enhance-tier-replaces').textContent, /证据准则|真实工具/);
+
+  // 3. 勾选推荐配置四项 -> 弹窗预览确认 -> 一键写入
+  h.elements.get('chk-rec-prompt').checked = true;
+  h.elements.get('chk-rec-title').checked = true;
+  h.elements.get('chk-rec-lang').checked = true;
+  h.elements.get('chk-rec-ctx').checked = true;
+  h.elements.get('btn-enhance-preset-apply').click();
+  assert.equal(h.elements.get('enhance-preset-confirm').hidden, false);
+
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  assert.equal(calls.enhanceApply[0].promptTier, 4);
+  assert.equal(calls.enhanceApply[0].chineseTitle, true);
+  assert.equal(calls.toggleMod.some(c => c.name === 'chinese' && c.enable === true), true);
+  assert.equal(calls.unlockApply[0].mode, 'dynamic');
+  assert.equal(h.elements.get('btn-enhance-restart-ls').hidden, false);
+  assert.equal(h.elements.get('btn-enhance-restart-host').hidden, false);
+
+  // 4. 恢复全部官方默认
+  h.elements.get('btn-enhance-restore-all').click();
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  assert.equal(calls.enhanceRestore, 1);
+  assert.equal(calls.unlockRestore, 1);
+  assert.equal(calls.toggleMod.at(-1).enable, false);
+  api.dispose();
+});
+
+test('0.8.3 结果框重启/手动引导、partial_match 重试与全量三语言无遗漏', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 1. 模拟不支持自动重启的预览态 + 状态 partial_match -> 重试按钮必须可见，不误显示重启按钮
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: {
+        status: 'partial_match',
+        arch: 'x86-64',
+        hostSupportsRestart: false,
+        partialMatchReason: '未找到可用的上下文写入模式或目标特征不完整'
+      }
+    }),
+    saveSettings: async () => ({ ok: true, contextPreferences: {} })
+  };
+
+  await api.refreshUnlockStatusForTest();
+  await h.flush();
+  const uiState1 = api.getUnlockUiStateForTest();
+  assert.equal(uiState1.resultBoxDisplay, 'block');
+  assert.equal(uiState1.resultRetryHidden, false, 'partial_match 时应显示重新检测按钮');
+  assert.equal(uiState1.resultRestartHidden, true, '不支持自动重启时不应显示假重启按钮');
+
+  // 2. 切换为 zh-TW 和 en 验证所有核心增强与错误键都有准确非空翻译
+  for (const lang of ['zh-TW', 'en']) {
+    await api.setPanelLanguage(lang, { persist: false });
+    const titleVal = api.translateForTest('enhance.preset.title');
+    const partialVal = api.translateForTest('status.badge.partialMatch');
+    const halluVal = api.translateForTest('enhance.hallucinationNote');
+    assert.ok(titleVal && titleVal !== 'enhance.preset.title');
+    assert.ok(partialVal && partialVal !== 'status.badge.partialMatch');
+    assert.ok(halluVal && halluVal !== 'enhance.hallucinationNote');
+    if (lang === 'en') {
+      assert.equal(/[\u4e00-\u9fa5]/.test(titleVal), false, `en 文案不应含汉字: ${titleVal}`);
+      assert.equal(/[\u4e00-\u9fa5]/.test(partialVal), false, `en 文案不应含汉字: ${partialVal}`);
+    }
+  }
+  api.dispose();
+});
+
+test('0.8.3 推荐配置按勾选隔离且部分失败准确分列成功/失败，全部恢复不吞异常', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const calls = { enhanceApply: 0, toggleMod: 0, unlockApply: 0, unlockRestore: 0 };
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getEnhanceStatus: async () => ({ ok: true, data: { supported: true, summary: { promptTier: 0, chineseTitleMode: 'en' } } }),
+    applyEnhancePatch: async () => { calls.enhanceApply++; return { ok: true, needsRestart: true }; },
+    restoreAllEnhance: async () => ({ ok: true, needsRestart: true }),
+    getModulesStatus: async () => ({ ok: true, data: { modules: { chinese: { enabled: false, brandTitle: 'english' } } }, disk: {} }),
+    toggleModule: async () => { calls.toggleMod++; return { ok: false, error: 'app.asar 被占用' }; },
+    applyContextUnlock: async () => { calls.unlockApply++; return { ok: true, needsRestart: true }; },
+    restoreContextUnlock: async () => { calls.unlockRestore++; return { ok: false, error: 'language_server.exe 被锁定' }; }
+  };
+
+  h.elements.get('btn-ctx-settings').click();
+  await h.flush();
+
+  // 1. 只勾选上下文一项：其余三项调用数必须为 0
+  h.elements.get('chk-rec-prompt').checked = false;
+  h.elements.get('chk-rec-title').checked = false;
+  h.elements.get('chk-rec-lang').checked = false;
+  h.elements.get('chk-rec-ctx').checked = true;
+  h.elements.get('btn-enhance-preset-apply').click();
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  assert.equal(calls.enhanceApply, 0);
+  assert.equal(calls.toggleMod, 0);
+  assert.equal(calls.unlockApply, 1);
+
+  // 2. 恢复全部默认：提示词成功，但语言开关和上下文还原均返回失败 -> 绝不能整组报成功
+  h.elements.get('btn-enhance-restore-all').click();
+  assert.match(h.elements.get('enhance-preset-confirm-text').textContent, /不会清除网络代理/);
+  h.elements.get('btn-enhance-confirm-go').click();
+  await h.flush();
+  const resText = h.elements.get('enhance-global-result-text').textContent;
+  assert.match(resText, /部分完成/);
+  assert.match(resText, /app\.asar 被占用/);
+  assert.match(resText, /language_server\.exe 被锁定/);
+  assert.match(h.elements.get('enhance-global-result').className, /result-error/);
+  api.dispose();
+});
+
+test('0.8.3 UI 模式切换：所有模型统一设置与按模型分别设置切换、极简看板与详细信息折叠抽屉', async () => {
+  const h = harness();
+  let savedSettings = null;
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    getSettings: async () => ({
+      ok: true,
+      contextScopeMode: 'unified',
+      contextUnifiedPreference: { mode: 'fixed', limitTokens: 500000 },
+      contextPreferences: {
+        'product:google:gemini-3.8-flash': { mode: 'fixed', limitTokens: 512000 }
+      }
+    }),
+    saveSettings: async (payload) => {
+      savedSettings = payload;
+      return { ok: true, contextPreferences: {} };
+    },
+    getContextUnlockStatus: async () => ({
+      ok: true,
+      data: { status: 'not_patched', arch: 'x86-64', hostSupportsRestart: false }
+    })
+  };
+
+  h.elements.get('badge').click();
+  await h.flush();
+  const api = h.sandbox.__AGContextMeter;
+  api.setContextLatestForTest({
+    model: 'Gemini 3.8 Flash',
+    modelId: 'gemini-3.8-flash',
+    status: 'reported',
+    used: 12000,
+    budget: 256000,
+    remaining: 244000
+  }, [
+    { modelId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' }
+  ]);
+  h.elements.get('tab-ctx-models').click();
+  await h.flush();
+
+  // 1. 验证极简主看板元素存在且内容直观
+  const summaryModeEl = h.elements.get('ctx-summary-mode');
+  const summaryModelEl = h.elements.get('ctx-summary-model');
+  const summaryLengthEl = h.elements.get('ctx-summary-length');
+  const summaryPillEl = h.elements.get('ctx-summary-status-pill');
+  assert.ok(summaryModeEl, '当前模式元素存在');
+  assert.ok(summaryModelEl, '当前模型元素存在');
+  assert.ok(summaryLengthEl, '当前使用长度元素存在');
+  assert.ok(summaryPillEl, '当前状态角标存在');
+
+  // 2. 初始统一模式下：模型选择器工具条与模型列表处于隐藏状态
+  const btnUnified = h.elements.get('btn-ctx-mode-unified');
+  const btnPerModel = h.elements.get('btn-ctx-mode-per-model');
+  const toolbar = h.elements.get('ctx-models-toolbar');
+  const modelList = h.elements.get('ctx-model-list');
+  assert.equal(toolbar.hidden, true);
+  assert.equal(modelList.hidden, true);
+
+  // 3. 点击切换为按模型分别设置
+  btnPerModel.click();
+  await h.flush();
+  assert.equal(api.getContextScopeModeForTest(), 'per_model');
+  assert.equal(toolbar.hidden, false);
+  assert.equal(modelList.hidden, false);
+  assert.match(summaryModeEl.textContent, /按模型分别设置/);
+
+  // 4. 折叠抽屉：详细信息默认折叠，点击展开与收起
+  const cardDrawerBody = h.elements.get('ctx-card-drawer-body');
+  const toggleBtn = h.elements.get('btn-toggle-card-details');
+  assert.ok(toggleBtn);
+  assert.ok(cardDrawerBody);
+  toggleBtn.click();
+  assert.equal(cardDrawerBody.style.display, 'block');
+  toggleBtn.click();
+  assert.equal(cardDrawerBody.style.display, 'none');
+
+  // 5. 切回统一设置：原统一设置完好保留，不冲刷也不丢失
+  btnUnified.click();
+  await h.flush();
+  assert.equal(api.getContextScopeModeForTest(), 'unified');
+  assert.equal(toolbar.hidden, true);
+  assert.equal(modelList.hidden, true);
+
+  api.dispose();
+});
+
+test('0.8.3 设置页品牌选项与动态反馈单语言三态一致性', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const nodePath = require('node:path');
+  const templateHtml = fs.readFileSync(nodePath.join(__dirname, 'src/renderer/template.html'), 'utf8');
+  const brandNodeSpecs = [
+    ['btn-brand-english', 'enhance.brand.english'],
+    ['btn-brand-hidden', 'enhance.brand.hidden'],
+    ['btn-brand-translated', 'enhance.brand.translated']
+  ];
+  // 校验 template.html 中的 data-i18n 与实际键绑定一致
+  for (const [id, key] of brandNodeSpecs) {
+    assert.match(templateHtml, new RegExp(`id="${id}"[\\s\\S]{0,160}data-i18n="${key}"`));
+  }
+  const brandNodes = brandNodeSpecs.map(([id, key]) => {
+    const node = h.elements.get(id);
+    node.getAttribute = (k) => (k === 'data-i18n' ? key : null);
+    return node;
+  });
+  const mockRoot = {
+    querySelectorAll: (sel) => (sel === '[data-i18n]' ? brandNodes : [])
+  };
+
+  try {
+    h.elements.get('btn-ctx-settings').click();
+    await h.flush();
+
+    h.elements.get('btn-top-lang-en').click();
+    await h.flush();
+    api.applyStaticTranslationsForTest(mockRoot);
+    assert.equal(h.elements.get('btn-brand-english').textContent, 'Antigravity');
+    assert.equal(h.elements.get('btn-brand-hidden').textContent, 'Hide');
+    assert.equal(h.elements.get('btn-brand-translated').textContent, 'Translated Name');
+    assert.equal(api.translateForTest('enhance.brand.appliedName', { mode: 'Antigravity' }), 'Header name updated to "Antigravity" (applied).');
+    assert.equal(api.translateForTest('enhance.brand.appliedHidden'), 'Header name hidden (applied).');
+
+    h.elements.get('btn-top-lang-zh-TW').click();
+    await h.flush();
+    api.applyStaticTranslationsForTest(mockRoot);
+    assert.equal(h.elements.get('btn-brand-english').textContent, 'Antigravity');
+    assert.equal(h.elements.get('btn-brand-hidden').textContent, '隱藏');
+    assert.equal(h.elements.get('btn-brand-translated').textContent, '反重力');
+    assert.equal(api.translateForTest('enhance.brand.appliedHidden'), '已儲存並套用：左上角品牌已隱藏。');
+
+    h.elements.get('btn-top-lang-zh-CN').click();
+    await h.flush();
+    api.applyStaticTranslationsForTest(mockRoot);
+    assert.equal(h.elements.get('btn-brand-english').textContent, 'Antigravity');
+    assert.equal(h.elements.get('btn-brand-hidden').textContent, '隐藏');
+    assert.equal(h.elements.get('btn-brand-translated').textContent, '反重力');
+    assert.equal(api.translateForTest('enhance.brand.appliedHidden'), '已保存并应用：左上角品牌已隐藏。');
+  } finally {
+    api.dispose();
+  }
+});
+
+// --- PR #9 实时同步与队列测试 ---
+const path = require('node:path');
+
+test('real-time token history refresh: idle dedup, recordCalls ordering, a 5s automatic scan interval, and busy coalescing', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  // Drain initial boot scan & initial requestPoll microtasks first
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  let recordCallsDeferred = null;
+  const historyDeferredQueue = [];
+  let autoResolveHistory = true;
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const ids = calls.map(c => c.callId).join(',');
+      events.push(`recordCalls:${ids}`);
+      if (recordCallsDeferred) {
+        const p = recordCallsDeferred.promise;
+        recordCallsDeferred = null;
+        return p;
+      }
+      return Promise.resolve({ ok: true, changed: false });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      if (!autoResolveHistory) {
+        return new Promise(resolve => {
+          historyDeferredQueue.push({ force: Boolean(force), resolve });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 12:30:00',
+          summary: { grandTotalTokens: 40000, todayTokens: 4000 },
+          dailyMap: { '2026-11-12': { total: 4000, input: 3000, cache: 500, output: 500, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // (a) Initial hydration poll resolves a final row (changed: false) -> recorded once, then repeated idle 3s polls do NOT re-invoke recordCalls or getTokenHistory
+    const idleRow = {
+      stepIndices: [2],
+      chatModel: {
+        modelDisplayName: 'Gemini 3.8 Flash (High)',
+        responseModel: 'gemini-3.8-flash',
+        usage: { inputTokens: 10000, cacheReadTokens: 2000, outputTokens: 500, responseId: 'resp-idle-1' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-idle-1']);
+
+    events.length = 0;
+    // Idle 3s poll #2 with identical final row
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Idle poll #2 with unchanged final row must not call recordCalls or getTokenHistory');
+
+    // Idle 3s poll #3 with identical final row
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Idle poll #3 with unchanged final row must not call recordCalls or getTokenHistory');
+
+    // (b) Streaming row does not trigger recordCalls/getTokenHistory; newly-final transition awaits recordCalls strictly BEFORE getTokenHistory(true)
+    const streamingRow = {
+      isStreaming: true,
+      status: 'streaming',
+      stepIndices: [5],
+      chatModel: {
+        modelDisplayName: 'Gemini 3.8 Flash (High)',
+        usage: { inputTokens: 12000, outputTokens: 120, responseId: 'resp-live-2' }
+      }
+    };
+    fakeNow += 3500;
+    h.tick();
+    h.pending[3].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, streamingRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'In-flight streaming row must not trigger final ledger write or token history rescan');
+
+    let resolveRecord;
+    recordCallsDeferred = {
+      promise: new Promise(r => { resolveRecord = r; })
+    };
+    const finalRow2 = {
+      stepIndices: [5],
+      chatModel: {
+        modelDisplayName: 'Gemini 3.8 Flash (High)',
+        responseModel: 'gemini-3.8-flash',
+        timeToFirstToken: '1.2s',
+        streamingDuration: '2.0s',
+        usage: { inputTokens: 12000, cacheReadTokens: 4000, outputTokens: 600, responseId: 'resp-live-2' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+      }
+    };
+    fakeNow += 3500;
+    h.tick();
+    h.pending[4].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, finalRow2] }) });
+    await flushAsync();
+
+    // Context badge updates immediately without blocking on recordCalls, while getTokenHistory(true) waits for recordCalls!
+    assert.equal(api.snapshot().latest.actual, 16600);
+    assert.deepEqual(events, ['recordCalls:resp-live-2'], 'getTokenHistory must NOT fire before recordCalls resolves');
+
+    events.push('resolvingRecordCalls');
+    resolveRecord({ ok: true, changed: true });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp-live-2',
+      'resolvingRecordCalls',
+      'getTokenHistory:true'
+    ], 'getTokenHistory(true) must fire strictly after recordCalls resolves');
+
+    // Usage progression on an already-final row triggers once, then stabilizes
+    events.length = 0;
+    const calibratedRow2 = {
+      ...finalRow2,
+      chatModel: {
+        ...finalRow2.chatModel,
+        usage: { inputTokens: 12000, cacheReadTokens: 4000, outputTokens: 950, responseId: 'resp-live-2' }
+      }
+    };
+    fakeNow += 3500;
+    h.tick();
+    h.pending[5].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, calibratedRow2] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-live-2'], 'Ledger writes should proceed during the scan cooldown');
+
+    fakeNow += 1499;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-live-2'], 'No automatic scan before five seconds');
+
+    fakeNow += 1;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-live-2', 'getTokenHistory:true']);
+
+    events.length = 0;
+    fakeNow += 2000;
+    h.tick();
+    h.pending[6].resolve({ ok: true, json: async () => ({ generatorMetadata: [idleRow, calibratedRow2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Calibrated final row must not re-trigger on subsequent idle poll');
+
+    // (c) Concurrent syncTokenHistoryFromHost requests while historySyncBusy coalesce into at most ONE trailing getTokenHistory(true)
+    events.length = 0;
+    autoResolveHistory = false;
+
+    void api.syncTokenHistoryFromHost(false);
+    await flushAsync();
+    assert.equal(historyDeferredQueue.length, 1);
+    assert.equal(historyDeferredQueue[0].force, false);
+    assert.deepEqual(events, ['getTokenHistory:false']);
+
+    // Fire 5 overlapping refresh requests (including opening #panel-tokens and explicit force=true calls) while busy
+    void api.syncTokenHistoryFromHost(false);
+    h.elements.get('badge-tokens').click(); // showPanel('tokens') -> syncTokenHistoryFromHost(true)
+    void api.syncTokenHistoryFromHost(true);
+    void api.syncTokenHistoryFromHost(true);
+    void api.syncTokenHistoryFromHost(false);
+    await flushAsync();
+
+    assert.equal(historyDeferredQueue.length, 1, 'No parallel getTokenHistory calls while historySyncBusy is true');
+    assert.deepEqual(events, ['getTokenHistory:false']);
+
+    // Resolve the in-flight sync -> must launch AT MOST ONE trailing sync, upgraded to force=true
+    historyDeferredQueue[0].resolve({
+      ok: true,
+      data: {
+        updatedAt: '2026-11-12 12:31:00',
+        summary: { grandTotalTokens: 50000, todayTokens: 5000 },
+        dailyMap: { '2026-11-12': { total: 5000, input: 4000, cache: 500, output: 500, steps: 2 } }
+      }
+    });
+    await flushAsync();
+
+    assert.equal(historyDeferredQueue.length, 2, 'Exactly one trailing getTokenHistory call must start');
+    assert.equal(historyDeferredQueue[1].force, true, 'Trailing coalesced call must preserve force=true');
+    assert.deepEqual(events, ['getTokenHistory:false', 'getTokenHistory:true']);
+
+    // Resolve the trailing sync -> must settle cleanly with zero extra calls and render latest payload
+    historyDeferredQueue[1].resolve({
+      ok: true,
+      data: {
+        updatedAt: '2026-11-12 12:31:05',
+        summary: { grandTotalTokens: 88000, todayTokens: 8000 },
+        dailyMap: { '2026-11-12': { total: 8000, input: 6000, cache: 1000, output: 1000, steps: 3 } }
+      }
+    });
+    await flushAsync();
+
+    assert.equal(historyDeferredQueue.length, 2, 'No extra trailing syncs after coalesced sync finishes');
+    assert.equal(h.elements.get('token-amount').textContent, '88.0K');
+
+    // Also verify non-forced requests arriving while busy coalesce into ONE trailing getTokenHistory(false)
+    events.length = 0;
+    historyDeferredQueue.length = 0;
+    void api.syncTokenHistoryFromHost(true);
+    await flushAsync();
+    assert.equal(historyDeferredQueue.length, 1);
+    assert.equal(historyDeferredQueue[0].force, true);
+    void api.syncTokenHistoryFromHost(false);
+    void api.syncTokenHistoryFromHost(false);
+    await flushAsync();
+    historyDeferredQueue[0].resolve({
+      ok: true,
+      data: { updatedAt: '2026-11-12 12:31:10', summary: { grandTotalTokens: 88000, todayTokens: 8000 }, dailyMap: {} }
+    });
+    await flushAsync();
+    assert.equal(historyDeferredQueue.length, 2);
+    assert.equal(historyDeferredQueue[1].force, false, 'Non-forced pending syncs keep nextForce=false');
+    historyDeferredQueue[1].resolve({
+      ok: true,
+      data: { updatedAt: '2026-11-12 12:31:12', summary: { grandTotalTokens: 88000, todayTokens: 8000 }, dailyMap: {} }
+    });
+    await flushAsync();
+    assert.deepEqual(events, ['getTokenHistory:true', 'getTokenHistory:false']);
+
+    // Verify 15s polling fallback still works when >15000ms elapses
+    events.length = 0;
+    autoResolveHistory = true;
+    fakeNow += 16000;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['getTokenHistory:false']);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('requestPoll retries recordCalls on next 3s poll after failure or rejection and commits only on ok:true', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  let attempt = 0;
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      attempt++;
+      const ids = calls.map(c => c.callId).join(',');
+      events.push(`recordCalls#${attempt}:${ids}`);
+      if (attempt === 1) {
+        return Promise.resolve({ ok: false, error: 'write failed' });
+      }
+      if (attempt === 2) {
+        return Promise.reject(new Error('IPC channel busy'));
+      }
+      return Promise.resolve({ ok: true, changed: true });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 14:25:00',
+          summary: { grandTotalTokens: 64000, todayTokens: 14000 },
+          dailyMap: { '2026-11-12': { total: 14000, input: 10000, cache: 3000, output: 1000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  const finalRow = {
+    stepIndices: [3],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 10000, cacheReadTokens: 3000, outputTokens: 1000, responseId: 'resp-retry-1' },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  };
+
+  try {
+    // Poll 1: recordCalls returns { ok: false, error: 'write failed' } -> must NOT commit or call getTokenHistory(true)
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls#1:resp-retry-1'], 'Failed recordCalls (ok:false) must not trigger getTokenHistory(true)');
+
+    // Poll 2 (next 3s tick): identical finalRow -> retried (#2), rejects -> must NOT commit or call getTokenHistory(true)
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls#2:resp-retry-1'], 'Rejected recordCalls must not trigger getTokenHistory(true) and must stay retryable');
+
+    // Poll 3 (next 3s tick): identical finalRow -> retried (#3), succeeds ({ ok: true, changed: true }) -> commits & triggers getTokenHistory(true)
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls#3:resp-retry-1', 'getTokenHistory:true'], 'Successful retry must trigger getTokenHistory(true)');
+    assert.equal(h.elements.get('token-amount').textContent, '64.0K');
+
+    // Poll 4 (next 3s tick): identical finalRow -> already committed in syncedFinalMap, zero further recordCalls attempts!
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 4);
+    h.pending[3].resolve({ ok: true, json: async () => ({ generatorMetadata: [finalRow] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Once recordCalls succeeds, subsequent idle polls must not re-send');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('pendingFinalCalls retains 5-row batch across offset=2 sliding window, retries via tick() without RPC rows, and re-flushes in-flight progressions', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const makeRow = (id, stepIdx, outTokens = 400) => ({
+    stepIndices: [stepIdx],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 8000 + stepIdx * 100, cacheReadTokens: 2000, outputTokens: outTokens, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  const events = [];
+  const savedLedger = new Map();
+  let recordBehavior = () => Promise.resolve({ ok: true, changed: true });
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const summary = calls.map(c => `${c.callId}:${c.outputTokens}`).join(',');
+      events.push(`recordCalls:${summary}`);
+      return recordBehavior(calls);
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 15:00:00',
+          summary: { grandTotalTokens: 95000, todayTokens: 25000 },
+          dailyMap: { '2026-11-12': { total: 25000, input: 18000, cache: 5000, output: 2000, steps: 5 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // Part 1: Direct 5-row sliding-window failure (Poll 1 offset=0 -> Poll 2 +3.5s offset=2 with call_3..call_5 -> Poll 3 makes 0 recordCalls)
+    const rowsA = [1, 2, 3, 4, 5].map(n => makeRow(`call_${n}`, n, 300));
+    assert.equal(JSON.parse(h.pending[0].options.body).generatorMetadataOffset, 0);
+
+    recordBehavior = () => Promise.resolve({ ok: false, error: 'disk write failed' });
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsA }) });
+    await flushAsync();
+
+    assert.equal(api.snapshot().count, 5);
+    assert.deepEqual(events, [
+      'recordCalls:call_1:300,call_2:300,call_3:300,call_4:300,call_5:300'
+    ], 'Poll 1 attempts all 5 calls and does not call getTokenHistory on failure');
+
+    // Poll 2 (+3.5s): offset slides to Math.max(0, 5 - 3) = 2, returning ONLY call_3..call_5
+    events.length = 0;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 2);
+    assert.equal(JSON.parse(h.pending[1].options.body).generatorMetadataOffset, 2);
+    h.pending[1].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsA.slice(2) }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:call_1:300,call_2:300,call_3:300,call_4:300,call_5:300',
+      'getTokenHistory:true'
+    ], 'Retry must retain call_1 and call_2 despite offset=2 returning only call_3..call_5');
+    assert.deepEqual(Array.from(savedLedger.keys()), ['call_1', 'call_2', 'call_3', 'call_4', 'call_5']);
+
+    // Poll 3 (+3.5s): offset=2 returning call_3..call_5 -> 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    assert.equal(h.pending.length, 3);
+    h.pending[2].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsA.slice(2) }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Poll 3 must make 0 recordCalls after all 5 calls were saved');
+
+    // Part 2: Sliding window + tick() retry when RPC is NOT polled yet AND after RPC returns []
+    savedLedger.clear();
+    h.sandbox.location.pathname = '/c/33333333-3333-3333-3333-333333333333';
+    h.tick();
+    h.finishScan(1);
+    await flushAsync();
+    events.length = 0;
+
+    const rowsB = [1, 2, 3, 4, 5].map(n => makeRow(`b_${n}`, n, 250));
+    const pollB1Idx = h.pending.length - 1;
+    assert.equal(JSON.parse(h.pending[pollB1Idx].options.body).generatorMetadataOffset, 0);
+
+    let resolveSlowFail;
+    recordBehavior = () => new Promise(r => { resolveSlowFail = r; });
+    h.pending[pollB1Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsB }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:b_1:250,b_2:250,b_3:250,b_4:250,b_5:250']);
+
+    // Slow failure finishes at +1000ms -> requestNext is +3000ms while nextFlushRetryAt is +4000ms
+    events.length = 0;
+    fakeNow += 1000;
+    resolveSlowFail({ ok: false, error: 'ipc timeout' });
+    await flushAsync();
+
+    // At +3200ms: Poll 2 (offset=2) runs and returns ONLY b_3..b_5 BEFORE nextFlushRetryAt (+4000ms)
+    fakeNow += 2200;
+    h.tick();
+    const pollB2Idx = h.pending.length - 1;
+    assert.equal(JSON.parse(h.pending[pollB2Idx].options.body).generatorMetadataOffset, 2);
+    h.pending[pollB2Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rowsB.slice(2) }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Retry waits until nextFlushRetryAt backoff expires');
+
+    // At +4100ms: tick() runs WITHOUT any new RPC poll (requestNext is +6200ms) -> retries all 5!
+    const pendingBeforeTickRetry = h.pending.length;
+    recordBehavior = () => Promise.reject(new Error('still busy'));
+    fakeNow += 900;
+    h.tick();
+    await flushAsync();
+    assert.equal(h.pending.length, pendingBeforeTickRetry, 'No RPC poll needed for tick() retry');
+    assert.deepEqual(events, ['recordCalls:b_1:250,b_2:250,b_3:250,b_4:250,b_5:250']);
+
+    // At +6500ms: Poll 3 runs and RPC returns empty [] -> pendingFinalCalls must still keep b_1..b_5!
+    events.length = 0;
+    fakeNow += 2400;
+    h.tick();
+    const pollB3Idx = h.pending.length - 1;
+    h.pending[pollB3Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await flushAsync();
+    assert.equal(api.snapshot().count, 0);
+    assert.deepEqual(events, []);
+
+    // At +7200ms: tick() retries again WITHOUT RPC returning any rows -> succeeds & saves all 5!
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    const pendingBeforeEmptyRecovery = h.pending.length;
+    fakeNow += 700;
+    h.tick();
+    await flushAsync();
+    assert.equal(h.pending.length, pendingBeforeEmptyRecovery);
+    assert.deepEqual(events, [
+      'recordCalls:b_1:250,b_2:250,b_3:250,b_4:250,b_5:250',
+      'getTokenHistory:true'
+    ], 'All 5 pending calls survive RPC [] and commit via tick() retry');
+    assert.deepEqual(Array.from(savedLedger.keys()), ['b_1', 'b_2', 'b_3', 'b_4', 'b_5']);
+
+    // Part 3: If a call progresses to larger { tot, out } while flushPendingFinalCalls is in flight, it is NOT deleted and triggers a follow-up flush
+    events.length = 0;
+    let resolveInFlight;
+    recordBehavior = calls => new Promise(r => {
+      resolveInFlight = val => {
+        for (const c of calls) savedLedger.set(c.callId, c);
+        r(val);
+      };
+    });
+    fakeNow += 3500;
+    h.tick();
+    const pollB4Idx = h.pending.length - 1;
+    h.pending[pollB4Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow('b_6', 6, 120)] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:b_6:120']);
+
+    // While b_6:120 flush is still in flight, next poll calibrates b_6 to outputTokens=480
+    fakeNow += 3500;
+    h.tick();
+    const pollB5Idx = h.pending.length - 1;
+    h.pending[pollB5Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow('b_6', 6, 480)] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:b_6:120'], 'Single-flight guard prevents overlapping flush');
+
+    // Prepare immediate resolution for the follow-up flush when in-flight flush completes
+    const finishFirstFlush = resolveInFlight;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    finishFirstFlush({ ok: true, changed: true });
+    await flushAsync();
+
+    assert.equal(savedLedger.get('b_6')?.outputTokens, 480, 'Follow-up flush must persist progressed outputTokens=480');
+    assert.equal(events.includes('recordCalls:b_6:480'), true, 'Progressed pending call must trigger follow-up flush in finally');
+
+    // Subsequent idle poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    const pollB6Idx = h.pending.length - 1;
+    h.pending[pollB6Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow('b_6', 6, 480)] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'Idle poll after follow-up flush makes 0 recordCalls');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('pendingFinalCalls survives route switches across conversations and / home screen and retries via tick()', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  const savedLedger = new Map();
+  let recordBehavior = () => Promise.resolve({ ok: true, changed: true });
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}@${c.cascadeId.slice(0, 8)}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      return recordBehavior(calls);
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 15:30:00',
+          summary: { grandTotalTokens: 112000, todayTokens: 32000 },
+          dailyMap: { '2026-11-12': { total: 32000, input: 24000, cache: 5000, output: 3000, steps: 2 } }
+        }
+      });
+    }
+  };
+
+  const rowUuid1 = {
+    stepIndices: [1],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 12000, cacheReadTokens: 3000, outputTokens: 1500, responseId: 'resp-route-u1' },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  };
+
+  const rowUuid2 = {
+    stepIndices: [2],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Carbon (High)',
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 12000, cacheReadTokens: 2000, outputTokens: 1500, responseId: 'resp-route-u2' },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  };
+
+  try {
+    // 1. In /c/11111111-..., Poll 1 fails ({ ok: false }) -> resp-route-u1 remains queued
+    recordBehavior = () => Promise.resolve({ ok: false, error: 'temporary lock' });
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowUuid1] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-route-u1@11111111']);
+
+    // 2. Switch route to /c/22222222-... AND then to / (id === null) before backoff expires
+    events.length = 0;
+    fakeNow += 500;
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    h.tick();
+    h.finishScan(1);
+    await flushAsync();
+
+    fakeNow += 500;
+    h.sandbox.location.pathname = '/';
+    h.tick();
+    await flushAsync();
+    assert.equal(api.snapshot().route, null);
+    assert.equal(api.snapshot().sessionCalls.length, 0);
+    // Only route-switch getTokenHistory(true) ran; backoff (+3000ms) hasn't expired yet
+    assert.equal(events.some(e => e.startsWith('recordCalls:')), false);
+
+    // 3. Once backoff expires while STILL on / (id === null), tick() retries recordCalls, saves uuid-1's call, empties queue, and refreshes history
+    events.length = 0;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    fakeNow += 2500; // total +3500ms since failure
+    h.tick();
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp-route-u1@11111111',
+      'getTokenHistory:true'
+    ], 'tick() on / home route must retry and commit queued call from previous conversation');
+    assert.equal(savedLedger.get('resp-route-u1')?.cascadeId, '11111111-1111-1111-1111-111111111111');
+    assert.equal(h.elements.get('token-amount').textContent, '112.0K');
+
+    // Subsequent tick() on / makes 0 recordCalls (queue is now empty)
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // 4. Also verify an in-flight flush completes and commits even if route switches to / mid-flight
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    h.tick();
+    h.finishScan(2);
+    await flushAsync();
+    events.length = 0;
+
+    let resolveMidFlight;
+    recordBehavior = calls => new Promise(r => {
+      resolveMidFlight = val => {
+        for (const c of calls) savedLedger.set(c.callId, c);
+        r(val);
+      };
+    });
+    const poll2Idx = h.pending.length - 1;
+    h.pending[poll2Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowUuid2] }) });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-route-u2@22222222']);
+
+    // Switch to / while recordCalls is still in flight
+    h.sandbox.location.pathname = '/';
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+
+    resolveMidFlight({ ok: true, changed: true });
+    await flushAsync();
+    assert.equal(savedLedger.has('resp-route-u2'), true);
+    assert.deepEqual(events, []);
+    fakeNow += 5000;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(events, ['getTokenHistory:true']);
+
+    // Re-entering /c/22222222-... and polling rowUuid2 again must NOT re-send resp-route-u2 (syncedFinalMap preserved across routes)
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    h.tick();
+    h.finishScan(3);
+    await flushAsync();
+    events.length = 0;
+    const pollReenterIdx = h.pending.length - 1;
+    h.pending[pollReenterIdx].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowUuid2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], 'syncedFinalMap retained across route switches prevents duplicate recordCalls on re-entry');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('flushPendingFinalCalls chunks >500 items and >900KB UTF-8 payloads for live-host limits and recovers from partial chunk failure', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 12; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  // Use live-host HTTP mode (enforcing live-host.js MAX_RECORD_CALLS=500 & MAX_BODY_BYTES=1MB)
+  delete h.sandbox.window.contextMeterAPI.recordCalls;
+  delete h.sandbox.window.contextMeterAPI.getTokenHistory;
+  h.sandbox.window.__AGContextMeterLive = { port: 43199, token: 'test-live-token' };
+
+  const chunkLog = [];
+  const savedIds = new Set();
+  let failNextChunk2Once = true;
+  const baseFetch = h.sandbox.fetch;
+  h.sandbox.fetch = (url, options = {}) => {
+    if (String(url).endsWith('/record-calls')) {
+      const rawBody = String(options.body || '');
+      const utf8Bytes = Buffer.byteLength(rawBody, 'utf8');
+      if (utf8Bytes > 1024 * 1024) {
+        chunkLog.push(`413:${utf8Bytes}`);
+        return Promise.resolve({ ok: false, status: 413, json: async () => ({ ok: false, error: 'Payload too large' }) });
+      }
+      assert.equal(utf8Bytes <= 900 * 1024, true, `Chunk UTF-8 bytes (${utf8Bytes}) must respect 900KB ceiling`);
+      const parsed = JSON.parse(rawBody);
+      const calls = parsed.calls || [];
+      if (calls.length > 500) {
+        chunkLog.push(`400:${calls.length}`);
+        return Promise.resolve({ ok: false, status: 400, json: async () => ({ ok: false, error: 'Too many calls' }) });
+      }
+      chunkLog.push(`chunk:${calls.length}:${calls[0]?.callId}..${calls[calls.length - 1]?.callId}`);
+      if (calls.length === 1 && calls[0]?.callId === 'c_501' && failNextChunk2Once) {
+        failNextChunk2Once = false;
+        return Promise.resolve({ ok: false, status: 503, json: async () => ({ ok: false, error: 'transient 503' }) });
+      }
+      for (const c of calls) savedIds.add(c.callId);
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, changed: true }) });
+    }
+    if (String(url).endsWith('/token-history')) {
+      const parsed = JSON.parse(String(options.body || '{}'));
+      chunkLog.push(`history:${Boolean(parsed.force)}`);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            updatedAt: '2026-11-12 15:35:00',
+            summary: { grandTotalTokens: 501000, todayTokens: 501000 },
+            dailyMap: { '2026-11-12': { total: 501000, input: 400000, cache: 50000, output: 51000, steps: 501 } }
+          }
+        })
+      });
+    }
+    if (String(url).endsWith('/get-settings')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false }) });
+    }
+    return baseFetch(url, options);
+  };
+
+  const makeFinalRow = (id, stepIdx, modelLabel = 'Gemini 4 Carbon (High)') => ({
+    stepIndices: [stepIdx],
+    chatModel: {
+      modelDisplayName: modelLabel,
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 800, cacheReadTokens: 100, outputTokens: 100, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  try {
+    // (a) 501 items: Chunk 1 (500 items) succeeds and commits immediately; Chunk 2 (1 item) fails once, then retries ONLY that 1 item
+    const rows501 = Array.from({ length: 501 }, (_, idx) => makeFinalRow(`c_${idx + 1}`, idx + 1));
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: rows501 }) });
+    await flushAsync();
+
+    assert.equal(savedIds.size, 500, 'Chunk 1 (500 items) must commit even when Chunk 2 fails');
+    assert.deepEqual(chunkLog, [
+      'chunk:500:c_1..c_500',
+      'chunk:1:c_501..c_501',
+      'history:true'
+    ]);
+
+    // After +3.5s backoff, tick() retries ONLY the remaining 1 item (c_501), NOT the already-confirmed 500 items!
+    chunkLog.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    const poll2Idx = h.pending.length - 1;
+    h.pending[poll2Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rows501.slice(498) }) });
+    await flushAsync();
+
+    assert.equal(savedIds.size, 501, 'Remaining Chunk 2 item must succeed on retry and drain queue to 0');
+    assert.deepEqual(chunkLog, ['chunk:1:c_501..c_501']);
+    fakeNow += 1500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(chunkLog, [
+      'chunk:1:c_501..c_501',
+      'history:true'
+    ]);
+
+    // Idle poll makes 0 /record-calls requests
+    chunkLog.length = 0;
+    fakeNow += 2000;
+    h.tick();
+    const poll3Idx = h.pending.length - 1;
+    h.pending[poll3Idx].resolve({ ok: true, json: async () => ({ generatorMetadata: rows501.slice(498) }) });
+    await flushAsync();
+    assert.deepEqual(chunkLog, []);
+
+    // (b) Multi-byte UTF-8 byte-limit chunking: 12 items with 35,000 CJK chars each (~105KB UTF-8 per item -> ~1.26MB total > 1MB, though UTF-16 length is only ~420K)
+    const bigCjkLabel = 'Gemini 4 ' + '测'.repeat(35000);
+    const bigRows = Array.from({ length: 12 }, (_, idx) => makeFinalRow(`big_${idx + 1}`, 600 + idx, bigCjkLabel));
+    fakeNow += 3500;
+    h.tick();
+    const pollBigIdx = h.pending.length - 1;
+    h.pending[pollBigIdx].resolve({ ok: true, json: async () => ({ generatorMetadata: bigRows }) });
+    await flushAsync();
+
+    const bigChunks = chunkLog.filter(entry => entry.startsWith('chunk:'));
+    assert.equal(bigChunks.length >= 2, true, `Expected >=2 UTF-8 byte-capped chunks, got: ${JSON.stringify(chunkLog)}`);
+    for (let i = 1; i <= 12; i++) {
+      assert.equal(savedIds.has(`big_${i}`), true, `Missing big_${i}`);
+    }
+
+    // Idle poll after byte-chunked drain makes 0 /record-calls requests
+    chunkLog.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    const pollAfterBigIdx = h.pending.length - 1;
+    h.pending[pollAfterBigIdx].resolve({ ok: true, json: async () => ({ generatorMetadata: bigRows.slice(9) }) });
+    await flushAsync();
+    assert.deepEqual(chunkLog, []);
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('final call model enrichment with unchanged 100 tokens re-sends to host once (empty -> model, placeholder -> model, and in-flight enrichment)', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  const savedLedger = new Map();
+  let recordBehavior = calls => {
+    for (const c of calls) savedLedger.set(c.callId, c);
+    return Promise.resolve({ ok: true, changed: true });
+  };
+
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}:${c.model || '(empty)'}:${c.modelKey || '(nokey)'}:${c.totalTokens}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      return recordBehavior(calls);
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 15:55:00',
+          summary: { grandTotalTokens: 120000, todayTokens: 12000 },
+          dailyMap: { '2026-11-12': { total: 12000, input: 8000, cache: 2000, output: 2000, steps: 3 } }
+        }
+      });
+    }
+  };
+
+  const makeRow100 = (id, stepIdx, modelDisplayName = '') => ({
+    stepIndices: [stepIdx],
+    status: 'final',
+    chatModel: {
+      ...(modelDisplayName ? { modelDisplayName } : {}),
+      usage: { inputTokens: 60, cacheReadTokens: 0, outputTokens: 40, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  try {
+    // (a1) model: "" -> model: "Gemini 4 Carbon" with identical 100 tokens
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, '')] }) });
+    await flushAsync();
+    assert.equal(savedLedger.get('resp-mdl-1')?.model, '');
+    assert.equal(savedLedger.get('resp-mdl-1')?.isPriced, false);
+    assert.deepEqual(events, [
+      'recordCalls:resp-mdl-1:(empty):(nokey):100',
+      'getTokenHistory:true'
+    ]);
+
+    // Unchanged empty-model poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, '')] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // Model populates to "Gemini 4 Carbon" while tokens stay at 100 (60 in + 40 out) -> MUST re-send & refresh history!
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, 'Gemini 4 Carbon')] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp-mdl-1:Gemini 4 Carbon:gemini-4-carbon:100',
+      'getTokenHistory:true'
+    ]);
+    assert.equal(savedLedger.get('resp-mdl-1')?.model, 'Gemini 4 Carbon');
+    assert.equal(savedLedger.get('resp-mdl-1')?.modelKey, 'gemini-4-carbon');
+    assert.equal(savedLedger.get('resp-mdl-1')?.isPriced, true);
+
+    // Subsequent identical poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-1', 1, 'Gemini 4 Carbon')] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // (a2) Placeholder ("MODEL_PLACEHOLDER_M18" -> "Gemini 4 Argon (High)") and unmapped slug ("unknown-preview-v0" -> "Gemini 4 Carbon") with unchanged 100 tokens
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow100('resp-ph-unmapped', 2, 'unknown-preview-v0'),
+          makeRow100('resp-ph-mapped', 3, 'MODEL_PLACEHOLDER_M18')
+        ]
+      })
+    });
+    await flushAsync();
+    assert.equal(savedLedger.get('resp-ph-unmapped')?.modelKey, null);
+    assert.equal(savedLedger.get('resp-ph-mapped')?.modelKey, null);
+    assert.equal(savedLedger.get('resp-ph-mapped')?.isPriced, false);
+
+    events.length = 0;
+    fakeNow += 5000;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow100('resp-ph-unmapped', 2, 'Gemini 4 Carbon'),
+          makeRow100('resp-ph-mapped', 3, 'Gemini 4 Argon (High)')
+        ]
+      })
+    });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp-ph-unmapped:Gemini 4 Carbon:gemini-4-carbon:100,resp-ph-mapped:Gemini 4 Argon (High):gemini-4-argon:100',
+      'getTokenHistory:true'
+    ]);
+    assert.equal(savedLedger.get('resp-ph-unmapped')?.isPriced, true);
+    assert.equal(savedLedger.get('resp-ph-mapped')?.model, 'Gemini 4 Argon (High)');
+    assert.equal(savedLedger.get('resp-ph-mapped')?.modelKey, 'gemini-4-argon');
+    assert.equal(savedLedger.get('resp-ph-mapped')?.isPriced, true);
+
+    // Subsequent identical poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow100('resp-ph-unmapped', 2, 'Gemini 4 Carbon'),
+          makeRow100('resp-ph-mapped', 3, 'Gemini 4 Argon (High)')
+        ]
+      })
+    });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // (a3) In-flight model enrichment while model:"" flush is still awaiting
+    events.length = 0;
+    let resolveFirstInFlight;
+    recordBehavior = calls => new Promise(r => {
+      resolveFirstInFlight = val => {
+        for (const c of calls) savedLedger.set(c.callId, c);
+        r(val);
+      };
+    });
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-inflight', 4, '')] })
+    });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-mdl-inflight:(empty):(nokey):100']);
+
+    // Enriched model arrives while first flush is still in flight
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-inflight', 4, 'Gemini 4 Carbon')] })
+    });
+    await flushAsync();
+    assert.deepEqual(events, ['recordCalls:resp-mdl-inflight:(empty):(nokey):100']);
+
+    const finishFirst = resolveFirstInFlight;
+    recordBehavior = calls => {
+      for (const c of calls) savedLedger.set(c.callId, c);
+      return Promise.resolve({ ok: true, changed: true });
+    };
+    finishFirst({ ok: true, changed: true });
+    await flushAsync();
+
+    assert.equal(savedLedger.get('resp-mdl-inflight')?.model, 'Gemini 4 Carbon');
+    assert.equal(savedLedger.get('resp-mdl-inflight')?.isPriced, true);
+    assert.equal(events.includes('recordCalls:resp-mdl-inflight:Gemini 4 Carbon:gemini-4-carbon:100'), true);
+
+    // Next identical poll makes 0 recordCalls
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({ generatorMetadata: [makeRow100('resp-mdl-inflight', 4, 'Gemini 4 Carbon')] })
+    });
+    await flushAsync();
+    assert.deepEqual(events, []);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('oversized >1 MiB first item never head-of-line blocks normal queued items and is quarantined in Live HTTP and recordCalls modes', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 12; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = Date.now();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  const makeRow = (id, stepIdx, modelLabel = 'Gemini 4 Carbon') => ({
+    stepIndices: [stepIdx],
+    status: 'final',
+    chatModel: {
+      modelDisplayName: modelLabel,
+      responseModel: 'gemini-4-carbon',
+      usage: { inputTokens: 500, cacheReadTokens: 100, outputTokens: 100, responseId: id },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+    }
+  });
+
+  // ~1.2 MiB UTF-8 string ('超' is 3 UTF-8 bytes -> 410,000 * 3 = 1,230,000 bytes > 1 MiB)
+  const over1MiBLabel = 'Gemini 4 Carbon ' + '超'.repeat(410000);
+  // ~950 KiB UTF-8 string (320,000 * 3 = 960,000 bytes -> >900 KiB and <=1 MiB)
+  const mid950KiBLabel = 'Gemini 4 Carbon ' + '中'.repeat(320000);
+
+  try {
+    // Part 1: Live HTTP mode (>1 MiB first item + 950 KiB 413 item + normal items behind them)
+    delete h.sandbox.window.contextMeterAPI.recordCalls;
+    delete h.sandbox.window.contextMeterAPI.getTokenHistory;
+    h.sandbox.window.__AGContextMeterLive = { port: 43299, token: 'live-tok' };
+
+    const liveEvents = [];
+    const liveSaved = new Set();
+    const baseFetch = h.sandbox.fetch;
+    h.sandbox.fetch = (url, options = {}) => {
+      if (String(url).endsWith('/record-calls')) {
+        const rawBody = String(options.body || '');
+        const utf8Bytes = Buffer.byteLength(rawBody, 'utf8');
+        const parsed = JSON.parse(rawBody);
+        const ids = (parsed.calls || []).map(c => c.callId).join(',');
+        if (utf8Bytes > 1024 * 1024 || ids === 'mid_413_live') {
+          liveEvents.push(`http413:${ids}`);
+          return Promise.resolve({ ok: false, status: 413, json: async () => ({ ok: false, error: 'Payload too large' }) });
+        }
+        liveEvents.push(`liveSaved:${ids}`);
+        for (const c of parsed.calls || []) liveSaved.add(c.callId);
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, changed: true }) });
+      }
+      if (String(url).endsWith('/token-history')) {
+        const parsed = JSON.parse(String(options.body || '{}'));
+        liveEvents.push(`liveHistory:${Boolean(parsed.force)}`);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            data: {
+              updatedAt: '2026-11-12 16:00:00',
+              summary: { grandTotalTokens: 1400, todayTokens: 1400 },
+              dailyMap: { '2026-11-12': { total: 1400, input: 1000, cache: 200, output: 200, steps: 2 } }
+            }
+          })
+        });
+      }
+      if (String(url).endsWith('/get-settings')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false }) });
+      }
+      return baseFetch(url, options);
+    };
+
+    // Enqueue >1 MiB item FIRST, 950 KiB 413 item SECOND, and normal items AFTER them!
+    const liveBatch = [
+      makeRow('huge_live_1', 1, over1MiBLabel),
+      makeRow('mid_413_live', 2, mid950KiBLabel),
+      makeRow('norm_live_1', 3),
+      makeRow('norm_live_2', 4)
+    ];
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: liveBatch }) });
+    await flushAsync();
+
+    // Normal items MUST drain FIRST without head-of-line blocking, >1 MiB item quarantined immediately, 413 item quarantined on 413!
+    assert.deepEqual(Array.from(liveSaved), ['norm_live_1', 'norm_live_2']);
+    assert.deepEqual(liveEvents, [
+      'liveSaved:norm_live_1,norm_live_2',
+      'http413:mid_413_live',
+      'liveHistory:true'
+    ]);
+
+    // Subsequent poll + tick() with identical rows must NOT re-enqueue quarantined items or spin!
+    liveEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: liveBatch }) });
+    await flushAsync();
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(liveEvents, [], 'Quarantined oversized items must not retry infinitely on subsequent polls/ticks');
+
+    // Part 2: IPC recordCalls mode rejecting >1 MiB payloads while normal items behind it drain first
+    const ipcEvents = [];
+    const ipcSaved = new Set();
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      recordCalls: calls => {
+        const bytes = Buffer.byteLength(JSON.stringify({ calls }), 'utf8');
+        const ids = calls.map(c => c.callId).join(',');
+        if (bytes > 1024 * 1024) {
+          ipcEvents.push(`ipcRejectOversize:${ids}`);
+          return Promise.resolve({ ok: false, error: 'Payload exceeds 1MiB' });
+        }
+        ipcEvents.push(`ipcSaved:${ids}`);
+        for (const c of calls) ipcSaved.add(c.callId);
+        return Promise.resolve({ ok: true, changed: true });
+      },
+      getTokenHistory: force => {
+        ipcEvents.push(`ipcHistory:${Boolean(force)}`);
+        return Promise.resolve({
+          ok: true,
+          data: {
+            updatedAt: '2026-11-12 16:01:00',
+            summary: { grandTotalTokens: 2800, todayTokens: 2800 },
+            dailyMap: { '2026-11-12': { total: 2800, input: 2000, cache: 400, output: 400, steps: 4 } }
+          }
+        });
+      }
+    };
+
+    const ipcBatch = [
+      makeRow('huge_ipc_1', 10, over1MiBLabel),
+      makeRow('norm_ipc_1', 11),
+      makeRow('norm_ipc_2', 12)
+    ];
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcBatch }) });
+    await flushAsync();
+
+    assert.deepEqual(Array.from(ipcSaved), ['norm_ipc_1', 'norm_ipc_2']);
+    assert.deepEqual(ipcEvents, [
+      'ipcSaved:norm_ipc_1,norm_ipc_2',
+      'ipcRejectOversize:huge_ipc_1',
+      'ipcHistory:true'
+    ], 'Normal items drain first; rejected >1 MiB IPC item is quarantined after single attempt');
+
+    // Subsequent poll + tick() makes 0 further recordCalls attempts!
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcBatch }) });
+    await flushAsync();
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(ipcEvents, []);
+
+    // Part 3: Transient IPC write failures on >1 MiB records (EBUSY / Promise reject) must NOT be misclassified as oversize — must retry & succeed!
+    let transientHugeAttempt = 0;
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      recordCalls: calls => {
+        const ids = calls.map(c => c.callId).join(',');
+        if (ids === 'huge_ipc_code_limit') {
+          ipcEvents.push(`ipcCodeQuarantine:${ids}`);
+          return Promise.resolve({ ok: false, code: 'PAYLOAD_TOO_LARGE', error: 'limit hit' });
+        }
+        if (ids === 'huge_ipc_transient') {
+          transientHugeAttempt++;
+          ipcEvents.push(`ipcHugeAttempt#${transientHugeAttempt}:${ids}`);
+          if (transientHugeAttempt === 1) {
+            return Promise.resolve({ ok: false, error: '保存账本落盘失败: EBUSY' });
+          }
+          if (transientHugeAttempt === 2) {
+            return Promise.reject(new Error('EBUSY: resource busy'));
+          }
+          for (const c of calls) ipcSaved.add(c.callId);
+          return Promise.resolve({ ok: true, changed: true });
+        }
+        ipcEvents.push(`ipcSaved:${ids}`);
+        for (const c of calls) ipcSaved.add(c.callId);
+        return Promise.resolve({ ok: true, changed: true });
+      }
+    };
+
+    // Attempt 1: >1 MiB item fails transiently with EBUSY while normal items behind it still save immediately
+    const ipcTransientBatch1 = [
+      makeRow('huge_ipc_transient', 20, over1MiBLabel),
+      makeRow('norm_ipc_3', 21)
+    ];
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcTransientBatch1 }) });
+    await flushAsync();
+
+    assert.equal(ipcSaved.has('norm_ipc_3'), true, 'Normal record behind transient >1 MiB item must save immediately');
+    assert.equal(ipcSaved.has('huge_ipc_transient'), false);
+    assert.deepEqual(ipcEvents, [
+      'ipcSaved:norm_ipc_3',
+      'ipcHugeAttempt#1:huge_ipc_transient',
+      'ipcHistory:true'
+    ]);
+
+    // Attempt 2 (+3.5s, with a new normal record norm_ipc_4 arriving): norm_ipc_4 drains first, then >1 MiB retries (#2) and rejects transiently
+    ipcEvents.length = 0;
+    const ipcTransientBatch2 = [
+      makeRow('huge_ipc_transient', 20, over1MiBLabel),
+      makeRow('norm_ipc_3', 21),
+      makeRow('norm_ipc_4', 22)
+    ];
+    fakeNow += 3500;
+    h.tick();
+    // Wait: tick() starts retry #2 immediately if no new normal item arrived yet; verify retry #2 ran, then Poll 2 delivers norm_ipc_4 which drains immediately!
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: ipcTransientBatch2 }) });
+    await flushAsync();
+
+    assert.equal(ipcSaved.has('norm_ipc_4'), true, 'New normal record must drain immediately even while >1 MiB item is in retry backoff');
+    assert.equal(ipcEvents.includes('ipcHugeAttempt#2:huge_ipc_transient'), true);
+    assert.equal(ipcEvents.includes('ipcSaved:norm_ipc_4'), true);
+
+    // Attempt 3 (+3.5s via tick() without needing RPC rows): >1 MiB record retries (#3), succeeds, saves, and refreshes token history!
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [] }) });
+    await flushAsync();
+
+    assert.equal(ipcSaved.has('huge_ipc_transient'), true, 'Transiently failing >1 MiB IPC record must NOT be quarantined and must commit on retry');
+    assert.deepEqual(ipcEvents, [
+      'ipcHugeAttempt#3:huge_ipc_transient',
+      'ipcHistory:true'
+    ]);
+
+    // Subsequent poll with huge_ipc_transient makes 0 recordCalls (committed in syncedFinalMap), while explicit code:PAYLOAD_TOO_LARGE quarantines in 1 attempt
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          makeRow('huge_ipc_transient', 20, over1MiBLabel),
+          makeRow('huge_ipc_code_limit', 23, over1MiBLabel)
+        ]
+      })
+    });
+    await flushAsync();
+    assert.deepEqual(ipcEvents, ['ipcCodeQuarantine:huge_ipc_code_limit']);
+
+    ipcEvents.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    assert.deepEqual(ipcEvents, ['ipcHistory:true'], 'The deferred history refresh runs without re-sending either oversized record');
+  } finally {
+    console.warn = origWarn;
+    api.dispose();
+  }
+});
+
+test('[P2] renderer watermark re-sends when RPC upgrades provisional date to authoritative date (same-cost cross-month & cross-rate-tier) without transcript log', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { recordModelCalls } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-renderer-date-upgrade-'));
+  const ledgerPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const prevWindow = globalThis.window;
+  const origDateNow = Date.now;
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = new Date(2026, 10, 12, 23, 59, 58).getTime(); // 本地 2026-11-12 23:59:58
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  globalThis.window = h.sandbox.window;
+  Date.now = () => fakeNow;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}:${c.date}:${c.dateSource || 'none'}:${c.costUSD}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      const res = recordModelCalls(calls, { agDir: tempDir });
+      return Promise.resolve({ ok: res.ok, changed: res.changed, error: res.error, phase: res.phase });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-12 23:59:59',
+          summary: { grandTotalTokens: 405000, todayTokens: 0 },
+          dailyMap: { '2026-10-28': { total: 405000, input: 300000, cache: 100000, output: 5000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // 1) 首次轮询：RPC 未返回时间，临时打上 2026-11-12（Claude Opus 5.5 费率 $1.32）并写入磁盘账本
+    const rowProvisionalNov = {
+      stepIndices: [1],
+      status: 'final',
+      chatModel: {
+        modelDisplayName: 'Claude Opus 5.5 (High)',
+        usage: { inputTokens: 300000, cacheReadTokens: 100000, outputTokens: 5000, responseId: 'resp_rpc_late_date' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowProvisionalNov] }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_late_date:2026-11-12:provisional:1.32',
+      'getTokenHistory:true'
+    ]);
+    let disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_rpc_late_date.date, '2026-11-12');
+    assert.equal(disk.calls.resp_rpc_late_date.dateIsProvisional, true);
+
+    // 2) 跨零点进入 2026-11-13 00:00:03，但 RPC 仍无真实时间（依然是 provisional）：不得产生跨零点无效重传
+    events.length = 0;
+    fakeNow = new Date(2026, 10, 13, 0, 0, 3).getTime();
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowProvisionalNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '仍为临时日期时跨零点轮询不得误触发重复入账');
+
+    // 3) RPC 后补真实日期 2026-10-28（Token 与 $1.32 费用完全相同，且无本地 transcript.jsonl）：渲染层必须识别日期来源提升并重传落盘！
+    events.length = 0;
+    fakeNow += 3500;
+    const rowAuthoritativeOct = {
+      ...rowProvisionalNov,
+      created_at: '2026-10-28T09:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct] }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_late_date:2026-10-28:created_at:1.32',
+      'getTokenHistory:true'
+    ], 'RPC 补齐真实日期后必须触发单次重传并刷新历史');
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_rpc_late_date.date, '2026-10-28');
+    assert.equal(disk.calls.resp_rpc_late_date.dateIsProvisional, false);
+    assert.equal(disk.calls.resp_rpc_late_date.costUSD, 1.32);
+
+    // 4) 后续相同轮询稳定零重发
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+
+    // 5) 跨调价日回拨（临时 2026-12-02 $1.22 -> RPC 后补真实 2026-11-25 $0.61，费用下降）：同样重传 1 次并将 $0.61 落盘，后续稳定零重发
+    events.length = 0;
+    fakeNow = new Date(2026, 11, 2, 10, 0, 0).getTime(); // 2026-12-02
+    const rowCarbonProvDec = {
+      stepIndices: [2],
+      status: 'final',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_rpc_rate_drop' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.tick();
+    if (h.scans.length > 1) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct, rowCarbonProvDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_rate_drop:2026-12-02:provisional:1.22',
+      'getTokenHistory:true'
+    ]);
+
+    events.length = 0;
+    fakeNow += 5000;
+    const rowCarbonAuthNov = {
+      ...rowCarbonProvDec,
+      created_at: '2026-11-25T10:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct, rowCarbonAuthNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_rpc_rate_drop:2026-11-25:created_at:0.61',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_rpc_rate_drop.date, '2026-11-25');
+    assert.equal(disk.calls.resp_rpc_rate_drop.costUSD, 0.61);
+
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowAuthoritativeOct, rowCarbonAuthNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '费用随真实日期下调落盘后，后续轮询不得因旧高价水位误判或重发');
+  } finally {
+    Date.now = origDateNow;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    api.dispose();
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  }
+});
+
+
+test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight does not trigger spurious cost-growth re-send', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { recordModelCalls } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-renderer-prov-rate-midnight-'));
+  const ledgerPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const prevWindow = globalThis.window;
+  const origDateNow = Date.now;
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = new Date(2026, 10, 30, 23, 59, 58).getTime(); // 本地 2026-11-30 23:59:58
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  globalThis.window = h.sandbox.window;
+  Date.now = () => fakeNow;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const desc = calls.map(c => `${c.callId}:${c.date}:${c.dateSource || 'none'}:${c.costUSD}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      const res = recordModelCalls(calls, { agDir: tempDir });
+      return Promise.resolve({ ok: res.ok, changed: res.changed, error: res.error, phase: res.phase });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-11-30 23:59:59',
+          summary: { grandTotalTokens: 360000, todayTokens: 360000 },
+          dailyMap: { '2026-11-30': { total: 360000, input: 250000, cache: 100000, output: 10000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // 1) 2026-11-30 23:59:58 首次观测无时间戳 Carbon 调用：按 11-30 费率 ($0.61) 记临时日期并落盘
+    const rowCarbonProv = {
+      stepIndices: [1],
+      status: 'final',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_carbon_prov_midnight' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProv] }) });
+    await flushAsync();
+
+    assert.deepEqual(events, [
+      'recordCalls:resp_carbon_prov_midnight:2026-11-30:provisional:0.61',
+      'getTokenHistory:true'
+    ]);
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    // 2) 跨过 11-30 -> 12-01 调价零点（未锚定时按 12-01 会变成 $1.22）：仍为临时日期且用量未变，不得触发任何重传，面板费用保持 $0.61
+    events.length = 0;
+    fakeNow = new Date(2026, 11, 1, 0, 0, 3).getTime(); // 本地 2026-12-01 00:00:03
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProv] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '仍为临时日期跨过 Carbon 调价零点时不得因费率上涨触发无效重传');
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    // 3) 切换会话清空 sessionCallsMap 后再切回原会话（仍在 12-01）：凭 syncedFinalMap 锚定 11-30 临时日期，依然零重传且会话费用保持 $0.61
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    fakeNow += 3500;
+    h.tick();
+    if (h.scans.length > 0) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProv] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '跨路由切回后仍不得因 12-01 调价触发无效重传');
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    // 4) 同在 12-01 仍为临时日期时，若真实用量增长（如配比变化 + 输出增至 15k）：必须按锚定的 11-30 费率 ($0.755) 重传更新，而非 12-01 费率
+    events.length = 0;
+    fakeNow += 3500;
+    const rowCarbonProgressedUsage = {
+      ...rowCarbonProv,
+      chatModel: {
+        ...rowCarbonProv.chatModel,
+        usage: { inputTokens: 300000, cacheReadTokens: 50000, outputTokens: 15000, responseId: 'resp_carbon_prov_midnight' }
+      }
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonProgressedUsage] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_carbon_prov_midnight:2026-11-30:provisional:0.755',
+      'getTokenHistory:true'
+    ]);
+    let disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_carbon_prov_midnight.date, '2026-11-30');
+    assert.equal(disk.calls.resp_carbon_prov_midnight.costUSD, 0.755);
+
+    // 5) 随后 RPC 补齐真实本地 2026-12-01 时间戳：日期来源升阶 (1 -> 3)，按 12-01 费率 ($1.51) 校准落盘，后续轮询零重发
+    events.length = 0;
+    fakeNow += 5000;
+    const rowCarbonAuthDec = {
+      ...rowCarbonProgressedUsage,
+      created_at: new realDate(2026, 11, 1, 0, 0, 1).toISOString()
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonAuthDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_carbon_prov_midnight:2026-12-01:created_at:1.51',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_carbon_prov_midnight.date, '2026-12-01');
+    assert.equal(disk.calls.resp_carbon_prov_midnight.dateIsProvisional, false);
+    assert.equal(disk.calls.resp_carbon_prov_midnight.costUSD, 1.51);
+
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowCarbonAuthDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+  } finally {
+    Date.now = origDateNow;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    api.dispose();
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  }
+});
+
+
+test('[P2] same-rank authoritative created_at revision updates persisted ledger date & costUSD and settles cleanly', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { recordModelCalls } = require('./meter-collector');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-renderer-same-rank-date-'));
+  const ledgerPath = path.join(tempDir, 'pricing_ledger_v1.json');
+  const prevWindow = globalThis.window;
+  const origDateNow = Date.now;
+
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const flushAsync = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+
+  let fakeNow = new Date(2026, 11, 1, 12, 0, 0).getTime();
+  const realDate = h.sandbox.Date;
+  const MockDate = function (...args) {
+    return args.length ? new realDate(...args) : new realDate(fakeNow);
+  };
+  MockDate.now = () => fakeNow;
+  MockDate.parse = realDate.parse;
+  MockDate.UTC = realDate.UTC;
+  h.sandbox.Date = MockDate;
+
+  globalThis.window = h.sandbox.window;
+  Date.now = () => fakeNow;
+
+  h.finishScan(0);
+  await flushAsync();
+
+  const events = [];
+  h.sandbox.window.contextMeterAPI = {
+    ...h.sandbox.window.contextMeterAPI,
+    recordCalls: calls => {
+      const res = recordModelCalls(calls, { agDir: tempDir });
+      const desc = calls.map(c => `${c.callId}:${c.date}:${c.costUSD}:changed=${res.changed}`).join(',');
+      events.push(`recordCalls:${desc}`);
+      return Promise.resolve({ ok: res.ok, changed: res.changed, error: res.error, phase: res.phase, code: res.code });
+    },
+    getTokenHistory: force => {
+      events.push(`getTokenHistory:${Boolean(force)}`);
+      return Promise.resolve({
+        ok: true,
+        data: {
+          updatedAt: '2026-12-01 12:00:00',
+          summary: { grandTotalTokens: 360000, todayTokens: 360000 },
+          dailyMap: { '2026-12-01': { total: 360000, input: 250000, cache: 100000, output: 10000, steps: 1 } }
+        }
+      });
+    }
+  };
+
+  try {
+    // 1) 初始权威时间 2026-11-12 入账 ($0.61, sourceRevision: 1)
+    const rowNov = {
+      stepIndices: [1],
+      status: 'final',
+      sourceRevision: 1,
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_same_rank_e2e' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    h.pending[0].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNov] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-11-12:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    let disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-11-12');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 0.61);
+
+    // 2) 同等级 created_at 正向修正至 2026-12-01 (sourceRevision: 2, 同用量 360k)：后端返回 changed=true 并更新磁盘为 12-01 / $1.22
+    events.length = 0;
+    fakeNow += 6000;
+    const rowDec = {
+      ...rowNov,
+      sourceRevision: 2,
+      created_at: '2026-12-01T10:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowDec] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-12-01:1.22:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 1.22);
+    assert.equal(api.snapshot().sessionCostTotal, 1.22);
+
+    // 2b) 新修正 -> 同用量旧包 (rev=1 及无版本旧包) -> 重复旧包（含切路由再切回）：严禁重发或回滚日期/费用
+    const rowNovUnversioned = { ...rowNov };
+    delete rowNovUnversioned.sourceRevision;
+    for (const staleVariant of [rowNov, rowNov, rowNovUnversioned]) {
+      events.length = 0;
+      fakeNow += 3500;
+      h.tick();
+      h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [staleVariant] }) });
+      await flushAsync();
+      assert.deepEqual(events, [], '同用量旧包及重复旧包不得触发重传');
+      assert.equal(api.snapshot().sessionCostTotal, 1.22);
+    }
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    fakeNow += 3500;
+    h.tick();
+    if (h.scans.length > 0) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovUnversioned] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '跨路由切回后收到同用量旧包依然零重发、零回滚');
+    assert.equal(api.snapshot().sessionCostTotal, 1.22);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 1.22);
+
+    // 3) 同等级 created_at 逆向修正回 2026-11-15 (sourceRevision: 3)：双向校准更新磁盘回 2026-11-15 / $0.61，随后迟到 rev=2 零重发
+    events.length = 0;
+    fakeNow += 6000;
+    const rowNovRevised = {
+      ...rowNov,
+      sourceRevision: 3,
+      created_at: '2026-11-15T10:00:00Z'
+    };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-11-15:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.date, '2026-11-15');
+    assert.equal(disk.calls.resp_same_rank_e2e.costUSD, 0.61);
+    assert.equal(api.snapshot().sessionCostTotal, 0.61);
+
+    for (const staleAfterRev3 of [rowDec, rowDec]) {
+      events.length = 0;
+      fakeNow += 3500;
+      h.tick();
+      h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [staleAfterRev3] }) });
+      await flushAsync();
+      assert.deepEqual(events, [], '逆向校准后迟到的高费率旧修订包不得触发重发');
+      assert.equal(api.snapshot().sessionCostTotal, 0.61);
+    }
+
+    // 4) 无版本冲突交替场景 ([11-12, 12-01, 11-12, 12-01])：保持首个已确认权威日期，零反复重发
+    events.length = 0;
+    fakeNow += 6000;
+    const rowUnvA = {
+      stepIndices: [2],
+      status: 'final',
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 250000, cacheReadTokens: 100000, outputTokens: 10000, responseId: 'resp_unv_alt' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    const rowUnvB = { ...rowUnvA, created_at: '2026-12-01T10:00:00Z' };
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_unv_alt:2026-11-12:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    for (const alt of [rowUnvB, rowUnvA, rowUnvB]) {
+      events.length = 0;
+      fakeNow += 3500;
+      h.tick();
+      h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, alt] }) });
+      await flushAsync();
+      assert.deepEqual(events, [], '两版无版本同用量快照交替到达时不得重发震荡');
+      assert.equal(api.snapshot().sessionCostTotal, 1.22); // 0.61 + 0.61
+    }
+
+    // 5) “总量增加、输出量下降”交叉变化前后端联动：input=100k,out=20k,tot=120k,11-12 ($0.40) -> input=130k,out=10k,tot=140k,12-01 ($0.72)
+    fakeNow += 6000;
+    const rowCross1 = {
+      stepIndices: [3],
+      status: 'final',
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 100000, cacheReadTokens: 0, outputTokens: 20000, responseId: 'resp_cross_e2e' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } }
+      }
+    };
+    const rowCross2 = {
+      ...rowCross1,
+      created_at: '2026-12-01T10:00:00Z',
+      chatModel: {
+        ...rowCross1.chatModel,
+        usage: { inputTokens: 130000, cacheReadTokens: 0, outputTokens: 10000, responseId: 'resp_cross_e2e' }
+      }
+    };
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA, rowCross1] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_cross_e2e:2026-11-12:0.4:changed=true',
+      'getTokenHistory:true'
+    ]);
+
+    fakeNow += 6000;
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA, rowCross2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_cross_e2e:2026-12-01:0.72:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_cross_e2e.inputTokens, 130000);
+    assert.equal(disk.calls.resp_cross_e2e.outputTokens, 10000);
+    assert.equal(disk.calls.resp_cross_e2e.totalTokens, 140000);
+    assert.equal(disk.calls.resp_cross_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_cross_e2e.costUSD, 0.72);
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 1.94); // 0.61 + 0.61 + 0.72
+
+    // 迟到的旧交叉快照 (120k/20k, 11-12) 到达时零重发，磁盘与面板完全一致
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRevised, rowUnvA, rowCross1] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_cross_e2e.totalTokens, 140000);
+    assert.equal(disk.calls.resp_cross_e2e.outputTokens, 10000);
+    assert.equal(disk.calls.resp_cross_e2e.date, '2026-12-01');
+    assert.equal(disk.calls.resp_cross_e2e.costUSD, 0.72);
+
+    // 6a) 仅显式修订号提升 (sourceRevision: 3 -> 4，日期/总量/输出均未变)：提交 1 次更新账本版本，随后零重发
+    fakeNow += 6000;
+    const rowNovRev4 = { ...rowNovRevised, sourceRevision: 4 };
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_same_rank_e2e:2026-11-15:0.61:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_same_rank_e2e.sourceRevision, 4);
+
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '仅修订号提升提交确认后，后续相同修订号轮询必须零重发');
+
+    // 6b) 同总量/输出量下输入与缓存重新分配导致费用下降 (rev=1: inp=1M,cap=0,$2.10 -> rev=2: inp=100k,cap=900k,$0.39) 及迟到旧版防护
+    fakeNow += 6000;
+    const rowSplitRev1 = {
+      stepIndices: [4],
+      status: 'final',
+      sourceRevision: 1,
+      created_at: '2026-11-12T10:00:00Z',
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Carbon (High)',
+        responseModel: 'gemini-4-carbon',
+        usage: { inputTokens: 1000000, cacheReadTokens: 0, outputTokens: 10000, responseId: 'resp_split_rebalance' },
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 1048576 } }
+      }
+    };
+    const rowSplitRev2 = {
+      ...rowSplitRev1,
+      sourceRevision: 2,
+      chatModel: {
+        ...rowSplitRev1.chatModel,
+        usage: { inputTokens: 100000, cacheReadTokens: 900000, outputTokens: 10000, responseId: 'resp_split_rebalance' }
+      }
+    };
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev1] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_split_rebalance:2026-11-12:2.1:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_split_rebalance.inputTokens, 1000000);
+    assert.equal(disk.calls.resp_split_rebalance.cacheTokens, 0);
+    assert.equal(disk.calls.resp_split_rebalance.costUSD, 2.1);
+
+    fakeNow += 6000;
+    h.tick();
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev2] }) });
+    await flushAsync();
+    assert.deepEqual(events, [
+      'recordCalls:resp_split_rebalance:2026-11-12:0.39:changed=true',
+      'getTokenHistory:true'
+    ]);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_split_rebalance.inputTokens, 100000);
+    assert.equal(disk.calls.resp_split_rebalance.cacheTokens, 900000);
+    assert.equal(disk.calls.resp_split_rebalance.costUSD, 0.39);
+    assert.equal(disk.calls.resp_split_rebalance.sourceRevision, 2);
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 2.33); // 0.61 + 0.61 + 0.72 + 0.39
+
+    // 迟到的高费用旧版本 rev=1 ($2.10) 在同路由与跨路由切回后均不得覆盖或重发
+    events.length = 0;
+    fakeNow += 3500;
+    h.tick();
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev1] }) });
+    await flushAsync();
+    assert.deepEqual(events, []);
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 2.33);
+
+    h.sandbox.location.pathname = '/c/22222222-2222-2222-2222-222222222222';
+    fakeNow += 3500;
+    h.tick();
+    await flushAsync();
+    h.sandbox.location.pathname = '/c/11111111-1111-1111-1111-111111111111';
+    fakeNow += 3500;
+    h.tick();
+    if (h.scans.length > 0) h.finishScan(h.scans.length - 1);
+    await flushAsync();
+    events.length = 0;
+    h.pending[h.pending.length - 1].resolve({ ok: true, json: async () => ({ generatorMetadata: [rowNovRev4, rowUnvA, rowCross2, rowSplitRev1] }) });
+    await flushAsync();
+    assert.deepEqual(events, [], '跨路由切回后收到同总量高费用旧版本 rev=1 仍不得覆盖或重发');
+    assert.equal(Number(api.snapshot().sessionCostTotal.toFixed(4)), 2.33);
+    disk = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    assert.equal(disk.calls.resp_split_rebalance.inputTokens, 100000);
+    assert.equal(disk.calls.resp_split_rebalance.cacheTokens, 900000);
+    assert.equal(disk.calls.resp_split_rebalance.costUSD, 0.39);
+  } finally {
+    Date.now = origDateNow;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    api.dispose();
+    try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  }
+});
+
+test('PR #13 & PR #21: 弹窗动态锚点定位、首帧显示前预设坐标、无缩放/left防抖与繁中术语回归', async () => {
+  const pathMod = require('node:path');
+  const cssSrc = fs.readFileSync(pathMod.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  // 1. 验证 styles.css 无 .ag-unit:active transform 缩放且 #panel-tokens 无 left transition
+  const activeBlock = cssSrc.match(/\.ag-unit:active\s*\{[^}]*\}/)?.[0] || '';
+  assert.doesNotMatch(activeBlock, /transform\s*:\s*scale/i, '.ag-unit:active 不应有按压缩放');
+  const tokensRule = cssSrc.match(/#panel-tokens\s*\{[^}]*\}/)?.[0] || '';
+  assert.doesNotMatch(tokensRule, /\bleft\s+\./i, '#panel-tokens 不应对 left 做过渡动画');
+  assert.match(cssSrc, /#overflow-menu\s*\{[^}]*box-sizing\s*:\s*border-box/i);
+
+  // 2. 验证每个触发按钮锚点（badge / badge-speed / badge-tokens / badge-quota / overflow）与先定位再显示
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.sandbox.window.innerWidth = 1280;
+    h.sandbox.window.innerHeight = 800;
+    h.host.getBoundingClientRect = () => ({ left: 820, top: 6, width: 320, height: 28, right: 1140, bottom: 34 });
+    h.elements.get('badge').getBoundingClientRect = () => ({ left: 820, top: 6, width: 88, height: 28, right: 908, bottom: 34 });
+    h.elements.get('badge-speed').getBoundingClientRect = () => ({ left: 912, top: 6, width: 64, height: 28, right: 976, bottom: 34 });
+    h.elements.get('badge-tokens').getBoundingClientRect = () => ({ left: 980, top: 6, width: 68, height: 28, right: 1048, bottom: 34 });
+    h.elements.get('badge-quota').getBoundingClientRect = () => ({ left: 1052, top: 6, width: 52, height: 28, right: 1104, bottom: 34 });
+    h.elements.get('badge-overflow').getBoundingClientRect = () => ({ left: 1108, top: 6, width: 28, height: 28, right: 1136, bottom: 34 });
+
+    // 验证 showPanel 在 hidden=false 前已将 style.left 写入
+    let leftWhenUnhidden = null;
+    const panel = h.elements.get('panel');
+    let hiddenVal = true;
+    Object.defineProperty(panel, 'hidden', {
+      get: () => hiddenVal,
+      set: (v) => {
+        if (v === false) leftWhenUnhidden = panel.style.left;
+        hiddenVal = Boolean(v);
+      }
+    });
+
+    h.elements.get('badge').click();
+    assert.ok(leftWhenUnhidden && leftWhenUnhidden !== '', '取消 hidden 前必须已预设 style.left');
+    assert.equal(panel.style.left, `${908 - 472}px`);
+    assert.equal(h.elements.get('badge').getAttribute('aria-expanded'), 'true');
+    assert.equal(h.elements.get('badge-speed').getAttribute('aria-expanded'), 'false');
+
+    h.elements.get('badge-speed').click();
+    assert.equal(panel.style.left, `${976 - 472}px`);
+    assert.equal(h.elements.get('badge-speed').getAttribute('aria-expanded'), 'true');
+
+    h.elements.get('badge-tokens').click();
+    assert.equal(h.elements.get('panel-tokens').style.left, `${1048 - 730}px`);
+
+    h.elements.get('badge-quota').click();
+    assert.equal(h.elements.get('panel-quota').style.left, `${1104 - 460}px`);
+
+    // 溢出入口打开 tokens / quota 时必须对齐 badge-overflow 而非隐藏按钮
+    h.elements.get('badge-overflow').click();
+    assert.equal(h.elements.get('overflow-menu').hidden, false);
+    assert.equal(h.elements.get('overflow-menu').style.left, `${1136 - 220}px`);
+    h.elements.get('overflow-tokens-btn').click();
+    assert.equal(h.elements.get('panel-tokens').style.left, `${1136 - 730}px`);
+    h.elements.get('overflow-quota-btn').click();
+    assert.equal(h.elements.get('panel-quota').style.left, `${1136 - 460}px`);
+
+    // 窄屏越界钳位
+    h.sandbox.window.innerWidth = 600;
+    h.host.getBoundingClientRect = () => ({ left: 400, top: 6, width: 180, height: 28, right: 580, bottom: 34 });
+    h.elements.get('badge').getBoundingClientRect = () => ({ left: 400, top: 6, width: 60, height: 28, right: 460, bottom: 34 });
+    h.elements.get('badge').click();
+    assert.equal(panel.style.left, '12px');
+
+    // 3. 验证 PR #21 繁中译文与参数占位符完好
+    h.elements.get('btn-top-lang-zh-TW').click();
+    await h.flush();
+    assert.equal(api.translateForTest('badge.tokens.aria'), 'Token 用量總覽');
+    assert.equal(api.translateForTest('colors.btn.restore'), '還原');
+    assert.equal(api.translateForTest('diag.auth.tipTitle'), '帳號權限（身分異常）：');
+    assert.equal(api.translateForTest('badge.corpus.scanning'), '對話掃描中…');
+    assert.equal(api.translateForTest('cost.scopeAll'), '完整歷史紀錄');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('Issue #22: applyAppUpdate 在严格模式下不因未声明 currentVer 报错，更新成功后状态与版本 UI 正常刷新', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      checkUpdate: async () => ({
+        ok: true,
+        hasUpdate: true,
+        currentVersion: '0.8.3',
+        latestVersion: '0.9.1',
+        tagName: 'v0.9.1',
+        releaseNotes: 'Fix update flow',
+        htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.9.1'
+      }),
+      applyUpdate: async () => ({
+        ok: true,
+        version: '0.9.1',
+        installedVersion: '0.9.1',
+        liveInjected: false
+      })
+    };
+
+    h.elements.get('btn-check-update').click();
+    await h.flush();
+    assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.3 → v0.9.1');
+
+    h.elements.get('btn-apply-update').click();
+    await h.flush();
+
+    assert.equal(h.elements.get('v').textContent, 'v0.9.1');
+    assert.match(h.elements.get('up-pop-ver').textContent, /0\.9\.1/);
+    assert.doesNotMatch(h.elements.get('up-pop-status').textContent, /currentVer|异常|失败/i);
+    assert.match(h.elements.get('up-pop-status').textContent, /0\.9\.1/);
+  } finally {
+    api.dispose();
+  }
+});
+
 test('context pill shows both length and percentage (e.g. 309K · 39%) and handles unknown budget gracefully', async () => {
   const h = harness();
   h.finishScan();
@@ -1628,8 +4775,8 @@ test('Sidecar/Live Chinese localization defaults to enabled, syncs drawer and se
   delete h.sandbox.window.contextMeterAPI;
   h.sandbox.window.__AGContextMeterLive = { port: 45555, token: 'live-chinese-token' };
 
-  const chkDisplay = h.elements.get('check-sidecar-chinese');
-  const chkTokens = h.elements.get('check-sidecar-chinese-tokens');
+  const chkDisplay = h.elements.get('check-live-chinese');
+  const chkTokens = h.elements.get('check-live-chinese-tokens');
   const chineseBadge = h.elements.get('chinese-badge');
   const proxyBadge = h.elements.get('proxy-badge');
   const toggleBtn = h.elements.get('btn-toggle-chinese-module');

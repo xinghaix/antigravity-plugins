@@ -1,12 +1,48 @@
 (function () {
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
-  globalThis.__AGContextMeter?.dispose();
+  globalThis.__AGContextMeter?.dispose?.();
+  const activeDisposers = (globalThis.__AGContextMeterDisposers = globalThis.__AGContextMeterDisposers || new Set());
+  for (const fn of Array.from(activeDisposers)) {
+    try { fn(); } catch { }
+  }
+  activeDisposers.clear();
+  // 清理此前初始化异常或重复挂载遗留的孤儿宿主容器，保证页面内永远仅有唯一实例
+  try {
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('#ag-context-meter').forEach(node => {
+        try {
+          if (typeof node.__agForceDispose === 'function') {
+            node.__agForceDispose();
+            node.remove?.();
+            return;
+          }
+          // 无主历史闭包节点：剥离 ID、隐藏且清空 shadowRoot 内容，保持其在位静默不再触发重插循环
+          node.removeAttribute?.('id');
+          node.setAttribute?.('data-ag-retired', '1');
+          if (node.style) {
+            node.style.cssText = 'display:none!important;width:0!important;height:0!important;overflow:hidden!important;pointer-events:none!important;position:absolute!important;';
+          }
+          if (node.shadowRoot && typeof node.shadowRoot.innerHTML === 'string') {
+            node.shadowRoot.innerHTML = '';
+          }
+        } catch { }
+      });
+    }
+  } catch { }
   const {
     summarize,
     parseGeneratorCall,
     calculateRequestApiCost,
     normalizeModelId,
+    resolveStableModelId,
+    formatEffortLabel,
+    detectModelVendor,
+    groupModelProduct,
+    formatTokensK,
+    isValidSpeedSample,
+    computeMedian,
+    summarizeSpeedByModel,
     getLvlForRange,
     getDailyModelCost,
     calculateIntervalCost,
@@ -37,7 +73,8 @@
       firstUseDate: null,
       activeDaysCount: 0
     },
-    dailyMap: {}
+    dailyMap: {},
+    speedRecords: []
   };
 
   const RING_RADIUS = 6.5;
@@ -47,6 +84,9 @@
 
   (document.body || document.documentElement).appendChild(host);
   const el = id => shadow.getElementById(id);
+  /* @INSERT_I18N_MODULE */
+  /* @INSERT_BUDGET_ENGINE_MODULE */
+  const budgetEngine = globalThis.__AGContextBudgetEngine || {};
   const fmt = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
   const short = v => {
     if (v == null) return '—';
@@ -57,7 +97,7 @@
   };
   // 悬停信息气泡专用紧凑计数格式（如 37k、475k、1.05M）
   const fmtBubbleToken = v => {
-    if (v == null) return '未知';
+    if (v == null) return t('common.unknown');
     if (v >= 1e9) return `${parseFloat((v / 1e9).toFixed(2))}B`;
     if (v >= 1e6) return `${parseFloat((v / 1e6).toFixed(2))}M`;
     if (v >= 1000) {
@@ -97,13 +137,15 @@
     }
   };
   const range = value => value ? `≈ ${short(value.low)}–${short(value.high)}` : '—';
-  const token = value => value == null ? '未提供' : `${fmt(value)} tokens`;
+  const token = value => value == null ? t('common.notProvided') : `${fmt(value)} tokens`;
   const state = {
     route: null, count: 0, latest: null, requestAt: 0, requestError: '',
     requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0,
     scanError: '', scan: null, generation: 0, controllers: new Set(),
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
-    reportedFinalCallIds: new Set(), reportedFinalCallOutputs: new Map()
+    callsHydrated: false, syncedFinalMap: new Map(), pendingFinalCalls: new Map(),
+    quarantinedOversizeMap: new Map(), flushFinalsBusy: false, pendingFlushForceSync: false,
+    nextFlushRetryAt: 0, nextOversizeRetryAt: 0
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
@@ -158,8 +200,42 @@
   // =========================================================================
   let resizeObserver = null;
   let hostDomObserver = null;
+  let brandObserver = null;
   let observedTitlebar = null;
   let layoutRaf = 0;
+  const earlyDisposeHooks = [];
+  const disconnectBrandObserver = () => {
+    try { brandObserver?.disconnect?.(); } catch { }
+    if (brandObserver && globalThis.__AGContextMeterBrandObserver === brandObserver) {
+      globalThis.__AGContextMeterBrandObserver = null;
+    }
+    brandObserver = null;
+  };
+  const earlyForceDispose = () => {
+    state.disposed = true;
+    for (const controller of state.controllers) {
+      try { controller.abort(); } catch { }
+    }
+    if (layoutRaf && typeof cancelAnimationFrame === 'function') {
+      try { cancelAnimationFrame(layoutRaf); } catch { }
+      layoutRaf = 0;
+    }
+    while (earlyDisposeHooks.length) {
+      const hook = earlyDisposeHooks.pop();
+      try { hook(); } catch { }
+    }
+    try { resizeObserver?.disconnect?.(); } catch { }
+    try { hostDomObserver?.disconnect?.(); } catch { }
+    disconnectBrandObserver();
+    if (globalThis.__AGContextMeterActiveHost === host) {
+      globalThis.__AGContextMeterActiveHost = null;
+    }
+    activeDisposers.delete(earlyForceDispose);
+    try { host.remove?.(); } catch { }
+  };
+  globalThis.__AGContextMeterActiveHost = host;
+  host.__agForceDispose = earlyForceDispose;
+  activeDisposers.add(earlyForceDispose);
 
   function findHostTitlebar() {
     try {
@@ -351,11 +427,32 @@
         }
       }
       syncNativeOverlayTheme();
-    } catch {}
+    } catch { }
   }
+
+  let layoutMeasurementDirty = true;
+  let cachedMeasuredAvailWidth = null;
+  let cachedMeasuredAvailAt = 0;
+  let cachedMeasuredWinWidth = 0;
 
   function ensureHostDocked() {
     if (state.disposed) return;
+    if (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host) {
+      earlyForceDispose();
+      return;
+    }
+    // 热路径短路：宿主已稳固停靠在预期标题栏内且尺寸未标脏时，跳过 DOM 遍历与强制布局查询
+    if (
+      !layoutMeasurementDirty
+      && host.isConnected
+      && host.getAttribute('data-dock') === 'flow'
+      && observedTitlebar
+      && observedTitlebar.isConnected
+      && observedTitlebar.contains(host)
+      && host.parentElement
+    ) {
+      return;
+    }
     syncWindowControlsOverlay();
     const titlebar = findHostTitlebar();
     if (titlebar) {
@@ -365,7 +462,7 @@
         if (convPane?.style && (!convPane.style.flexGrow || convPane.style.flexGrow === '0')) {
           convPane.style.flexGrow = '1';
         }
-      } catch {}
+      } catch { }
 
       let targetContainer = titlebar;
       try {
@@ -373,7 +470,7 @@
         if (rightGroup && rightGroup !== titlebar.firstElementChild) {
           targetContainer = rightGroup;
         }
-      } catch {}
+      } catch { }
 
       if (host.parentElement !== targetContainer) {
         if (targetContainer.firstChild && targetContainer !== titlebar) {
@@ -386,7 +483,7 @@
       try {
         host.style.removeProperty?.('right');
         host.style.removeProperty?.('top');
-      } catch {}
+      } catch { }
       host.style.right = '';
       host.style.top = '';
 
@@ -398,7 +495,7 @@
             resizeObserver.observe(titlebar);
             if (document.body) resizeObserver.observe(document.body);
           }
-        } catch {}
+        } catch { }
       }
     } else {
       const fallbackParent = document.body || document.documentElement;
@@ -408,7 +505,7 @@
       host.setAttribute('data-dock', 'fixed');
       updateFixedFallbackPosition();
     }
-    updateResponsiveLayout();
+    updateResponsiveLayout(layoutMeasurementDirty);
   }
 
   function findNativeTopRightAnchor() {
@@ -438,7 +535,7 @@
       try {
         host.style.removeProperty?.('right');
         host.style.removeProperty?.('top');
-      } catch {}
+      } catch { }
       host.style.right = '';
       host.style.top = '';
       return;
@@ -455,7 +552,7 @@
       }
       host.style.top = '6px';
       host.style.right = `${rightOffset}px`;
-    } catch {}
+    } catch { }
   }
 
   // 带迟滞区间（Hysteresis）的四阶段渐进收缩计算，防止临界宽度抖动
@@ -490,8 +587,19 @@
     return 'ring-only';
   }
 
-  function measureAvailableWidth() {
+  function measureAvailableWidth(force = false) {
     try {
+      const now = Date.now();
+      const curWinW = typeof window !== 'undefined' ? (window.innerWidth || 0) : 0;
+      if (
+        !force
+        && !layoutMeasurementDirty
+        && cachedMeasuredAvailWidth !== null
+        && curWinW === cachedMeasuredWinWidth
+        && now - cachedMeasuredAvailAt < 300
+      ) {
+        return cachedMeasuredAvailWidth;
+      }
       const titlebar = findHostTitlebar();
       if (titlebar?.getBoundingClientRect) {
         const tbRect = titlebar.getBoundingClientRect();
@@ -530,13 +638,23 @@
               if (sum > 0) nativeButtonsWidth = sum + 6;
             }
           }
-          return tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          const avail = tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          cachedMeasuredAvailWidth = avail;
+          cachedMeasuredAvailAt = now;
+          cachedMeasuredWinWidth = curWinW;
+          layoutMeasurementDirty = false;
+          return avail;
         }
       }
       if (typeof window !== 'undefined' && window.innerWidth) {
-        return window.innerWidth - 360;
+        const avail = window.innerWidth - 360;
+        cachedMeasuredAvailWidth = avail;
+        cachedMeasuredAvailAt = now;
+        cachedMeasuredWinWidth = curWinW;
+        layoutMeasurementDirty = false;
+        return avail;
       }
-    } catch {}
+    } catch { }
     return 400;
   }
 
@@ -551,17 +669,23 @@
     if (latestCall && latestCall.isPriced) {
       const roundCost = latestCall.costUSD || 0;
       const roundCostStr = roundCost < 0.01 ? '<$0.01' : `≈$${roundCost.toFixed(4)}`;
-      const estLabel = latestCall.status === 'streaming' ? '生成中暂估' : '按已返回用量估算';
-      roundCostText.textContent = `最近调用 ${roundCostStr} · ${estLabel}`;
-      roundCostText.title = `模型：${latestCall.model}\n输入：${fmt(latestCall.inputTokens)} tok\n缓存：${fmt(latestCall.cacheTokens)} tok\n输出：${fmt(latestCall.outputTokens)} tok\n参考金额：$${roundCost.toFixed(6)}`;
+      const estLabel = latestCall.status === 'streaming' ? t('cost.streamingEst') : t('cost.returnedEst');
+      roundCostText.textContent = t('cost.latestTurn', { val: roundCostStr, label: estLabel });
+      roundCostText.title = t('cost.modelTip', {
+        model: latestCall.model,
+        input: fmt(latestCall.inputTokens),
+        cache: fmt(latestCall.cacheTokens),
+        output: fmt(latestCall.outputTokens),
+        cost: roundCost.toFixed(6)
+      });
     } else if (latestCall) {
-      roundCostText.textContent = '最近调用：模型费率未收录';
-      roundCostText.title = latestCall.model ? `模型：${latestCall.model}（公开费率未收录）` : '缺少模型信息';
+      roundCostText.textContent = t('cost.unpriced');
+      roundCostText.title = latestCall.model ? t('cost.unpricedTip', { model: latestCall.model }) : t('cost.missingModel');
     } else {
-      roundCostText.textContent = '最近调用估值：—';
+      roundCostText.textContent = t('cost.latestDash');
       roundCostText.title = '';
     }
-    sessionCostText.textContent = sessTotal > 0 ? `当前会话合计约 $${sessTotal.toFixed(4)}` : '当前会话合计：—';
+    sessionCostText.textContent = sessTotal > 0 ? t('cost.sessionTotal', { val: sessTotal.toFixed(4) }) : t('session.sessionCost.dash');
   }
 
   function applyLayoutMode(nextMode) {
@@ -580,10 +704,11 @@
     renderSessionCost();
   }
 
-  function updateResponsiveLayout() {
+  function updateResponsiveLayout(forceMeasure = false) {
     if (state.disposed) return;
+    if (forceMeasure) layoutMeasurementDirty = true;
     syncWindowControlsOverlay();
-    const avail = measureAvailableWidth();
+    const avail = measureAvailableWidth(forceMeasure);
     const nextMode = computeNextLayoutMode(avail, state.layoutMode);
     applyLayoutMode(nextMode);
     if (state.tooltipOpen) positionContextTooltip();
@@ -603,7 +728,7 @@
     }
   }
 
-  function applyCliButtonVisibility(visible) {
+  function applyCliButtonVisibility(visible, syncLayout = true) {
     showCliButton = visible === true;
     const badgeCli = el('badge-cli');
     const overflowCli = el('overflow-cli-btn');
@@ -621,7 +746,7 @@
     try {
       host.setAttribute('data-cli-visible', showCliButton ? 'true' : 'false');
     } catch {}
-    scheduleLayoutSync();
+    if (syncLayout) scheduleLayoutSync();
   }
 
   try {
@@ -636,7 +761,7 @@
       if (localCli === '1' || localCli === 'true') showCliButton = true;
     }
   } catch {}
-  applyCliButtonVisibility(showCliButton);
+  applyCliButtonVisibility(showCliButton, false);
 
   // 定位上下文悬停气泡：空间足够时优先在圆环上方，顶部空间不足时自动翻转至下方，左右防裁切
   function positionContextTooltip() {
@@ -670,7 +795,7 @@
 
       tip.style.top = `${top}px`;
       tip.style.left = `${left}px`;
-    } catch {}
+    } catch { }
   }
 
   function showContextTooltip() {
@@ -702,7 +827,7 @@
         elevatedStackAncestor.style.zIndex = '';
         elevatedStackAncestor = null;
       }
-    } catch {}
+    } catch { }
   }
 
   function getLeftProjectSidebarRight(vw) {
@@ -716,7 +841,7 @@
           }
         }
       }
-    } catch {}
+    } catch { }
     return 0;
   }
 
@@ -739,50 +864,113 @@
         const isCompact = panelEl.classList?.contains?.('cost-compact-view') || panelEl.getAttribute?.('class')?.includes?.('cost-compact-view');
         const effW = isCompact ? 400 : targetW;
         const maxAvailW = Math.max(260, vw - minLeft - 12);
+        const finalW = Math.min(effW, maxAvailW);
 
-        // 核心锚点：右侧精确对齐到触发按钮右边缘，展开时向左下自然伸展，收起时向右上自然收拢
-        let left = Math.round(bRect.right - effW);
-        left = Math.min(left, vw - effW - 12);
+        // 核心锚点：右侧精确对齐到触发按钮右边缘，确保任何视口宽度下右边缘绝不溢出
+        let left = Math.round(bRect.right - finalW);
+        left = Math.min(left, vw - finalW - 12);
         left = Math.max(minLeft, left);
+
+        const maxWidthPx = Math.max(260, vw - left - 12);
+        const maxHeightPx = Math.max(160, vh - top - 16);
+        const geomKey = `${top}|${left}|${maxWidthPx}|${maxHeightPx}|${isCompact ? 1 : 0}`;
+        if (panelEl._lastPlacedGeomKey === geomKey) return;
+        panelEl._lastPlacedGeomKey = geomKey;
 
         panelEl.style.top = `${top}px`;
         panelEl.style.left = `${left}px`;
         panelEl.style.right = 'auto';
-        panelEl.style.maxWidth = `${maxAvailW}px`;
+        panelEl.style.maxWidth = `${maxWidthPx}px`;
+        panelEl.style.maxHeight = `${maxHeightPx}px`;
         panelEl.style.transformOrigin = 'top right';
       };
 
-      placePanel(el('panel'), 450, el('badge'));
-      placePanel(el('panel-tokens'), 730, el('badge-tokens'));
+      placePanel(el('panel'), 472, el(activeContextAnchorId) || el('badge'));
+      placePanel(el('panel-quota'), 460, el(activeQuotaAnchorId) || el('badge-quota'));
+      placePanel(el('panel-tokens'), 730, el(activeTokensAnchorId) || el('badge-tokens'));
       placePanel(el('overflow-menu'), 220, el('badge-overflow'));
       positionColorPickerPopover();
-    } catch {}
+    } catch { }
+  }
+
+  let lastObservedHostModelSig = null;
+  let hostModelSyncTimer = null;
+  let domMutationThrottleTimer = null;
+  function scheduleHostModelSync() {
+    try {
+      if (state.disposed || typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+      if (hostModelSyncTimer) return;
+      hostModelSyncTimer = setTimeout(() => {
+        hostModelSyncTimer = null;
+        try {
+          if (state.disposed || typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+          const trig = document.querySelector('[data-testid="model-selector-trigger"]');
+          const nextSig = trig ? `${trig.getAttribute?.('aria-label') || ''}|${trig.textContent || ''}` : '';
+          if (nextSig === lastObservedHostModelSig) return;
+          lastObservedHostModelSig = nextSig;
+          if (typeof syncContextModelSelectionFromState === 'function') {
+            syncContextModelSelectionFromState();
+          }
+        } catch { }
+      }, 60);
+    } catch { }
+  }
+
+  function flushHostDomMutationCheck() {
+    domMutationThrottleTimer = null;
+    if (state.disposed) return;
+    if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+      scheduleLayoutSync();
+    }
+    scheduleHostModelSync();
   }
 
   try {
     if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => updateResponsiveLayout());
+      resizeObserver = new ResizeObserver(() => updateResponsiveLayout(true));
       if (document.body) resizeObserver.observe(document.body);
     }
     if (typeof MutationObserver !== 'undefined' && document.body) {
       hostDomObserver = new MutationObserver(() => {
-        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow' || !findHostTitlebar()?.contains?.(host)) {
+        if (state.disposed) return;
+        // 轻量 O(1) 检查优先，其余全量/选择器查询合并节流至低频窗口，防止聊天吐字与切会话卡顿
+        if (!host.isConnected || host.getAttribute('data-dock') !== 'flow') {
+          layoutMeasurementDirty = true;
           scheduleLayoutSync();
         }
+        if (!domMutationThrottleTimer) {
+          domMutationThrottleTimer = setTimeout(flushHostDomMutationCheck, 180);
+        }
       });
-      hostDomObserver.observe(document.body, { childList: true, subtree: true });
+      hostDomObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label'] });
     }
-  } catch {}
+  } catch { }
 
-  const onWindowResize = () => updateResponsiveLayout();
-  const onWindowFocus = () => host.setAttribute('data-window-active', 'true');
-  const onWindowBlur = () => host.setAttribute('data-window-active', 'false');
+  const onWindowResize = () => updateResponsiveLayout(true);
+  const onWindowFocus = () => {
+    host.setAttribute('data-window-active', 'true');
+    if (typeof onQuotaWindowFocus === 'function') onQuotaWindowFocus();
+  };
+  const onWindowBlur = () => {
+    host.setAttribute('data-window-active', 'false');
+    if (typeof onQuotaWindowBlur === 'function') onQuotaWindowBlur();
+  };
   try {
     window.addEventListener?.('resize', onWindowResize);
     window.addEventListener?.('focus', onWindowFocus);
     window.addEventListener?.('blur', onWindowBlur);
     navigator?.windowControlsOverlay?.addEventListener?.('geometrychange', onWindowResize);
-  } catch {}
+    earlyDisposeHooks.push(() => {
+      try {
+        window.removeEventListener?.('resize', onWindowResize);
+        window.removeEventListener?.('focus', onWindowFocus);
+        window.removeEventListener?.('blur', onWindowBlur);
+        navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
+        if (hostModelSyncTimer) { clearTimeout(hostModelSyncTimer); hostModelSyncTimer = null; }
+        if (domMutationThrottleTimer) { clearTimeout(domMutationThrottleTimer); domMutationThrottleTimer = null; }
+      } catch { }
+    });
+  } catch { }
 
   ensureHostDocked();
 
@@ -818,75 +1006,134 @@
   }
 
   function isAnyPanelOpen() {
-    return !el('panel').hidden || !el('panel-tokens').hidden;
+    return !el('panel').hidden || !el('panel-tokens').hidden || !el('panel-quota')?.hidden;
   }
 
   function showPanel(target) {
     const pContext = el('panel');
     const pTokens = el('panel-tokens');
+    const pQuota = el('panel-quota');
     const pOverflow = el('overflow-menu');
     const bContext = el('badge');
     const bSpeed = el('badge-speed');
     const bTokens = el('badge-tokens');
+    const bQuota = el('badge-quota');
     const bOverflow = el('badge-overflow');
 
     hideUpdatePopover();
     if (pOverflow) pOverflow.hidden = true;
     bOverflow?.setAttribute('aria-expanded', 'false');
+    if (target !== 'quota' && typeof clearQuotaBarChargeAnimations === 'function') {
+      clearQuotaBarChargeAnimations();
+    }
 
     if (target === 'tokens') {
       hideContextTooltip();
       closeColorPicker();
       pContext.hidden = true;
-      pTokens.hidden = false;
+      if (pQuota) pQuota.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'true');
       syncHostStackingElevation(true);
       positionFloatingPanels();
-      void syncTokenHistoryFromHost(false);
+      pTokens.hidden = false;
       renderActiveHeatView(true);
-    } else if (target === 'context') {
+      const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
+      if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
+        void syncTokenHistoryFromHost(false);
+      }
+    } else if (target === 'quota') {
       hideContextTooltip();
       closeColorPicker();
-      setPlanDetailExpanded(false, { skipReposition: true });
-      pTokens.hidden = true;
-      pContext.hidden = false;
-      bContext.setAttribute('aria-expanded', 'true');
-      bSpeed?.setAttribute('aria-expanded', 'true');
-      bTokens.setAttribute('aria-expanded', 'false');
-      syncHostStackingElevation(true);
-      positionFloatingPanels();
-      void refreshModulesDisplay();
-    } else {
       setPlanDetailExpanded(false, { skipReposition: true });
       pContext.hidden = true;
       pTokens.hidden = true;
       bContext.setAttribute('aria-expanded', 'false');
       bSpeed?.setAttribute('aria-expanded', 'false');
       bTokens.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'true');
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
+      if (pQuota) pQuota.hidden = false;
+      if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
+      if (typeof maybeRefreshQuotaOnOpen === 'function') void maybeRefreshQuotaOnOpen();
+    } else if (target === 'context') {
+      hideContextTooltip();
+      closeColorPicker();
+      setPlanDetailExpanded(false, { skipReposition: true });
+      pTokens.hidden = true;
+      if (pQuota) pQuota.hidden = true;
+      bContext.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge'));
+      bSpeed?.setAttribute('aria-expanded', String(activeContextAnchorId === 'badge-speed'));
+      bTokens.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
+      syncHostStackingElevation(true);
+      positionFloatingPanels();
+      pContext.hidden = false;
+      applyContextViewVisibility?.();
+      if (activeContextTab === 'models' && !isContextSettingsView) {
+        if (typeof syncModelListQuotaIndicators === 'function') syncModelListQuotaIndicators(null, Date.now(), true);
+        void refreshUnlockStatus();
+      } else if (activeContextTab === 'speed' && !isContextSettingsView) {
+        renderSpeedComparisonTab?.();
+      }
+      if (isContextSettingsView) {
+        void refreshModulesDisplay();
+      }
+    } else {
+      setPlanDetailExpanded(false, { skipReposition: true });
+      pContext.hidden = true;
+      pTokens.hidden = true;
+      if (pQuota) pQuota.hidden = true;
+      bContext.setAttribute('aria-expanded', 'false');
+      bSpeed?.setAttribute('aria-expanded', 'false');
+      bTokens.setAttribute('aria-expanded', 'false');
+      bQuota?.setAttribute('aria-expanded', 'false');
       closeColorPicker();
       hidePopover();
       syncHostStackingElevation(false);
     }
   }
 
+  let activeContextAnchorId = 'badge';
+  let activeTokensAnchorId = 'badge-tokens';
+  let activeQuotaAnchorId = 'badge-quota';
+
   function toggle(open, tab = 'context') {
     if (!open) {
       showPanel('none');
     } else {
-      showPanel(tab === 'tokens' ? 'tokens' : 'context');
+      showPanel(tab === 'tokens' ? 'tokens' : (tab === 'quota' ? 'quota' : 'context'));
     }
   }
 
-  function toggleContext() {
-    if (!el('panel').hidden) showPanel('none');
-    else showPanel('context');
+  function toggleContext(anchorId = 'badge') {
+    if (!el('panel').hidden && activeContextAnchorId === anchorId) {
+      showPanel('none');
+    } else {
+      activeContextAnchorId = anchorId || 'badge';
+      showPanel('context');
+    }
   }
 
-  function toggleTokens() {
-    if (!el('panel-tokens').hidden) showPanel('none');
-    else showPanel('tokens');
+  function toggleTokens(anchorId = 'badge-tokens') {
+    if (!el('panel-tokens').hidden && activeTokensAnchorId === anchorId) {
+      showPanel('none');
+    } else {
+      activeTokensAnchorId = anchorId || 'badge-tokens';
+      showPanel('tokens');
+    }
+  }
+
+  function toggleQuota(anchorId = 'badge-quota') {
+    if (el('panel-quota') && !el('panel-quota').hidden && activeQuotaAnchorId === anchorId) {
+      showPanel('none');
+    } else {
+      activeQuotaAnchorId = anchorId || 'badge-quota';
+      showPanel('quota');
+    }
   }
 
   function toggleOverflowMenu() {
@@ -895,59 +1142,88 @@
     const willOpen = pOverflow.hidden;
     showPanel('none');
     hideContextTooltip();
+    if (willOpen) positionFloatingPanels();
     pOverflow.hidden = !willOpen;
     el('badge-overflow')?.setAttribute('aria-expanded', String(willOpen));
     syncHostStackingElevation(willOpen);
-    if (willOpen) positionFloatingPanels();
   }
 
-  // 外观调色按钮直接展开抽屉
-  el('btn-panel-palette')?.addEventListener('click', () => toggleColorsDrawer());
+  // 外观调色按钮进入设置视图并直接展开颜色自定义抽屉
+  el('btn-panel-palette')?.addEventListener('click', () => {
+    openContextSettings?.({ openColors: true });
+  });
   el('btn-panel-tokens-palette')?.addEventListener('click', () => toggleTokenColorsDrawer());
 
   // =========================================================================
   // 统一定制下拉组件控制器 (国家 / 订阅地区 / 币种 / 增强 Select)
   // =========================================================================
   const COUNTRY_OPTIONS = [
-    { value: '未知', label: '🌐 未设置 / 自动', code: 'AUTO', aliases: ['自动', '未知', 'none'] },
-    { value: '美国 (US)', label: '🇺🇸 美国 (US)', code: 'US', aliases: ['美国', 'united states', 'usa'] },
-    { value: '日本 (JP)', label: '🇯🇵 日本 (JP)', code: 'JP', aliases: ['日本', 'japan'] },
-    { value: '韩国 (KR)', label: '🇰🇷 韩国 (KR)', code: 'KR', aliases: ['韩国', 'korea', 'south korea'] },
-    { value: '中国台湾 (TW)', label: '🇹🇼 中国台湾 (TW)', code: 'TW', aliases: ['台湾', 'taiwan', 'tw'] },
-    { value: '中国香港 (HK)', label: '🇭🇰 中国香港 (HK)', code: 'HK', aliases: ['香港', 'hong kong', 'hk'] },
-    { value: '澳大利亚 (AU)', label: '🇦🇺 澳大利亚 (AU)', code: 'AU', aliases: ['澳大利亚', '澳洲', 'australia', 'au'] },
-    { value: '新加坡 (SG)', label: '🇸🇬 新加坡 (SG)', code: 'SG', aliases: ['新加坡', 'singapore', 'sg'] },
-    { value: '英国 (UK)', label: '🇬🇧 英国 (UK)', code: 'UK', aliases: ['英国', 'united kingdom', 'uk', 'gb', 'britain'] },
-    { value: '德国 (DE)', label: '🇩🇪 德国 (DE)', code: 'DE', aliases: ['德国', 'germany', 'de'] },
-    { value: '加拿大 (CA)', label: '🇨🇦 加拿大 (CA)', code: 'CA', aliases: ['加拿大', 'canada', 'ca'] },
-    { value: '土耳其 (TR)', label: '🇹🇷 土耳其 (TR)', code: 'TR', aliases: ['土耳其', 'turkey', 'tr'] },
-    { value: '尼日利亚 (NG)', label: '🇳🇬 尼日利亚 (NG)', code: 'NG', aliases: ['尼日利亚', 'nigeria', 'ng'] },
-    { value: '菲律宾 (PH)', label: '🇵🇭 菲律宾 (PH)', code: 'PH', aliases: ['菲律宾', 'philippines', 'ph'] },
-    { value: '印度 (IN)', label: '🇮🇳 印度 (IN)', code: 'IN', aliases: ['印度', 'india', 'in'] },
-    { value: '马来西亚 (MY)', label: '🇲🇾 马来西亚 (MY)', code: 'MY', aliases: ['马来西亚', 'malaysia', 'my'] },
-    { value: '巴西 (BR)', label: '🇧🇷 巴西 (BR)', code: 'BR', aliases: ['巴西', 'brazil', 'br'] },
-    { value: '中国大陆 (CN)', label: '🇨🇳 中国大陆 (CN)', code: 'CN', aliases: ['中国大陆', '中国', 'china', 'cn'] }
+    { value: '未知', label: '🌐 未设置 / 自动', labelTw: '🌐 未設定 / 自動', labelEn: '🌐 Auto / Unset', code: 'AUTO', aliases: ['自动', '未知', 'none', 'auto'] },
+    { value: '美国 (US)', label: '🇺🇸 美国 (US)', labelTw: '🇺🇸 美國 (US)', labelEn: '🇺🇸 United States (US)', code: 'US', aliases: ['美国', 'united states', 'usa'] },
+    { value: '日本 (JP)', label: '🇯🇵 日本 (JP)', labelTw: '🇯🇵 日本 (JP)', labelEn: '🇯🇵 Japan (JP)', code: 'JP', aliases: ['日本', 'japan'] },
+    { value: '韩国 (KR)', label: '🇰🇷 韩国 (KR)', labelTw: '🇰🇷 韓國 (KR)', labelEn: '🇰🇷 South Korea (KR)', code: 'KR', aliases: ['韩国', 'korea', 'south korea'] },
+    { value: '中国台湾 (TW)', label: '🇹🇼 中国台湾 (TW)', labelTw: '🇹🇼 中國台灣 (TW)', labelEn: '🇹🇼 Taiwan (TW)', code: 'TW', aliases: ['台湾', 'taiwan', 'tw'] },
+    { value: '中国香港 (HK)', label: '🇭🇰 中国香港 (HK)', labelTw: '🇭🇰 中國香港 (HK)', labelEn: '🇭🇰 Hong Kong (HK)', code: 'HK', aliases: ['香港', 'hong kong', 'hk'] },
+    { value: '澳大利亚 (AU)', label: '🇦🇺 澳大利亚 (AU)', labelTw: '🇦🇺 澳洲 (AU)', labelEn: '🇦🇺 Australia (AU)', code: 'AU', aliases: ['澳大利亚', '澳洲', 'australia', 'au'] },
+    { value: '新加坡 (SG)', label: '🇸🇬 新加坡 (SG)', labelTw: '🇸🇬 新加坡 (SG)', labelEn: '🇸🇬 Singapore (SG)', code: 'SG', aliases: ['新加坡', 'singapore', 'sg'] },
+    { value: '英国 (UK)', label: '🇬🇧 英国 (UK)', labelTw: '🇬🇧 英國 (UK)', labelEn: '🇬🇧 United Kingdom (UK)', code: 'UK', aliases: ['英国', 'united kingdom', 'uk', 'gb', 'britain'] },
+    { value: '德国 (DE)', label: '🇩🇪 德国 (DE)', labelTw: '🇩🇪 德國 (DE)', labelEn: '🇩🇪 Germany (DE)', code: 'DE', aliases: ['德国', 'germany', 'de'] },
+    { value: '加拿大 (CA)', label: '🇨🇦 加拿大 (CA)', labelTw: '🇨🇦 加拿大 (CA)', labelEn: '🇨🇦 Canada (CA)', code: 'CA', aliases: ['加拿大', 'canada', 'ca'] },
+    { value: '土耳其 (TR)', label: '🇹🇷 土耳其 (TR)', labelTw: '🇹🇷 土耳其 (TR)', labelEn: '🇹🇷 Turkey (TR)', code: 'TR', aliases: ['土耳其', 'turkey', 'tr'] },
+    { value: '尼日利亚 (NG)', label: '🇳🇬 尼日利亚 (NG)', labelTw: '🇳🇬 奈及利亞 (NG)', labelEn: '🇳🇬 Nigeria (NG)', code: 'NG', aliases: ['尼日利亚', 'nigeria', 'ng'] },
+    { value: '菲律宾 (PH)', label: '🇵🇭 菲律宾 (PH)', labelTw: '🇵🇭 菲律賓 (PH)', labelEn: '🇵🇭 Philippines (PH)', code: 'PH', aliases: ['菲律宾', 'philippines', 'ph'] },
+    { value: '印度 (IN)', label: '🇮🇳 印度 (IN)', labelTw: '🇮🇳 印度 (IN)', labelEn: '🇮🇳 India (IN)', code: 'IN', aliases: ['印度', 'india', 'in'] },
+    { value: '马来西亚 (MY)', label: '🇲🇾 马来西亚 (MY)', labelTw: '🇲🇾 馬來西亞 (MY)', labelEn: '🇲🇾 Malaysia (MY)', code: 'MY', aliases: ['马来西亚', 'malaysia', 'my'] },
+    { value: '巴西 (BR)', label: '🇧🇷 巴西 (BR)', labelTw: '🇧🇷 巴西 (BR)', labelEn: '🇧🇷 Brazil (BR)', code: 'BR', aliases: ['巴西', 'brazil', 'br'] },
+    { value: '中国大陆 (CN)', label: '🇨🇳 中国大陆 (CN)', labelTw: '🇨🇳 中國大陸 (CN)', labelEn: '🇨🇳 China Mainland (CN)', code: 'CN', aliases: ['中国大陆', '中国', 'china', 'cn'] }
   ];
 
   const CURRENCY_OPTIONS = [
-    { value: 'USD', code: 'USD', symbol: '$', name: '美元', label: 'USD ($ 美元)', aliases: ['美元', 'usd', '$', 'dollar'] },
-    { value: 'KRW', code: 'KRW', symbol: '₩', name: '韩元', label: 'KRW (₩ 韩元)', aliases: ['韩元', 'krw', '₩', 'won'] },
-    { value: 'AUD', code: 'AUD', symbol: 'AU$', name: '澳元', label: 'AUD (AU$ 澳元)', aliases: ['澳元', '澳洲', 'aud', 'au$', 'australian'] },
-    { value: 'JPY', code: 'JPY', symbol: '¥', name: '日元', label: 'JPY (¥ 日元)', aliases: ['日元', '日本', 'jpy', '¥', 'yen'] },
-    { value: 'HKD', code: 'HKD', symbol: 'HK$', name: '港币', label: 'HKD (HK$ 港币)', aliases: ['港币', '香港', 'hkd', 'hk$'] },
-    { value: 'TWD', code: 'TWD', symbol: 'NT$', name: '台币', label: 'TWD (NT$ 台币)', aliases: ['台币', '台湾', 'twd', 'ntd', 'nt$'] },
-    { value: 'TRY', code: 'TRY', symbol: '₺', name: '里拉', label: 'TRY (₺ 里拉)', aliases: ['里拉', '土耳其', 'try', '₺', 'lira'] },
-    { value: 'NGN', code: 'NGN', symbol: '₦', name: '奈拉', label: 'NGN (₦ 奈拉)', aliases: ['奈拉', '尼日利亚', 'ngn', '₦', 'naira'] },
-    { value: 'CNY', code: 'CNY', symbol: '¥', name: '人民币', label: 'CNY (¥ 人民币)', aliases: ['人民币', '中国', 'cny', 'rmb', '¥', 'yuan'] },
-    { value: 'EUR', code: 'EUR', symbol: '€', name: '欧元', label: 'EUR (€ 欧元)', aliases: ['欧元', '欧洲', 'eur', '€', 'euro'] },
-    { value: 'GBP', code: 'GBP', symbol: '£', name: '英镑', label: 'GBP (£ 英镑)', aliases: ['英镑', '英国', 'gbp', '£', 'pound'] },
-    { value: 'SGD', code: 'SGD', symbol: 'S$', name: '新元', label: 'SGD (S$ 新元)', aliases: ['新元', '新加坡', 'sgd', 's$'] },
-    { value: 'CAD', code: 'CAD', symbol: 'CA$', name: '加元', label: 'CAD (CA$ 加元)', aliases: ['加元', '加拿大', 'cad', 'ca$'] },
-    { value: 'PHP', code: 'PHP', symbol: '₱', name: '比索', label: 'PHP (₱ 比索)', aliases: ['比索', '菲律宾', 'php', '₱', 'peso'] },
-    { value: 'INR', code: 'INR', symbol: '₹', name: '卢比', label: 'INR (₹ 卢比)', aliases: ['卢比', '印度', 'inr', '₹', 'rupee'] },
-    { value: 'MYR', code: 'MYR', symbol: 'RM', name: '令吉', label: 'MYR (RM 令吉)', aliases: ['令吉', '马来西亚', 'myr', 'rm', 'ringgit'] },
-    { value: 'BRL', code: 'BRL', symbol: 'R$', name: '雷亚尔', label: 'BRL (R$ 雷亚尔)', aliases: ['雷亚尔', '巴西', 'brl', 'r$', 'real'] }
+    { value: 'USD', code: 'USD', symbol: '$', name: '美元', nameEn: 'US Dollar', label: 'USD ($ 美元)', labelTw: 'USD ($ 美元)', labelEn: 'USD ($ US Dollar)', aliases: ['美元', 'usd', '$', 'dollar'] },
+    { value: 'KRW', code: 'KRW', symbol: '₩', name: '韩元', nameEn: 'Korean Won', label: 'KRW (₩ 韩元)', labelTw: 'KRW (₩ 韓元)', labelEn: 'KRW (₩ Won)', aliases: ['韩元', 'krw', '₩', 'won'] },
+    { value: 'AUD', code: 'AUD', symbol: 'AU$', name: '澳元', nameEn: 'Australian Dollar', label: 'AUD (AU$ 澳元)', labelTw: 'AUD (AU$ 澳元)', labelEn: 'AUD (AU$ AUD)', aliases: ['澳元', '澳洲', 'aud', 'au$', 'australian'] },
+    { value: 'JPY', code: 'JPY', symbol: '¥', name: '日元', nameEn: 'Japanese Yen', label: 'JPY (¥ 日元)', labelTw: 'JPY (¥ 日圓)', labelEn: 'JPY (¥ Yen)', aliases: ['日元', '日本', 'jpy', '¥', 'yen'] },
+    { value: 'HKD', code: 'HKD', symbol: 'HK$', name: '港币', nameEn: 'Hong Kong Dollar', label: 'HKD (HK$ 港币)', labelTw: 'HKD (HK$ 港幣)', labelEn: 'HKD (HK$ HKD)', aliases: ['港币', '香港', 'hkd', 'hk$'] },
+    { value: 'TWD', code: 'TWD', symbol: 'NT$', name: '台币', nameEn: 'New Taiwan Dollar', label: 'TWD (NT$ 台币)', labelTw: 'TWD (NT$ 新台幣)', labelEn: 'TWD (NT$ TWD)', aliases: ['台币', '台湾', 'twd', 'ntd', 'nt$'] },
+    { value: 'TRY', code: 'TRY', symbol: '₺', name: '里拉', nameEn: 'Turkish Lira', label: 'TRY (₺ 里拉)', labelTw: 'TRY (₺ 里拉)', labelEn: 'TRY (₺ Lira)', aliases: ['里拉', '土耳其', 'try', '₺', 'lira'] },
+    { value: 'NGN', code: 'NGN', symbol: '₦', name: '奈拉', nameEn: 'Nigerian Naira', label: 'NGN (₦ 奈拉)', labelTw: 'NGN (₦ 奈拉)', labelEn: 'NGN (₦ Naira)', aliases: ['奈拉', '尼日利亚', 'ngn', '₦', 'naira'] },
+    { value: 'CNY', code: 'CNY', symbol: '¥', name: '人民币', nameEn: 'Chinese Yuan', label: 'CNY (¥ 人民币)', labelTw: 'CNY (¥ 人民幣)', labelEn: 'CNY (¥ CNY)', aliases: ['人民币', '中国', 'cny', 'rmb', '¥', 'yuan'] },
+    { value: 'EUR', code: 'EUR', symbol: '€', name: '欧元', nameEn: 'Euro', label: 'EUR (€ 欧元)', labelTw: 'EUR (€ 歐元)', labelEn: 'EUR (€ Euro)', aliases: ['欧元', '欧洲', 'eur', '€', 'euro'] },
+    { value: 'GBP', code: 'GBP', symbol: '£', name: '英镑', nameEn: 'British Pound', label: 'GBP (£ 英镑)', labelTw: 'GBP (£ 英鎊)', labelEn: 'GBP (£ Pound)', aliases: ['英镑', '英国', 'gbp', '£', 'pound'] },
+    { value: 'SGD', code: 'SGD', symbol: 'S$', name: '新元', nameEn: 'Singapore Dollar', label: 'SGD (S$ 新元)', labelTw: 'SGD (S$ 新幣)', labelEn: 'SGD (S$ SGD)', aliases: ['新元', '新加坡', 'sgd', 's$'] },
+    { value: 'CAD', code: 'CAD', symbol: 'CA$', name: '加元', nameEn: 'Canadian Dollar', label: 'CAD (CA$ 加元)', labelTw: 'CAD (CA$ 加幣)', labelEn: 'CAD (CA$ CAD)', aliases: ['加元', '加拿大', 'cad', 'ca$'] },
+    { value: 'PHP', code: 'PHP', symbol: '₱', name: '比索', nameEn: 'Philippine Peso', label: 'PHP (₱ 比索)', labelTw: 'PHP (₱ 披索)', labelEn: 'PHP (₱ Peso)', aliases: ['比索', '菲律宾', 'php', '₱', 'peso'] },
+    { value: 'INR', code: 'INR', symbol: '₹', name: '卢比', nameEn: 'Indian Rupee', label: 'INR (₹ 卢比)', labelTw: 'INR (₹ 盧比)', labelEn: 'INR (₹ Rupee)', aliases: ['卢比', '印度', 'inr', '₹', 'rupee'] },
+    { value: 'MYR', code: 'MYR', symbol: 'RM', name: '令吉', nameEn: 'Malaysian Ringgit', label: 'MYR (RM 令吉)', labelTw: 'MYR (RM 令吉)', labelEn: 'MYR (RM Ringgit)', aliases: ['令吉', '马来西亚', 'myr', 'rm', 'ringgit'] },
+    { value: 'BRL', code: 'BRL', symbol: 'R$', name: '雷亚尔', nameEn: 'Brazilian Real', label: 'BRL (R$ 雷亚尔)', labelTw: 'BRL (R$ 雷亞爾)', labelEn: 'BRL (R$ Real)', aliases: ['雷亚尔', '巴西', 'brl', 'r$', 'real'] }
   ];
+
+  function refreshRegionPresetSelectOptions() {
+    const sel = el('select-custom-region-preset');
+    if (!sel || !sel.options) return;
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+    for (let i = 0; i < sel.options.length; i++) {
+      const opt = sel.options[i];
+      if (!opt || opt.value === '' || opt.value === 'custom') continue;
+      const p = presets.find(item => item.id === opt.value);
+      if (!p) continue;
+      const dispName = getPanelLanguage() === 'en' ? (p.nameEn || p.id || p.name) : p.name;
+      if (p.currency === 'CNY') {
+        opt.textContent = t('plan.form.presetLineCny', { flag: p.flag || '🌏', name: dispName, price: p.monthlyPrice });
+      } else {
+        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
+        opt.textContent = t('plan.form.presetLine', {
+          flag: p.flag || '🌏',
+          name: dispName,
+          id: p.id,
+          sym: p.symbol,
+          price: p.monthlyPrice,
+          cny: Number(cny).toFixed(1)
+        });
+      }
+    }
+  }
 
   function hasClass(node, cls) {
     if (!node) return false;
@@ -1068,7 +1344,7 @@
         symbolEl.textContent = endSymbol;
         symbolEl.classList.remove('is-dissolving');
         symbolEl.classList.add('is-entering');
-        try { void symbolEl.offsetWidth; } catch {}
+        try { void symbolEl.offsetWidth; } catch { }
         setTimeout(() => {
           symbolEl.classList?.remove?.('is-entering');
         }, 180);
@@ -1138,41 +1414,47 @@
     if (!ps) return;
     const sumTxt = el('plan-summary-text');
     if (sumTxt) {
-      const modeTxt = ps.status === 'identified' ? '已自动识别' : ps.hasCustomSettings ? '自定义生效' : '未识别/默认';
-      sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · 刚刚更新`;
+      const modeTxt = ps.status === 'identified'
+        ? t('plan.summary.identified')
+        : ps.hasCustomSettings
+          ? t('plan.summary.custom')
+          : t('plan.summary.unknown');
+      sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · ${t('plan.summary.justNow')}`;
     }
     // 实时联动更新黄框位置的订阅费与汇率胶囊 (支持动效与符号消散)
     const curSymbol = ps.currencySymbol || '$';
     let targetSymbol = '$';
     let targetNum = 19.99;
-    let targetCycle = '/月';
+    let targetCycle = t('plan.summary.perMonth');
     let targetCny = '(≈ ¥134.3 CNY)';
 
     if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
       targetSymbol = curSymbol;
       targetNum = 0;
-      targetCycle = '/月';
-      targetCny = '(随套餐免费)';
+      targetCycle = t('plan.summary.perMonth');
+      targetCny = t('plan.summary.freeWithPlan');
     } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
       targetSymbol = curSymbol;
       targetNum = Number(ps.actualPricePaid);
-      targetCycle = '/月';
+      targetCycle = t('plan.summary.perMonth');
       if (ps.currency === 'CNY') {
         targetCny = '';
       } else if (ps.cnyFormatted) {
-        targetCny = '(' + ps.cnyFormatted.replace('折合 ', '') + ')';
+        const cnyClean = String(ps.cnyFormatted).replace(/^[折合約\s≈()（）]+/, '').replace(/[()（）]/g, '').trim();
+        const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
+        targetCny = cnyClean ? `(${prefix}${cnyClean})` : '';
       } else {
         targetCny = '';
       }
     } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
-      targetCycle = '/月';
+      targetCycle = t('plan.summary.perMonth');
       targetCny = '(≈ ¥134.3 CNY)';
     } else {
       targetSymbol = '$';
       targetNum = 19.99;
-      targetCycle = '/月';
+      targetCycle = t('plan.summary.perMonth');
       targetCny = '(≈ ¥134.3 CNY)';
     }
 
@@ -1181,7 +1463,7 @@
     const detName = el('p-det-name');
     if (detName) detName.textContent = ps.tierName || 'Google AI Pro';
     const detAcc = el('p-det-account');
-    if (detAcc) detAcc.textContent = ps.email || '未识别当前登录邮箱';
+    if (detAcc) detAcc.textContent = ps.email || t('plan.account.unknown');
 
     // 守卫：若当前不在 Token 统计视图或详情处于收起状态，严禁异步返回时撑开详情面板
     const cardEl = el('plan-detail-card');
@@ -1194,20 +1476,20 @@
     const tagCountry = el('p-det-country-tag');
     const directCountrySel = el('direct-country-select');
     const countryText = (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
-    if (detCountry) detCountry.textContent = countryText;
+    if (detCountry) detCountry.textContent = countryText === '未知' ? t('plan.country.unknown') : countryText;
     if (tagCountry) {
       tagCountry.style.display = ps.countrySource === 'custom' ? 'inline-block' : 'none';
-      tagCountry.textContent = ps.countrySource === 'custom' ? '自定义' : '';
+      tagCountry.textContent = ps.countrySource === 'custom' ? t('plan.tag.custom') : '';
     }
 
     const detReg = el('p-det-region');
     const tagReg = el('p-det-region-tag');
     let regText = ps.subscriptionRegion || ps.region || '未知';
     if (regText.includes('未在当前会话中获取') || regText.trim() === '未知') regText = '未知';
-    if (detReg) detReg.textContent = regText;
+    if (detReg) detReg.textContent = regText === '未知' ? t('plan.region.unknown') : regText;
     if (tagReg) {
       tagReg.style.display = ps.regionSource === 'custom' ? 'inline-block' : 'none';
-      tagReg.textContent = ps.regionSource === 'custom' ? '自定义' : '';
+      tagReg.textContent = ps.regionSource === 'custom' ? t('plan.tag.custom') : '';
     }
 
     const detCur = el('p-det-currency');
@@ -1217,7 +1499,7 @@
     if (detCur) detCur.textContent = curText;
     if (tagCur) {
       tagCur.style.display = ps.currencySource === 'custom' ? 'inline-block' : 'none';
-      tagCur.textContent = ps.currencySource === 'custom' ? '自定义' : '';
+      tagCur.textContent = ps.currencySource === 'custom' ? t('plan.tag.custom') : '';
     }
 
     // 使用纯同步回填守卫同步更新详情面板内的下拉控件值
@@ -1252,11 +1534,11 @@
 
     const detAcq = el('p-det-acq');
     const tagAcq = el('p-det-acq-tag');
-    if (detAcq) detAcq.textContent = ps.acquisitionSourceName || '正常付费订阅';
+    if (detAcq) detAcq.textContent = localizeAcquisitionSource(ps.acquisitionSource || ps.acquisitionSourceName);
     if (tagAcq) {
       const isPromo = ps.acquisitionSource && ps.acquisitionSource !== 'normal_paid';
       tagAcq.style.display = isPromo ? 'inline-block' : 'none';
-      tagAcq.textContent = isPromo ? '活动权益' : '';
+      tagAcq.textContent = isPromo ? t('plan.tag.promo') : '';
     }
 
     const detPrice = el('p-det-price');
@@ -1268,30 +1550,35 @@
     if (btnModeCustom) setPillActive(btnModeCustom, !isPresetMode);
 
     if (detPrice) {
+      const cycleText = localizeBillingCycleLabel(ps.billingCycle);
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        detPrice.textContent = `${curSymbol}0 · ${ps.billingCycle || '随套餐包含'}`;
+        detPrice.textContent = `${curSymbol}0 · ${cycleText}`;
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        const cnyPart = (ps.currency !== 'CNY' && ps.cnyFormatted) ? ` (${ps.cnyFormatted})` : '';
+        let cnyPart = '';
+        if (ps.currency !== 'CNY' && ps.cnyFormatted) {
+          const locCny = localizeCnyFormatted(ps.cnyFormatted);
+          cnyPart = locCny ? ` (${locCny})` : '';
+        }
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
-        detPrice.textContent = `${curSymbol}${paidFormatted} · ${ps.billingCycle || '月付'}${cnyPart}`;
+        detPrice.textContent = `${curSymbol}${paidFormatted} · ${cycleText}${cnyPart}`;
       } else if (ps.priceRangeNote && ps.priceRangeNote !== '未知') {
         detPrice.textContent = ps.priceRangeNote.replace(/[（\(][^）\)]*[）\)]/g, '').trim();
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
-        detPrice.textContent = `公开参考价 $${ps.officialPriceMonthly}/月`;
+        detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
       } else {
-        detPrice.textContent = '未知';
+        detPrice.textContent = '—';
       }
     }
     if (tagPrice) {
       tagPrice.style.display = 'inline-block';
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        tagPrice.textContent = '手动确认 · 免费';
+        tagPrice.textContent = t('plan.tag.manualFree');
       } else if (ps.priceMode === 'custom' || ps.priceSource === 'custom') {
-        tagPrice.textContent = '用户实付';
+        tagPrice.textContent = t('plan.tag.userPaid');
       } else if (ps.priceSource === 'preset_region' || isPresetMode) {
-        tagPrice.textContent = '官方定价';
+        tagPrice.textContent = t('plan.tag.official');
       } else {
-        tagPrice.textContent = '公开参考价';
+        tagPrice.textContent = t('plan.tag.publicRef');
       }
     }
 
@@ -1301,7 +1588,9 @@
       if (ps.validEndDate) {
         dtVal.style.display = 'block';
         ddVal.style.display = 'block';
-        ddVal.textContent = `至 ${ps.validEndDate}${ps.isExpired ? ' · ⚠️ 权益已到期' : ' · 有效期内'}`;
+        ddVal.textContent = ps.isExpired
+          ? t('plan.validity.expired', { date: ps.validEndDate })
+          : t('plan.validity.active', { date: ps.validEndDate });
         ddVal.style.color = ps.isExpired ? '#ef4444' : 'var(--ag-text-secondary)';
       } else {
         dtVal.style.display = 'none';
@@ -1325,18 +1614,18 @@
     const pPrompt = el('p-det-prompt-credits');
     const pFlow = el('p-det-flow-credits');
     if (pPrompt && ps.promptCredits) {
-      const promptTxt = `Prompt Credits: ${ps.promptCredits.available ?? '—'} 可用 / ${ps.promptCredits.monthly ?? '—'} 月额度`;
+      const promptTxt = `Prompt Credits: ${t('plan.credits.avail', { avail: ps.promptCredits.available ?? '—', monthly: ps.promptCredits.monthly ?? '—' })}`;
       pPrompt.textContent = promptTxt;
       const pLegacy = el('p-det-credits');
       if (pLegacy) pLegacy.textContent = promptTxt;
     }
     if (pFlow && ps.flowCredits) {
-      pFlow.textContent = `${ps.flowCredits?.available ?? '—'} 可用 / ${ps.flowCredits?.monthly ?? '—'} 月额度`;
+      pFlow.textContent = t('plan.credits.avail', { avail: ps.flowCredits?.available ?? '—', monthly: ps.flowCredits?.monthly ?? '—' });
     }
     const detTime = el('p-det-time');
     if (detTime) {
       const timeStr = ps.updatedAt ? new Date(ps.updatedAt).toLocaleString() : '—';
-      const verifyStr = ps.pricingTableVerifiedDate ? ` · 价表核对：${ps.pricingTableVerifiedDate}` : '';
+      const verifyStr = ps.pricingTableVerifiedDate ? ` · ${ps.pricingTableVerifiedDate}` : '';
       detTime.textContent = `${timeStr}${verifyStr}`;
     }
   }
@@ -1356,7 +1645,7 @@
   let activeTokenSource = 'all';
   function switchTokenSource(src) {
     activeTokenSource = src;
-    try { localStorage?.setItem('ag_token_source_v1', src); } catch {}
+    try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
     setPillActive(el('src-tab-all'), src === 'all');
     setPillActive(el('src-tab-desktop'), src === 'desktop');
     setPillActive(el('src-tab-cli'), src === 'cli');
@@ -1392,7 +1681,7 @@
       pane.style.display = costDetailsExpanded ? 'block' : 'none';
       if (costDetailsExpanded) pane.style.animation = 'agFadeIn .2s cubic-bezier(0.16,1,0.3,1)';
     }
-    if (btn) btn.textContent = costDetailsExpanded ? '收起详情 ▲' : '展开详情 ▼';
+    if (btn) btn.textContent = costDetailsExpanded ? t('cost.btnCollapse') : t('cost.btnExpand');
     if (pTokens) {
       const isCompact = activeTokenView === 'cost' && !costDetailsExpanded;
       pTokens.classList?.toggle?.('cost-compact-view', isCompact);
@@ -1445,7 +1734,7 @@
     }
     if (statCards) statCards.style.display = v === 'tokens' ? 'grid' : 'none';
     if (planBar) planBar.style.display = v === 'tokens' ? 'flex' : 'none';
-    if (titleTokens) titleTokens.textContent = v === 'cost' ? 'API 价格折算' : '本机已记录用量';
+    if (titleTokens) titleTokens.textContent = v === 'cost' ? t('tokens.titleCost') : t('tokens.title');
 
     if (pTokens) {
       const isCompact = v === 'cost' && !costDetailsExpanded;
@@ -1487,8 +1776,8 @@
 
   async function triggerLaunchCli(customOpts = {}) {
     if (cliLaunchBusy) {
-      showCliToast('CLI 正在启动中，请稍候…', false);
-      return { ok: false, error: 'CLI 正在启动中，请稍候' };
+      showCliToast(t('cli.busy'), false);
+      return { ok: false, error: t('cli.busy') };
     }
     cliLaunchBusy = true;
     const btn = el('badge-cli');
@@ -1499,7 +1788,7 @@
       if (typeof document !== 'undefined' && document.activeElement?.blur) {
         document.activeElement.blur();
       }
-    } catch {}
+    } catch { }
 
     const hostBounds = {
       x: typeof window !== 'undefined' ? (window.screenX || 0) : 0,
@@ -1527,24 +1816,24 @@
         });
         res = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
       } else {
-        res = { ok: false, code: 'NO_BRIDGE', error: '本地桥接服务未连接，请执行 node cli.js install 或重启客户端' };
+        res = { ok: false, code: 'NO_BRIDGE', error: t('cli.noBridge') };
       }
 
       lastCliLaunchResult = res;
       if (res && res.ok) {
         const om = el('overflow-menu');
         if (om) om.hidden = true;
-        showCliToast(`✔ 已启动 Antigravity CLI（目录：${res.cwd || '默认'}）`, false);
+        showCliToast(t('cli.launched', { cwd: res.cwd || t('cli.defaultCwd') }), false);
         return res;
       } else {
-        const errMsg = res?.error || '未检测到可用的 Antigravity CLI (agy)，请检查安装路径';
-        showCliToast(`✖ 启动 CLI 失败：${errMsg}`, true);
+        const errMsg = res?.error ? translateBackendText(res.error) : t('cli.notFound');
+        showCliToast(t('cli.failed', { err: errMsg }), true);
         return res || { ok: false, error: errMsg };
       }
     } catch (err) {
-      const errMsg = err?.message || '启动 CLI 发生异常';
+      const errMsg = err?.message ? translateBackendText(err.message) : t('cli.exception');
       lastCliLaunchResult = { ok: false, error: errMsg };
-      showCliToast(`✖ 启动 CLI 失败：${errMsg}`, true);
+      showCliToast(t('cli.failed', { err: errMsg }), true);
       return lastCliLaunchResult;
     } finally {
       cliLaunchBusy = false;
@@ -1573,14 +1862,27 @@
   }
   el('overflow-cli-btn')?.addEventListener('click', () => { void triggerLaunchCli(); });
 
-  el('badge').addEventListener('click', toggleContext);
-  el('badge-speed')?.addEventListener('click', toggleContext);
-  el('badge-tokens').addEventListener('click', toggleTokens);
+  el('badge-quota')?.addEventListener('click', () => toggleQuota('badge-quota'));
+  el('badge').addEventListener('click', () => toggleContext('badge'));
+  el('badge-speed')?.addEventListener('click', () => toggleContext('badge-speed'));
+  el('badge-tokens').addEventListener('click', () => toggleTokens('badge-tokens'));
   el('badge-overflow')?.addEventListener('click', toggleOverflowMenu);
-  el('overflow-speed-btn')?.addEventListener('click', () => showPanel('context'));
-  el('overflow-tokens-btn')?.addEventListener('click', () => showPanel('tokens'));
+  el('overflow-quota-btn')?.addEventListener('click', () => {
+    activeQuotaAnchorId = 'badge-overflow';
+    showPanel('quota');
+  });
+  el('overflow-speed-btn')?.addEventListener('click', () => {
+    activeContextAnchorId = 'badge-overflow';
+    showPanel('context');
+  });
+  el('overflow-tokens-btn')?.addEventListener('click', () => {
+    activeTokensAnchorId = 'badge-overflow';
+    showPanel('tokens');
+  });
   el('close').addEventListener('click', () => showPanel('none'));
   el('close-tokens')?.addEventListener('click', () => showPanel('none'));
+  el('close-quota')?.addEventListener('click', () => showPanel('none'));
+  el('badge-quota')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
   // 上下文圆环悬停与键盘聚焦气泡（面板打开时不通过悬停误切，必须通过显式左键点击切换）
   el('badge').addEventListener('mouseenter', () => {
@@ -1604,41 +1906,3394 @@
   el('badge-tokens').addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
   el('badge-speed')?.addEventListener('contextmenu', e => { e.preventDefault(); cycleTheme(); });
 
-  // 二级抽屉: 上下文加长折叠展开与状态机
-  const btnUnlock = el('btn-toggle-unlock');
+  // =========================================================================
+  // 模块 3: 上下文面板分页、设置视图、模型产品偏好、重启验证与速度对比
+  // =========================================================================
+  const btnTabSession = el('tab-ctx-session');
+  const btnTabModels = el('tab-ctx-models');
+  const btnTabSpeed = el('tab-ctx-speed');
+  const btnTabSettings = el('tab-ctx-settings');
+  const paneSession = el('pane-ctx-session');
+  const paneModels = el('pane-ctx-models');
+  const paneSpeed = el('pane-ctx-speed');
+  const paneSettings = el('pane-ctx-settings');
+  const ctxTabsBar = el('ctx-tabs-bar');
+  const btnCtxSettings = el('btn-ctx-settings');
+  const btnCtxSettingsBack = el('btn-ctx-settings-back');
+  const btnGotoModelSettings = el('btn-goto-model-settings');
+  const btnCardGotoSpeed = el('btn-card-goto-speed');
+  const btnCtxBackCurrent = el('btn-ctx-back-current');
+  const ctxCompactSavedEl = el('ctx-compact-saved');
+  const ctxCompactClientEl = el('ctx-compact-client');
+
+  const btnToggleUnlockDetails = el('btn-toggle-unlock-details');
   const unlockDrawerBody = el('unlock-drawer-body');
   const unlockDrawerArrow = el('unlock-drawer-arrow');
   const unlockBadge = el('unlock-badge');
   const unlockStatusDesc = el('unlock-status-desc');
+  const ctxClientStatusText = el('ctx-client-status-text');
+  const ctxRestartMismatchNote = el('ctx-restart-mismatch-note');
+  const btnRestartHost = el('btn-restart-host');
+  const ctxManualRestartNote = el('ctx-manual-restart-note');
+  const ctxRestartConfirm = el('ctx-restart-confirm');
+  const btnRestartCancel = el('btn-restart-cancel');
+  const btnRestartConfirmGo = el('btn-restart-confirm-go');
+  const ctxRestartFeedback = el('ctx-restart-feedback');
+  const globalRestartModal = el('global-restart-modal');
+  const modalRestartTitle = el('modal-restart-title');
+  const modalRestartText = el('modal-restart-text');
+  const modalRestartFeedback = el('modal-restart-feedback');
+  const btnModalRestartCancel = el('btn-modal-restart-cancel');
+  const btnModalRestartConfirm = el('btn-modal-restart-confirm');
+
   const btnApplyUnlock = el('btn-apply-unlock');
   const btnRestoreUnlock = el('btn-restore-unlock');
   const btnRefreshUnlock = el('btn-refresh-unlock');
   const unlockResultBox = el('unlock-result-box');
   const unlockResultText = el('unlock-result-text');
+  const unlockResultActions = el('unlock-result-actions');
+  const btnUnlockResultRestart = el('btn-unlock-result-restart');
+  const btnUnlockResultRetry = el('btn-unlock-result-retry');
+  const unlockResultManual = el('unlock-result-manual');
+  const unlockMetaMode = el('unlock-meta-mode');
   const unlockMetaTarget = el('unlock-meta-target');
   const unlockMetaArch = el('unlock-meta-arch');
-  const unlockMetaSha = el('unlock-meta-sha');
   const unlockMetaBackup = el('unlock-meta-backup');
   const linkUnlockAuthor = el('link-unlock-author');
   const btnCopyUnlockLink = el('btn-copy-unlock-link');
   const unlockLinkToast = el('unlock-link-toast');
 
+  const ctxModelSelect = el('ctx-model-select');
+  const ctxModelSelectorRoleEl = el('ctx-model-selector-role');
+  const ctxModelDropdownLabelEl = el('ctx-model-dropdown-label');
+  const ctxModelListEl = el('ctx-model-list');
+  const ctxConflictBanner = el('ctx-conflict-banner');
+  const ctxConflictRows = el('ctx-conflict-rows');
+  const ctxCardVendorDot = el('ctx-card-vendor-dot');
+  const ctxCardVendorName = el('ctx-card-vendor-name');
+  const ctxCardQuotaSlot = el('ctx-card-quota-slot');
+  const ctxCardProductName = el('ctx-card-product-name');
+  const ctxCardEffortsList = el('ctx-card-efforts-list');
+  const ctxCardSessionEffort = el('ctx-card-session-effort');
+  const ctxCardSavedEl = el('ctx-card-saved');
+  const ctxCardRequestEl = el('ctx-card-request');
+  const ctxCardClientEl = el('ctx-card-client');
+  const ctxCardClientTagEl = el('ctx-card-client-tag');
+  const ctxCardObservedBudgetEl = el('ctx-card-observed-budget');
+  const ctxCardPreRestartBudgetEl = el('ctx-card-pre-restart-budget');
+  const ctxCardServiceLimitEl = el('ctx-card-service-limit');
+  const ctxCardConvoEl = el('ctx-card-convo');
+  const ctxCardDiagnosisEl = el('ctx-card-diagnosis');
+  const ctxCardObservedSpeedEl = el('ctx-card-observed-speed');
+  const ctxCardHintsEl = el('ctx-card-hints');
+  const ctxCapWindowEl = el('ctx-cap-window');
+  const ctxCapOutputEl = el('ctx-cap-output');
+  const ctxCapModelMaxEl = el('ctx-cap-model-max');
+  const ctxCapClientPolicyEl = el('ctx-cap-client-policy');
+  const ctxCapDefaultEl = el('ctx-cap-default');
+  const ctxCapRangeEl = el('ctx-cap-range');
+  const ctxCapFormulaEl = el('ctx-cap-formula');
+  const ctxRefSavedEl = el('ctx-ref-saved');
+  const ctxRefSentEl = el('ctx-ref-sent');
+  const ctxRefAdoptedEl = el('ctx-ref-adopted');
+  const ctxUnifiedProjEl = el('ctx-unified-projection');
+  const ctxCardTierCapsRowEl = el('ctx-card-tier-caps-row');
+  const ctxCardTierCapsEl = el('ctx-card-tier-caps');
+  const ctxPresetModelMaxSubEl = el('ctx-preset-modelmax-sub');
+
+  const ctxPresetGrid = el('ctx-preset-grid');
+  const ctxCustomInput = el('ctx-custom-limit-input');
+  const ctxValidationEl = el('ctx-limit-validation');
+  const btnSaveModelCtx = el('btn-save-model-ctx');
+  const btnResetModelCtx = el('btn-reset-model-ctx');
+  const ctxResetNoticeEl = el('ctx-reset-notice');
+
+  // 双模式控件与精简展示元素
+  const btnModeUnified = el('btn-ctx-mode-unified');
+  const btnModePerModel = el('btn-ctx-mode-per-model');
+  const ctxModelsToolbar = el('ctx-models-toolbar');
+  const ctxSummaryModeEl = el('ctx-summary-mode');
+  const ctxSummaryModelEl = el('ctx-summary-model');
+  const ctxSummaryLengthEl = el('ctx-summary-length');
+  const ctxSummaryStatusPillEl = el('ctx-summary-status-pill');
+
+  const CTX_DEFAULT_TOKENS = 256000;
+  const CTX_MIN_ENGINEERING_TOKENS = 16384;
+  const CTX_MAX_ENGINEERING_TOKENS = 2097152;
+  const CTX_ACTIVE_TAB_KEY = 'ag_ctx_active_tab';
+  const CTX_PRE_RESTART_OBS_KEY = 'ag_ctx_pre_restart_obs_v1';
+
+  const VENDOR_ORDER = ['Google', 'Anthropic', 'OpenAI', '其他'];
+  const VENDOR_DOT_COLORS = {
+    Google: 'var(--ag-custom-speed, var(--ag-speed-default, #38bdf8))',
+    Anthropic: 'var(--ag-ring-warn, #f59e0b)',
+    OpenAI: 'var(--ag-custom-token-accent, var(--ag-token-accent-default, #a78bfa))',
+    '其他': 'var(--ag-text-muted, #8a8a94)'
+  };
+
+  let activeContextTab = 'session';
+  try {
+    const savedTab = localStorage?.getItem(CTX_ACTIVE_TAB_KEY);
+    if (savedTab === 'session' || savedTab === 'models' || savedTab === 'speed') {
+      activeContextTab = savedTab;
+    }
+  } catch { }
+  let isContextSettingsView = false;
+
   let currentUnlockStatus = null;
+  let unlockStatusFetchError = false;
   let isUnlocking = false;
+  let lastPartialReason = '';
   let unlockReqSeq = 0;
+  let contextPrefSaveSeq = 0;
+  let contextPreferencesMap = {};
+  let contextScopeMode = 'unified'; // 'unified' | 'per_model'
+  let contextUnifiedPreference = { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
+  try {
+    if (typeof window !== 'undefined' && window.__AGContextPreferences && typeof window.__AGContextPreferences === 'object') {
+      contextPreferencesMap = { ...window.__AGContextPreferences };
+    } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
+      const rawPrefs = localStorage.getItem('ag-context-preferences');
+      if (rawPrefs) contextPreferencesMap = JSON.parse(rawPrefs) || {};
+    }
+    const initMode = (typeof window !== 'undefined' && window.__AGContextScopeMode)
+      || (typeof localStorage !== 'undefined' && localStorage?.getItem?.('ag-context-scope-mode'))
+      || '';
+    if (initMode === 'unified' || initMode === 'per_model') {
+      contextScopeMode = initMode;
+    }
+    if (typeof window !== 'undefined' && window.__AGContextUnifiedPreference && typeof window.__AGContextUnifiedPreference === 'object') {
+      contextUnifiedPreference = { ...window.__AGContextUnifiedPreference };
+    } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
+      const rawUni = localStorage.getItem('ag-context-unified-preference');
+      if (rawUni) contextUnifiedPreference = JSON.parse(rawUni) || contextUnifiedPreference;
+    }
+  } catch { }
+
+  function getContextScopeMode() {
+    return contextScopeMode || 'unified';
+  }
+
+  function getContextUnifiedPreference() {
+    return contextUnifiedPreference || { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
+  }
+
+  function syncContextPreferencesCache(map) {
+    try {
+      if (typeof window !== 'undefined') {
+        window.__AGContextPreferences = { ...(map || {}) };
+        window.__AGContextScopeMode = contextScopeMode;
+        window.__AGContextUnifiedPreference = { ...(contextUnifiedPreference || {}) };
+        localStorage?.setItem('ag-context-preferences', JSON.stringify(map || {}));
+        localStorage?.setItem('ag-context-scope-mode', contextScopeMode);
+        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(contextUnifiedPreference || {}));
+      }
+    } catch { }
+  }
+  let activeSessionModelKey = null;
+  let activeSessionProductKey = null;
+  let activeSessionEffort = null;
+  let activeSessionModelConfirmed = false;
+  let selectedEditModelKey = null;
+  let selectedProductKey = null;
+  let manualModelSelection = false;
+  let ctxDraft = { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
+  let ctxDraftDirty = false;
+  let lastAutoObservedBudget = 0;
+  let needsRestartAfterApply = false;
+  let pendingRestartVerification = null;
+  let restartTimeoutTimer = null;
+  let hostSupportsRestart = true;
+  let restartMismatchNotice = '';
+
+  const observedByModelId = new Map();
+  let preRestartSnapshot = null;
+  try {
+    const rawPre = localStorage?.getItem(CTX_PRE_RESTART_OBS_KEY);
+    if (rawPre) preRestartSnapshot = JSON.parse(rawPre);
+  } catch { }
+
+  let speedRangeDays = '7';
+  let speedOriginFilter = 'all';
+  let speedMetric = 'tps';
+  let selectedSpeedExactModelId = null;
+  let ctxHeaderDropdownCtrl = null;
+  let speedModelDropdownCtrl = null;
+
+  function formatKShort(tokens) {
+    const n = Number(tokens);
+    if (!Number.isFinite(n) || n <= 0) return '—';
+    if (typeof formatTokensK === 'function') return formatTokensK(n);
+    return short(n);
+  }
+
+  function formatMonthDayTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return '';
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:${mi}`;
+  }
+
+  function formatEffortZh(effort) {
+    if (!effort) return '';
+    const lang = typeof getPanelLanguage === 'function' ? getPanelLanguage() : 'zh-CN';
+    if (typeof formatEffortLabel === 'function') return formatEffortLabel(effort, lang);
+    return String(effort);
+  }
+
+  function groupProductSafe(input) {
+    if (typeof groupModelProduct === 'function') return groupModelProduct(input || {});
+    const rawId = String(input?.modelId || input?.label || 'unknown').trim();
+    const low = rawId.toLowerCase();
+    const vendor = low.includes('claude') ? 'Anthropic' : (low.includes('gpt') || low.includes('o1') || low.includes('o3')) ? 'OpenAI' : (low.includes('gemini') ? 'Google' : '其他');
+    return { productKey: low, productLabel: input?.label || rawId, vendor, effort: input?.effort || null };
+  }
+
+  function resolveStableModelKeyClient(rawOrLatest) {
+    if (!rawOrLatest) return null;
+    if (typeof resolveStableModelId === 'function') {
+      const resolved = resolveStableModelId(rawOrLatest, state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || []);
+      if (resolved) return resolved;
+    }
+    if (typeof rawOrLatest === 'string') {
+      const s = rawOrLatest.trim().toLowerCase();
+      return s || null;
+    }
+    const str = String(rawOrLatest.modelId || rawOrLatest.modelRaw || rawOrLatest.model || '').trim().toLowerCase();
+    return str || null;
+  }
+
+  // =========================================================================
+  // ELV-41 / ELV-43: 官方模型选择器识别与多通道请求拦截注入器
+  // 支持：主世界 LS 客户端装饰器、WebSocket (Lcc JSON)、Fetch/XHR (JSON / Envelope / Protobuf)
+  // 严格过滤 StartCascade，仅拦截 SendUserCascadeMessage；不从面板配置卡猜测模型
+  // =========================================================================
+  const CTX_CONFIRM_TIMEOUT_MS = budgetEngine.DEFAULT_CONFIRM_TIMEOUT_MS || 45000;
+  const budgetTracker = typeof budgetEngine.createContextBudgetTracker === 'function'
+    ? budgetEngine.createContextBudgetTracker({ confirmTimeoutMs: CTX_CONFIRM_TIMEOUT_MS })
+    : null;
+  let lastDecoratorDispatchHint = null;
+  const pendingConfirmTimers = new Set();
+
+  function scheduleConfirmTimeoutCheck(delayMs = CTX_CONFIRM_TIMEOUT_MS + 100) {
+    if (typeof setTimeout !== 'function' || state.disposed) return;
+    const tId = setTimeout(() => {
+      pendingConfirmTimers.delete(tId);
+      if (state.disposed) return;
+      try {
+        renderCompactSessionCard();
+        if (!isContextSettingsView && activeContextTab === 'models') {
+          renderModelSettingsTab();
+        }
+      } catch { }
+    }, delayMs);
+    pendingConfirmTimers.add(tId);
+  }
+
+  function refreshBudgetUiAfterDispatch() {
+    try {
+      renderCompactSessionCard();
+      const prod = getSelectedProductObj();
+      if (prod) renderModelDetailCard(prod);
+    } catch { }
+  }
+
+  /**
+   * 仅从宿主真实输入框选择器读取当前选中模型（严格排除插件自身 #ag-context-meter DOM）
+   */
+  function extractHostSelectedModel() {
+    if (typeof document === 'undefined') return null;
+    const triggers = typeof document.querySelectorAll === 'function'
+      ? Array.from(document.querySelectorAll('[data-testid="model-selector-trigger"]'))
+      : (typeof document.querySelector === 'function' ? [document.querySelector('[data-testid="model-selector-trigger"]')].filter(Boolean) : []);
+    if (!triggers.length) return null;
+
+    let trigger = null;
+    for (const candidate of triggers) {
+      if (!candidate) continue;
+      if (host && typeof host.contains === 'function' && host.contains(candidate)) continue;
+      if (typeof candidate.closest === 'function' && candidate.closest('#ag-context-meter')) continue;
+      if (typeof candidate.getBoundingClientRect === 'function') {
+        const rect = candidate.getBoundingClientRect();
+        if (rect && rect.width === 0 && rect.height === 0) continue;
+      }
+      trigger = candidate;
+      break;
+    }
+    if (!trigger) return null;
+
+    let effort = null;
+    const effortEl = trigger.querySelector?.('[data-testid="model-selector-effort-option"]')
+      || trigger.querySelector?.('[data-effort]');
+    if (effortEl) {
+      effort = effortEl.getAttribute?.('data-effort') || effortEl.textContent?.trim() || null;
+    }
+
+    const clone = trigger.cloneNode ? trigger.cloneNode(true) : trigger;
+    const svgs = clone.querySelectorAll ? clone.querySelectorAll('svg, [aria-hidden="true"]') : [];
+    if (svgs && svgs.forEach) svgs.forEach(s => s.remove());
+    const rawText = (clone.textContent || '').trim();
+    if (!rawText) return null;
+
+    const effortCaseMap = {
+      'extra high': 'Extra High',
+      xhigh: 'XHigh',
+      low: 'Low',
+      medium: 'Medium',
+      high: 'High',
+      extra: 'Extra',
+      minimal: 'Minimal',
+      max: 'Max'
+    };
+    let baseText = rawText;
+    const mParen = rawText.match(/^(.*?)\s*\((Extra High|XHigh|Low|Medium|High|Extra|Minimal|Max)\)\s*$/i);
+    if (mParen) {
+      baseText = mParen[1].trim() || rawText;
+      if (!effort) effort = mParen[2];
+    } else {
+      const mTrail = rawText.match(/^(.*?)\s+(Extra High|XHigh|Low|Medium|High|Minimal|Max)\s*$/i);
+      if (mTrail) {
+        baseText = mTrail[1].trim() || rawText;
+        if (!effort) effort = mTrail[2];
+      }
+    }
+    const normEffort = effort ? (effortCaseMap[String(effort).trim().toLowerCase()] || effort) : null;
+    const parenLabel = (normEffort && baseText && !baseText.includes('(')) ? `${baseText} (${normEffort})` : rawText;
+
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const resolveCand = (cand) => cand
+      ? (resolveStableModelKeyClient(cand) || (typeof resolveStableModelId === 'function' ? resolveStableModelId(cand, configs) : null))
+      : null;
+    const stableId = resolveCand(parenLabel) || resolveCand(rawText) || resolveCand(baseText);
+    const g = groupProductSafe({
+      modelId: stableId || parenLabel,
+      label: parenLabel,
+      effort: normEffort
+    });
+
+    return {
+      rawText,
+      modelId: stableId || parenLabel,
+      productKey: g.productKey,
+      productLabel: g.productLabel || baseText,
+      effort: normEffort || g.effort || null,
+      source: 'dom_trigger'
+    };
+  }
+
+  function buildInterceptorContext(channel, urlOrProcedure = '', contentType = '') {
+    return {
+      channel,
+      urlOrProcedure,
+      contentType,
+      scopeMode: getContextScopeMode(),
+      unifiedPreference: getContextUnifiedPreference(),
+      contextPreferencesMap: contextPreferencesMap || (typeof window !== 'undefined' ? window.__AGContextPreferences : null) || {},
+      knownConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [],
+      verifiedConversationBindings: budgetTracker?.verifiedConversationBindings || {},
+      groupProduct: groupProductSafe,
+      resolveStableModelId: resolveStableModelKeyClient,
+      minTokens: CTX_MIN_ENGINEERING_TOKENS,
+      maxTokens: CTX_MAX_ENGINEERING_TOKENS
+    };
+  }
+
+  function recordBudgetTransformDispatch(txResult) {
+    if (!txResult || !txResult.handled || !budgetTracker) return null;
+    if (txResult.uninjectable) {
+      const rec = budgetTracker.beginDispatch({
+        cascadeId: txResult.cascadeId || null,
+        productKey: txResult.productKey || null,
+        modelId: txResult.modelId || null,
+        scopeMode: txResult.scopeMode,
+        targetMode: txResult.targetMode || 'default',
+        targetLimitTokens: txResult.targetLimitTokens ?? null,
+        sentMode: 'passthrough',
+        sentLimitTokens: null,
+        channel: txResult.channel || 'http',
+        status: 'uninjectable',
+        reason: txResult.reason || 'uninjectable'
+      });
+      refreshBudgetUiAfterDispatch();
+      return rec;
+    }
+
+    const rec = budgetTracker.beginDispatch({
+      cascadeId: txResult.cascadeId || null,
+      productKey: txResult.productKey || null,
+      productLabel: txResult.productLabel || null,
+      modelId: txResult.modelId || null,
+      scopeMode: txResult.scopeMode,
+      prefSnapshot: {
+        mode: txResult.targetMode || 'default',
+        limitTokens: txResult.targetLimitTokens ?? null
+      },
+      targetMode: txResult.targetMode,
+      targetLimitTokens: txResult.targetLimitTokens,
+      sentMode: txResult.sentMode,
+      sentLimitTokens: txResult.sentLimitTokens,
+      channel: txResult.channel || 'http',
+      status: 'dispatched'
+    });
+    if (txResult.targetMode === 'fixed' || txResult.targetMode === 'dynamic' || txResult.targetMode === 'default') {
+      scheduleConfirmTimeoutCheck();
+    }
+    refreshBudgetUiAfterDispatch();
+    return rec;
+  }
+
+  function finishDispatchOutcome(dispatchId, ok, err) {
+    if (!dispatchId || !budgetTracker) return;
+    if (!ok) {
+      const errMsg = String(err?.message || err || '');
+      const isAbort = err?.name === 'AbortError' || /abort|cancel/i.test(errMsg);
+      budgetTracker.updateDispatchStatus(dispatchId, {
+        status: isAbort ? 'aborted' : 'send_failed',
+        errorMessage: errMsg || (isAbort ? '请求已取消' : '发送失败')
+      });
+      refreshBudgetUiAfterDispatch();
+    }
+  }
+
+  function installRequestInterceptor() {
+    if (typeof window === 'undefined') return;
+    if (window.__agRequestInterceptorInstalled) return;
+
+    // 0. 绑定主世界冷启动客户端装饰器回调（序列化前修改真实请求对象）
+    globalThis.__AG_METER_ON_SEND_MESSAGE__ = function (req, channel = 'client_object') {
+      try {
+        if (!req || typeof req !== 'object' || typeof budgetEngine.transformOutgoingSendRequest !== 'function') return null;
+        const tx = budgetEngine.transformOutgoingSendRequest(req, buildInterceptorContext(channel, 'SendUserCascadeMessage'));
+        if (!tx || !tx.handled) return null;
+        const rec = recordBudgetTransformDispatch(tx);
+        lastDecoratorDispatchHint = {
+          ts: Date.now(),
+          cascadeId: tx.cascadeId || null,
+          productKey: tx.productKey || null,
+          sentMode: tx.sentMode,
+          sentLimitTokens: tx.sentLimitTokens ?? null,
+          dispatchId: rec?.dispatchId || null
+        };
+        return rec ? { dispatchId: rec.dispatchId } : null;
+      } catch (err) {
+        console.warn('[ContextMeter] Client decorator hook error:', err);
+        return null;
+      }
+    };
+    globalThis.__AG_METER_ON_SEND_RESULT__ = function (dispatchId, ok, err) {
+      finishDispatchOutcome(dispatchId, ok, err);
+    };
+
+    const isCoveredByRecentDecorator = (tx) => {
+      if (!lastDecoratorDispatchHint) return false;
+      const age = Date.now() - lastDecoratorDispatchHint.ts;
+      if (age < 0 || age > 400) return false;
+      const sameConv = (lastDecoratorDispatchHint.cascadeId || null) === (tx.cascadeId || null);
+      const sameMode = lastDecoratorDispatchHint.sentMode === tx.sentMode
+        && (lastDecoratorDispatchHint.sentLimitTokens ?? null) === (tx.sentLimitTokens ?? null);
+      return sameConv && sameMode;
+    };
+
+    // 1. WebSocket.prototype.send interceptor (覆盖 Lcc ws://<host>/connect-websocket JSON 帧)
+    if (typeof window.WebSocket === 'function' && window.WebSocket.prototype && typeof window.WebSocket.prototype.send === 'function') {
+      const origWsSend = window.WebSocket.prototype.send;
+      window.__agOrigWsSend = origWsSend;
+      window.WebSocket.prototype.send = function (data) {
+        let nextData = data;
+        let rec = null;
+        try {
+          if (typeof budgetEngine.transformOutgoingSendRequest === 'function') {
+            const tx = budgetEngine.transformOutgoingSendRequest(data, buildInterceptorContext('ws_frame', this?.url || ''));
+            if (tx && tx.handled) {
+              if (tx.modified && tx.output !== undefined) {
+                nextData = tx.output;
+              }
+              if (!isCoveredByRecentDecorator(tx)) {
+                rec = recordBudgetTransformDispatch(tx);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[ContextMeter] WebSocket interceptor error:', err);
+        }
+        try {
+          return origWsSend.call(this, nextData);
+        } catch (wsErr) {
+          if (rec) finishDispatchOutcome(rec.dispatchId, false, wsErr);
+          throw wsErr;
+        }
+      };
+    }
+
+    // 2. window.fetch interceptor (仅处理 SendUserCascadeMessage；严禁猜测 StartCascade)
+    const origFetch = window.fetch;
+    if (typeof origFetch === 'function') {
+      window.__agOrigFetch = origFetch;
+      window.fetch = async function (resource, init) {
+        let rec = null;
+        try {
+          const urlStr = typeof resource === 'string'
+            ? resource
+            : (resource && resource.url ? resource.url : String(resource || ''));
+          if (typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr) && init?.body) {
+            const headersObj = init?.headers;
+            let contentType = '';
+            if (headersObj) {
+              if (typeof headersObj.get === 'function') {
+                contentType = headersObj.get('content-type') || headersObj.get('Content-Type') || '';
+              } else if (typeof headersObj === 'object') {
+                contentType = headersObj['content-type'] || headersObj['Content-Type'] || '';
+              }
+            }
+            const tx = budgetEngine.transformOutgoingSendRequest(init.body, buildInterceptorContext('fetch', urlStr, contentType));
+            if (tx && tx.handled) {
+              if (tx.modified && tx.output !== undefined) {
+                init = { ...init, body: tx.output };
+              }
+              if (!isCoveredByRecentDecorator(tx)) {
+                rec = recordBudgetTransformDispatch(tx);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[ContextMeter] Fetch request interceptor error:', err);
+        }
+        try {
+          const response = await origFetch.call(this, resource, init);
+          if (rec && response && response.ok === false) {
+            finishDispatchOutcome(rec.dispatchId, false, new Error(`HTTP ${response.status || 'error'}`));
+          }
+          return response;
+        } catch (fetchErr) {
+          if (rec) finishDispatchOutcome(rec.dispatchId, false, fetchErr);
+          throw fetchErr;
+        }
+      };
+    }
+
+    // 3. window.XMLHttpRequest interceptor
+    if (typeof window.XMLHttpRequest === 'function') {
+      const origOpen = window.XMLHttpRequest.prototype.open;
+      const origSetHdr = window.XMLHttpRequest.prototype.setRequestHeader;
+      const origSend = window.XMLHttpRequest.prototype.send;
+      window.__agOrigXhrOpen = origOpen;
+      window.__agOrigXhrSetHdr = origSetHdr;
+      window.__agOrigXhrSend = origSend;
+
+      window.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+        try {
+          this.__agRequestUrl = typeof url === 'string' ? url : String(url || '');
+          this.__agRequestHeaders = {};
+        } catch { }
+        return origOpen.call(this, method, url, ...rest);
+      };
+
+      if (typeof origSetHdr === 'function') {
+        window.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+          try {
+            if (this.__agRequestHeaders && typeof name === 'string') {
+              this.__agRequestHeaders[name.toLowerCase()] = String(value || '');
+            }
+          } catch { }
+          return origSetHdr.call(this, name, value);
+        };
+      }
+
+      window.XMLHttpRequest.prototype.send = function (body) {
+        let rec = null;
+        try {
+          const urlStr = this.__agRequestUrl || '';
+          if (body && typeof budgetEngine.isTargetBudgetRpc === 'function' && budgetEngine.isTargetBudgetRpc(urlStr)) {
+            const contentType = this.__agRequestHeaders?.['content-type'] || '';
+            const tx = budgetEngine.transformOutgoingSendRequest(body, buildInterceptorContext('xhr', urlStr, contentType));
+            if (tx && tx.handled) {
+              if (tx.modified && tx.output !== undefined) {
+                body = tx.output;
+              }
+              if (!isCoveredByRecentDecorator(tx)) {
+                rec = recordBudgetTransformDispatch(tx);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[ContextMeter] XHR request interceptor error:', err);
+        }
+        if (rec && typeof this.addEventListener === 'function') {
+          const dId = rec.dispatchId;
+          this.addEventListener('error', () => finishDispatchOutcome(dId, false, new Error('XHR network error')), { once: true });
+          this.addEventListener('abort', () => finishDispatchOutcome(dId, false, Object.assign(new Error('XHR aborted'), { name: 'AbortError' })), { once: true });
+          this.addEventListener('load', () => {
+            if (typeof this.status === 'number' && this.status >= 400) {
+              finishDispatchOutcome(dId, false, new Error(`HTTP ${this.status}`));
+            }
+          }, { once: true });
+        }
+        try {
+          return origSend.call(this, body);
+        } catch (xhrErr) {
+          if (rec) finishDispatchOutcome(rec.dispatchId, false, xhrErr);
+          throw xhrErr;
+        }
+      };
+    }
+
+    window.__agRequestInterceptorInstalled = true;
+  }
+
+  function uninstallRequestInterceptor() {
+    if (typeof window === 'undefined') return;
+    delete globalThis.__AG_METER_ON_SEND_MESSAGE__;
+    delete globalThis.__AG_METER_ON_SEND_RESULT__;
+    for (const tId of pendingConfirmTimers) clearTimeout(tId);
+    pendingConfirmTimers.clear();
+    if (window.__agOrigWsSend && window.WebSocket?.prototype) {
+      window.WebSocket.prototype.send = window.__agOrigWsSend;
+      delete window.__agOrigWsSend;
+    }
+    if (window.__agOrigFetch) {
+      window.fetch = window.__agOrigFetch;
+      delete window.__agOrigFetch;
+    }
+    if (window.__agOrigXhrOpen && window.XMLHttpRequest?.prototype) {
+      window.XMLHttpRequest.prototype.open = window.__agOrigXhrOpen;
+      delete window.__agOrigXhrOpen;
+    }
+    if (window.__agOrigXhrSetHdr && window.XMLHttpRequest?.prototype) {
+      window.XMLHttpRequest.prototype.setRequestHeader = window.__agOrigXhrSetHdr;
+      delete window.__agOrigXhrSetHdr;
+    }
+    if (window.__agOrigXhrSend && window.XMLHttpRequest?.prototype) {
+      window.XMLHttpRequest.prototype.send = window.__agOrigXhrSend;
+      delete window.__agOrigXhrSend;
+    }
+    window.__agRequestInterceptorInstalled = false;
+  }
+
+  function resolveRuntimeUnlockPolicyClient() {
+    if (typeof budgetEngine.resolveRuntimeUnlockPolicy === 'function') {
+      return budgetEngine.resolveRuntimeUnlockPolicy(currentUnlockStatus);
+    }
+    return null;
+  }
+
+  function formatDiskPolicyText(policy) {
+    if (!policy) return '未知';
+    if (policy.diskMode === 'dynamic') return 'Dynamic 动态跟随';
+    if (policy.diskMode === 'fixed' && policy.diskLimitTokens) return `固定 ${fmt(policy.diskLimitTokens)} tokens`;
+    if (policy.diskMode === 'default') return '默认 256,000 tokens';
+    if (policy.diskMode === 'partial') return '部分异常';
+    return '未知';
+  }
+
+  function getProductCapabilitySummary(product) {
+    if (!product) return null;
+    if (typeof budgetEngine.deriveModelCapabilitySummary === 'function') {
+      return budgetEngine.deriveModelCapabilitySummary(product, currentUnlockStatus, state.modelCapabilitiesById || null);
+    }
+    return null;
+  }
+
+  let modelCapabilitiesVersion = 1;
+
+  function mergeCapabilitiesMapClient(incomingMap) {
+    if (!incomingMap || typeof incomingMap !== 'object') return;
+    if (!state.modelCapabilitiesById || typeof state.modelCapabilitiesById !== 'object') {
+      state.modelCapabilitiesById = {};
+    }
+    let updated = false;
+    for (const [rawKey, rawVal] of Object.entries(incomingMap)) {
+      if (!rawVal || typeof rawVal !== 'object') continue;
+      const k = String(rawKey).trim().toLowerCase().replace(/^model_/, '');
+      if (!k) continue;
+      state.modelCapabilitiesById[k] = {
+        ...(state.modelCapabilitiesById[k] || {}),
+        ...rawVal
+      };
+      updated = true;
+    }
+    if (updated) modelCapabilitiesVersion++;
+  }
+
+  function validateCustomLimitClient(rawInput, modeOverride = ctxDraft.mode, productOverride = null) {
+    if (modeOverride === 'dynamic') {
+      return { ok: true, mode: 'dynamic', limitTokens: null, warnings: [] };
+    }
+    if (modeOverride === 'default') {
+      return { ok: true, mode: 'default', limitTokens: CTX_DEFAULT_TOKENS, warnings: [] };
+    }
+    const targetProd = productOverride || (contextScopeMode === 'per_model' ? getSelectedProductObj() : null);
+    const capSummary = targetProd ? getProductCapabilitySummary(targetProd) : null;
+    if (modeOverride === 'model_max') {
+      if (contextScopeMode === 'unified') {
+        return { ok: false, error: '统一模式下各模型容量不同，请改为具体整数或切回“按模型分别设置”后选择最大可用。' };
+      }
+      if (!capSummary || capSummary.modelTheoreticalMaxTokens == null) {
+        return { ok: false, error: '尚未获取到当前模型的上下文窗口与最大输出元数据，暂无法自动计算最大可用预算。' };
+      }
+      if (!capSummary.runtimePolicy?.policyKnown || capSummary.maxAdjustableTokens == null) {
+        return {
+          ok: false,
+          error: `当前客户端运行策略未知或待重启确认，暂无法计算当前环境最大可用上限（模型理论输入上限 ${fmt(capSummary.modelTheoreticalMaxTokens)} tokens）。`
+        };
+      }
+      rawInput = capSummary.maxAdjustableTokens;
+    }
+
+    if (typeof budgetEngine.evaluateLimitInput === 'function') {
+      const ev = budgetEngine.evaluateLimitInput(rawInput, capSummary, currentUnlockStatus, state.latest?.serviceLimit);
+      if (!ev.ok) {
+        if (ev.reasonCode === 'out_of_engineering_range') {
+          return {
+            ok: false,
+            error: t('models.validation.outOfRange', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) })
+          };
+        }
+        return { ok: false, error: t('models.custom.placeholder') };
+      }
+      const warnings = [];
+      for (const w of ev.warnings) {
+        if (w.code === 'exceeds_model_limit') {
+          if (w.adoptableTokens != null) {
+            warnings.push(`超出当前模型理论输入上限 ${fmt(w.maxAllowed)} tokens（依据元数据：总窗口 - 最大输出）；若仍保存 ${fmt(w.limitTokens)}，当前环境预计最高仅可采用 ${fmt(w.adoptableTokens)} tokens。`);
+          } else {
+            warnings.push(`超出当前模型理论输入上限 ${fmt(w.maxAllowed)} tokens（依据元数据：总窗口 - 最大输出）；当前客户端运行策略未确认，实际可采用上限未知。`);
+          }
+        } else if (w.code === 'requires_dynamic_unlock') {
+          const cap = w.stockCap || 256000;
+          warnings.push(`目标 ${fmt(w.limitTokens)} 超过当前默认限制 ${fmt(cap)}：未开启 Dynamic 动态模式且未实机证实前，语言服务仍可能将其限制在 ${fmt(cap)} tokens（请点击“保存并应用”）。`);
+        } else if (w.code === 'exceeds_fixed_client_limit') {
+          warnings.push(`目标 ${fmt(w.limitTokens)} 超过当前客户端固定限制 ${fmt(w.fixedCap)} tokens：未调整为更高固定值或启用 Dynamic 动态模式前，预计仍将被限制在 ${fmt(w.fixedCap)} tokens。`);
+        } else if (w.code === 'unconfirmed_runtime_policy') {
+          if (w.runtimeState === 'pending_restart') {
+            warnings.push(`磁盘配置（${formatDiskPolicyText({ diskMode: w.diskMode, diskLimitTokens: w.diskLimitTokens })}）已变更但客户端尚未重启，运行中实际策略待确认，无法预测 ${fmt(w.limitTokens)} 是否会被采用。`);
+          } else if (w.runtimeState === 'runtime_unconfirmed') {
+            warnings.push(`仅读取到磁盘配置，尚未确认运行中进程已加载该策略；${fmt(w.limitTokens)} 实际能否采用需等待进程验证或实机请求确认。`);
+          } else if (w.runtimeState === 'partial') {
+            warnings.push(`检测到客户端处于部分异常状态，运行限制未知，无法预测 ${fmt(w.limitTokens)} 的实际采用结果。`);
+          } else {
+            warnings.push(`当前客户端运行策略未知，暂无法预测 ${fmt(w.limitTokens)} 在本机的实际采用上限（需先读取运行策略或实机发送验证）。`);
+          }
+        } else if (w.code === 'exceeds_service_limit') {
+          warnings.push(t('models.validation.aboveService', { val: formatKShort(w.serviceLimit) }));
+        } else if (w.code === 'below_recommended_floor') {
+          warnings.push(t('models.validation.tooSmall', { val: fmt(w.limitTokens) }));
+        }
+      }
+      return {
+        ok: true,
+        mode: 'fixed',
+        limitTokens: ev.limitTokens,
+        exceedsModelLimit: ev.exceedsModelLimit,
+        exceedsClientPolicy: ev.exceedsClientPolicy,
+        clientPolicyLimit: ev.clientPolicyLimit,
+        runtimeState: ev.runtimeState,
+        policyKnown: ev.policyKnown,
+        adoptableTokens: ev.adoptableTokens,
+        requiresDynamicUnlock: ev.requiresDynamicUnlock,
+        warnings
+      };
+    }
+
+    const rawStr = typeof rawInput === 'number' ? String(rawInput) : String(rawInput || '').trim().replace(/[,\s_]/g, '');
+    if (!/^\d+$/.test(rawStr)) {
+      return { ok: false, error: t('models.custom.placeholder') };
+    }
+    const num = Number(rawStr);
+    if (!Number.isSafeInteger(num) || num <= 0) {
+      return { ok: false, error: t('models.custom.placeholder') };
+    }
+    if (num < CTX_MIN_ENGINEERING_TOKENS || num > CTX_MAX_ENGINEERING_TOKENS) {
+      return {
+        ok: false,
+        error: t('models.validation.outOfRange', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) })
+      };
+    }
+    const warnings = [];
+    if (num < 65536) {
+      warnings.push(t('models.validation.tooSmall', { val: fmt(num) }));
+    }
+    const sLimit = Number(state.latest?.serviceLimit || 0);
+    if (sLimit > 0 && num > sLimit) {
+      warnings.push(t('models.validation.aboveService', { val: formatKShort(sLimit) }));
+    }
+    return { ok: true, mode: 'fixed', limitTokens: num, warnings };
+  }
+
+  let cachedKnownProductsSnapshot = null;
+
+  /** 将所有已知模型、当前会话和历史调用按产品维度分组（带签名缓存与调用模型去重，避免每次渲染重复全量分组） */
+  function getKnownModelProducts() {
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const speedRecords = ANTIGRAVITY_TOKEN_DATA.speedRecords || [];
+    const sessionCalls = state.sessionCalls || [];
+    const latest = state.latest || null;
+    const capsMap = state.modelCapabilitiesById || null;
+    const prefsMap = contextPreferencesMap || {};
+
+    let configsSig = '';
+    if (Array.isArray(configs) && configs.length) {
+      for (let i = 0; i < configs.length; i++) {
+        const c = configs[i];
+        configsSig += `${c?.modelId || c?.modelOrAlias?.model || ''}:${c?.maxTokens ?? ''}:${c?.maxOutputTokens ?? ''}:${c?.disabled ? 1 : 0}:${c?.unavailable ? 1 : 0}:${c?.isHistorical ? 1 : 0}:${c?.capabilitySource || ''};`;
+      }
+    }
+    let prefsSig = '';
+    for (const k of Object.keys(prefsMap)) {
+      const p = prefsMap[k];
+      prefsSig += `${k}:${p?.scope || ''}:${p?.productKey || ''}:${p?.label || ''};`;
+    }
+    const latestSig = latest ? `${latest.modelId || ''}|${latest.modelRaw || ''}|${latest.model || ''}|${latest.effort || ''}` : '';
+    const capsLen = capsMap ? Object.keys(capsMap).length : 0;
+    const speedLen = Array.isArray(speedRecords) ? speedRecords.length : 0;
+    const sessLen = Array.isArray(sessionCalls) ? sessionCalls.length : 0;
+    const speedEdge = speedLen ? `${speedRecords[0]?.modelExactId || speedRecords[0]?.model || ''}|${speedRecords[speedLen - 1]?.callId || speedRecords[speedLen - 1]?.modelExactId || ''}` : '';
+    const sessEdge = sessLen ? `${sessionCalls[0]?.modelExactId || sessionCalls[0]?.model || ''}|${sessionCalls[sessLen - 1]?.callId || sessionCalls[sessLen - 1]?.model || ''}` : '';
+
+    if (
+      cachedKnownProductsSnapshot
+      && cachedKnownProductsSnapshot.configsRef === configs
+      && cachedKnownProductsSnapshot.configsSig === configsSig
+      && cachedKnownProductsSnapshot.speedRef === speedRecords
+      && cachedKnownProductsSnapshot.speedLen === speedLen
+      && cachedKnownProductsSnapshot.speedEdge === speedEdge
+      && cachedKnownProductsSnapshot.sessRef === sessionCalls
+      && cachedKnownProductsSnapshot.sessLen === sessLen
+      && cachedKnownProductsSnapshot.sessEdge === sessEdge
+      && cachedKnownProductsSnapshot.latestSig === latestSig
+      && cachedKnownProductsSnapshot.prefsSig === prefsSig
+      && cachedKnownProductsSnapshot.capsVer === modelCapabilitiesVersion
+      && cachedKnownProductsSnapshot.capsLen === capsLen
+    ) {
+      return cachedKnownProductsSnapshot.result.map(p => ({ ...p, members: p.members.slice() }));
+    }
+
+    const productMap = new Map();
+    const slugToKey = new Map();
+    const ensureProduct = (meta, fromAccountCatalog = false) => {
+      const g = groupProductSafe(meta);
+      if (!g.productKey) return null;
+      const keyParts = g.productKey.split(':');
+      const keySlug = keyParts.length >= 3 ? keyParts.slice(2).join(':') : '';
+      let targetKey = g.productKey;
+      // 若同一产品 slug 在列表里既有明确厂商又有"其他"厂商，合并到明确厂商条目下（不合并不同前缀或代际）
+      if (keySlug && !productMap.has(targetKey) && slugToKey.has(keySlug)) {
+        const existingKey = slugToKey.get(keySlug);
+        const existingProd = productMap.get(existingKey);
+        if (existingProd && (g.vendor === '其他' || existingProd.vendor === '其他')) {
+          if (existingProd.vendor === '其他' && g.vendor !== '其他') {
+            productMap.delete(existingKey);
+            existingProd.productKey = targetKey;
+            existingProd.vendor = g.vendor;
+            productMap.set(targetKey, existingProd);
+            slugToKey.set(keySlug, targetKey);
+          } else {
+            targetKey = existingKey;
+          }
+        }
+      }
+      let prod = productMap.get(targetKey);
+      if (!prod) {
+        prod = {
+          productKey: targetKey,
+          productLabel: g.productLabel,
+          vendor: g.vendor || '其他',
+          inAccountCatalog: Boolean(fromAccountCatalog),
+          unavailable: Boolean(meta.unavailable),
+          unavailabilityReason: meta.unavailabilityReason || null,
+          notice: meta.notice || null,
+          isHistorical: Boolean(meta.isHistorical),
+          members: new Map()
+        };
+        productMap.set(targetKey, prod);
+        if (keySlug && (!slugToKey.has(keySlug) || g.vendor !== '其他')) {
+          slugToKey.set(keySlug, targetKey);
+        }
+      } else if (fromAccountCatalog) {
+        prod.inAccountCatalog = true;
+        if (meta.notice && !prod.notice) prod.notice = meta.notice;
+        if (meta.isHistorical !== undefined) prod.isHistorical = prod.isHistorical && Boolean(meta.isHistorical);
+      }
+      if (meta.modelId) {
+        const mid = String(meta.modelId).trim().toLowerCase();
+        const prev = prod.members.get(mid);
+        const capEntry = state.modelCapabilitiesById?.[mid.replace(/^model_/, '')]
+          || state.modelCapabilitiesById?.[String(meta.modelOrAlias?.model || '').trim().toLowerCase().replace(/^model_/, '')]
+          || null;
+        prod.members.set(mid, {
+          modelId: mid,
+          label: meta.label || prev?.label || mid,
+          effort: g.effort || prev?.effort || null,
+          maxTokens: meta.maxTokens ?? capEntry?.maxTokens ?? prev?.maxTokens ?? null,
+          maxOutputTokens: meta.maxOutputTokens ?? capEntry?.maxOutputTokens ?? prev?.maxOutputTokens ?? null,
+          thinkingBudget: meta.thinkingBudget ?? capEntry?.thinkingBudget ?? prev?.thinkingBudget ?? null,
+          minThinkingBudget: meta.minThinkingBudget ?? capEntry?.minThinkingBudget ?? prev?.minThinkingBudget ?? null,
+          thinkingLevel: meta.thinkingLevel || capEntry?.thinkingLevel || prev?.thinkingLevel || null,
+          supportsModelInfoOverride: meta.supportsModelInfoOverride ?? capEntry?.supportsModelInfoOverride ?? prev?.supportsModelInfoOverride ?? null,
+          capabilitySource: meta.capabilitySource || capEntry?.capabilitySource || prev?.capabilitySource || null,
+          unavailable: meta.unavailable !== undefined ? Boolean(meta.unavailable) : (prev?.unavailable || false),
+          unavailabilityReason: meta.unavailabilityReason || prev?.unavailabilityReason || null,
+          notice: meta.notice || prev?.notice || null,
+          isHistorical: meta.isHistorical !== undefined ? Boolean(meta.isHistorical) : (prev?.isHistorical || false)
+        });
+      }
+      return prod;
+    };
+
+    if (Array.isArray(configs)) {
+      for (const c of configs) {
+        const stableId = resolveStableModelKeyClient(c) || c?.modelId || c?.modelOrAlias?.model;
+        ensureProduct({
+          modelId: stableId,
+          label: c?.label || c?.modelId || stableId,
+          modelOrAlias: c?.modelOrAlias,
+          effort: c?.effort,
+          maxTokens: c?.maxTokens,
+          maxOutputTokens: c?.maxOutputTokens,
+          thinkingBudget: c?.thinkingBudget,
+          minThinkingBudget: c?.minThinkingBudget,
+          thinkingLevel: c?.thinkingLevel,
+          supportsModelInfoOverride: c?.supportsModelInfoOverride,
+          capabilitySource: c?.capabilitySource,
+          unavailable: Boolean(c?.unavailable || c?.disabled),
+          unavailabilityReason: c?.unavailabilityReason || c?.tagDescription || null,
+          notice: c?.notice,
+          isHistorical: c?.isHistorical
+        }, true);
+      }
+    }
+
+    if (latest?.modelId || latest?.modelRaw || latest?.model) {
+      const stableId = resolveStableModelKeyClient(latest);
+      ensureProduct({
+        modelId: stableId,
+        label: latest.model || stableId,
+        modelOrAlias: latest.modelOrAlias,
+        effort: latest.effort
+      }, false);
+    }
+
+    // 先按 (modelId, label, effort) 去重，避免成百上千条同模型历史/会话调用重复执行产品分组
+    const seenCallModels = new Set();
+    const processCallList = (list) => {
+      if (!Array.isArray(list)) return;
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i];
+        if (!c) continue;
+        const mid = c.modelExactId || c.modelId || c.model;
+        if (!mid) continue;
+        const lbl = c.modelLabel || c.model || mid;
+        const eff = c.effort || '';
+        const sig = `${mid}\0${lbl}\0${eff}`;
+        if (seenCallModels.has(sig)) continue;
+        seenCallModels.add(sig);
+        ensureProduct({
+          modelId: mid,
+          label: lbl,
+          effort: eff || undefined
+        }, false);
+      }
+    };
+    processCallList(speedRecords);
+    processCallList(sessionCalls);
+
+    for (const [k, pref] of Object.entries(prefsMap)) {
+      if (!pref) continue;
+      const g = groupProductSafe({
+        modelId: pref.productKey || k,
+        label: pref.label || k
+      });
+      if (pref.scope === 'product' || k === g.productKey) {
+        ensureProduct({
+          modelId: pref.productKey || k,
+          label: pref.label || g.productLabel
+        }, false);
+      } else {
+        ensureProduct({
+          modelId: k,
+          label: pref.label || k
+        }, false);
+      }
+    }
+
+    const rankEffort = { Minimal: 1, Low: 2, Medium: 3, High: 4, XHigh: 5, Extra: 6, 'Extra High': 7, Max: 8 };
+    const result = Array.from(productMap.values()).map(p => {
+      const members = Array.from(p.members.values()).sort((a, b) => (rankEffort[a.effort] || 99) - (rankEffort[b.effort] || 99));
+      const allUnavailable = members.length > 0 && members.every(m => m.unavailable);
+      const partialUnavailable = members.length > 0 && !allUnavailable && members.some(m => m.unavailable);
+      const isUnavailable = members.length > 0 ? allUnavailable : Boolean(p.unavailable);
+      const isHistorical = members.length > 0 ? (members.every(m => m.isHistorical) || !p.inAccountCatalog) : (p.isHistorical || (!p.inAccountCatalog));
+      const notice = p.notice || members.find(m => m.notice)?.notice || null;
+      const reason = isUnavailable
+        ? (p.unavailabilityReason || members.find(m => m.unavailable && m.unavailabilityReason)?.unavailabilityReason || null)
+        : (partialUnavailable ? (members.find(m => m.unavailable && m.unavailabilityReason)?.unavailabilityReason || null) : null);
+      return {
+        productKey: p.productKey,
+        productLabel: p.productLabel,
+        vendor: p.vendor,
+        inAccountCatalog: p.inAccountCatalog,
+        unavailable: isUnavailable,
+        partialUnavailable,
+        unavailabilityReason: reason,
+        notice,
+        isHistorical,
+        members
+      };
+    });
+    result.sort((a, b) => {
+      const va = VENDOR_ORDER.indexOf(a.vendor);
+      const vb = VENDOR_ORDER.indexOf(b.vendor);
+      if (va !== vb) return (va === -1 ? 99 : va) - (vb === -1 ? 99 : vb);
+      return a.productLabel.localeCompare(b.productLabel);
+    });
+
+    cachedKnownProductsSnapshot = {
+      configsRef: configs,
+      configsSig,
+      speedRef: speedRecords,
+      speedLen,
+      speedEdge,
+      sessRef: sessionCalls,
+      sessLen,
+      sessEdge,
+      latestSig,
+      prefsSig,
+      capsVer: modelCapabilitiesVersion,
+      capsLen,
+      result
+    };
+    return result.map(p => ({ ...p, members: p.members.slice() }));
+  }
+
+  function formatSavedPrefLabel(pref) {
+    if (!pref || pref.mode === 'default') return t('status.savedDefault');
+    if (pref.mode === 'dynamic') return t('models.preset.dynamic');
+    if (pref.mode === 'fixed' && pref.limitTokens) {
+      const num = Number(pref.limitTokens);
+      if (num === 512000) return '512K';
+      return t('models.card.savedCustom', { val: `${formatKShort(num)}（${fmt(num)}）` });
+    }
+    return t('status.savedDefault');
+  }
+
+  function formatPrefShortPill(pref) {
+    if (!pref || pref.mode === 'default') return t('status.savedShortDefault');
+    if (pref.mode === 'dynamic') return t('models.preset.dynamic');
+    if (pref.mode === 'fixed' && pref.limitTokens) return formatKShort(pref.limitTokens);
+    return t('status.savedShortDefault');
+  }
+
+  /** 解析当前产品的设置状态与旧档位迁移/冲突检测 */
+  function resolveProductPreferenceState(product) {
+    if (!product) {
+      return { status: 'none', pref: null, displayText: t('status.savedDefault'), shortText: t('status.savedShortDefault'), legacyKeys: [], conflictEntries: [] };
+    }
+    const pKey = product.productKey;
+    const direct = contextPreferencesMap?.[pKey];
+    if (direct && (direct.scope === 'product' || (direct.productKey && direct.productKey === pKey))) {
+      return {
+        status: 'product',
+        pref: direct,
+        displayText: formatSavedPrefLabel(direct),
+        shortText: formatPrefShortPill(direct),
+        legacyKeys: [],
+        conflictEntries: []
+      };
+    }
+
+    const legacyEntries = [];
+    const seenKeys = new Set();
+    const memberIds = new Set((product.members || []).map(m => m.modelId));
+    for (const [k, rawPref] of Object.entries(contextPreferencesMap || {})) {
+      if (!rawPref) continue;
+      if (k === pKey && rawPref.scope === 'product') continue;
+      const belonged = memberIds.has(k) || groupProductSafe({ modelId: k, label: rawPref.label || k }).productKey === pKey;
+      if (!belonged) continue;
+      if (seenKeys.has(k)) continue;
+      seenKeys.add(k);
+      const memberMeta = (product.members || []).find(m => m.modelId === k);
+      const effortName = memberMeta?.effort || groupProductSafe({ modelId: k, label: rawPref.label || k }).effort;
+      legacyEntries.push({
+        legacyKey: k,
+        effort: effortName,
+        effortLabel: effortName ? formatEffortZh(effortName) : (rawPref.label || k),
+        mode: rawPref.mode || 'default',
+        limitTokens: rawPref.mode === 'fixed' ? Number(rawPref.limitTokens) : null,
+        updatedAt: rawPref.updatedAt || null,
+        label: rawPref.label || product.productLabel
+      });
+    }
+
+    if (legacyEntries.length === 0) {
+      if (direct) {
+        return {
+          status: 'product',
+          pref: direct,
+          displayText: formatSavedPrefLabel(direct),
+          shortText: formatPrefShortPill(direct),
+          legacyKeys: [],
+          conflictEntries: []
+        };
+      }
+      return { status: 'none', pref: null, displayText: t('models.pref.none'), shortText: t('models.pref.noneShort'), legacyKeys: [], conflictEntries: [] };
+    }
+
+    const sigs = new Map();
+    for (const entry of legacyEntries) {
+      const sig = `${entry.mode}:${entry.mode === 'fixed' ? (entry.limitTokens || 0) : ''}`;
+      if (!sigs.has(sig)) sigs.set(sig, entry);
+    }
+
+    if (sigs.size === 1) {
+      const unified = legacyEntries[0];
+      const syntheticPref = {
+        scope: 'product',
+        productKey: pKey,
+        modelId: pKey,
+        label: product.productLabel,
+        mode: unified.mode,
+        limitTokens: unified.limitTokens,
+        updatedAt: unified.updatedAt
+      };
+      return {
+        status: 'legacy_uniform',
+        pref: syntheticPref,
+        displayText: formatSavedPrefLabel(syntheticPref),
+        shortText: formatPrefShortPill(syntheticPref),
+        legacyKeys: legacyEntries.map(e => e.legacyKey),
+        conflictEntries: []
+      };
+    }
+
+    return {
+      status: 'conflict',
+      pref: null,
+      displayText: t('models.pref.inconsistent'),
+      shortText: t('models.pref.inconsistent'),
+      legacyKeys: legacyEntries.map(e => e.legacyKey),
+      conflictEntries: legacyEntries
+    };
+  }
+
+  function describeClientModeValue(data) {
+    if (!data) return t('models.preset.default');
+    if (data.configuredMode === 'dynamic') return t('models.preset.dynamic');
+    if (data.configuredMode === 'fixed' && data.configuredLimitTokens) {
+      return formatKShort(data.configuredLimitTokens);
+    }
+    return t('models.preset.default');
+  }
+
+  function doesClientMatchVerification(data, ver) {
+    if (!data || !ver) return false;
+    const mode = data.configuredMode || 'unknown';
+    if (ver.mode === 'dynamic') return mode === 'dynamic';
+    if (ver.mode === 'default') return mode === 'default' || data.status === 'not_patched';
+    if (ver.mode === 'fixed') return mode === 'fixed' && Number(data.configuredLimitTokens) === Number(ver.limitTokens);
+    return false;
+  }
+
+  /** 将状态 strictly 映射为规定的 5 个普通视图标签之一 */
+  function mapUnlockDisplayStatus(data) {
+    if (unlockStatusFetchError) {
+      return { badge: t('status.badge.unavailable'), pillClass: 'pill-danger', effectiveLoaded: false };
+    }
+    if (!data) {
+      return { badge: t('status.badge.reading'), pillClass: 'pill-muted', effectiveLoaded: false };
+    }
+    const raw = data.status;
+    const restarted = data.runtimeEvidence?.restartDetected === true;
+
+    if (raw === 'patched_pending_restart') {
+      return { badge: t('status.badge.pendingRestart'), pillClass: 'pill-warn', effectiveLoaded: false };
+    }
+    if (raw === 'not_patched') {
+      return { badge: t('status.badge.notPatched'), pillClass: 'pill-muted', effectiveLoaded: false };
+    }
+    if (raw === 'patched_loaded') {
+      if (!restarted) {
+        return { badge: t('status.badge.unconfirmed'), pillClass: 'pill-info', effectiveLoaded: false };
+      }
+      if ((pendingRestartVerification && !doesClientMatchVerification(data, pendingRestartVerification)) || restartMismatchNotice) {
+        return { badge: t('status.badge.unconfirmed'), pillClass: 'pill-warn', effectiveLoaded: false };
+      }
+      return { badge: t('status.badge.loaded'), pillClass: 'pill-ok', effectiveLoaded: true };
+    }
+    if (raw === 'patched_runtime_unconfirmed') {
+      return { badge: t('status.badge.unconfirmed'), pillClass: 'pill-info', effectiveLoaded: false };
+    }
+    if (raw === 'partial_match') {
+      return { badge: t('status.badge.partialMatch'), pillClass: 'pill-danger', effectiveLoaded: false };
+    }
+    return { badge: t('status.badge.failed'), pillClass: 'pill-danger', effectiveLoaded: false };
+  }
+
+  function buildFriendlyWriteError(rawErr) {
+    const msg = String(rawErr || '');
+    if (/EBUSY|EPERM|EACCES|占用|lock|locked|in use/i.test(msg)) {
+      return t('msg.writeBusy');
+    }
+    return t('msg.writeFail', { err: translateBackendText(msg) || t('msg.unknownErr') });
+  }
+
+  function applyContextViewVisibility() {
+    if (ctxTabsBar) ctxTabsBar.hidden = false;
+    if (paneSettings) paneSettings.hidden = activeContextTab !== 'settings';
+    if (paneSession) paneSession.hidden = activeContextTab !== 'session';
+    if (paneModels) paneModels.hidden = activeContextTab !== 'models';
+    if (paneSpeed) paneSpeed.hidden = activeContextTab !== 'speed';
+
+    setPillActive(btnTabSession, activeContextTab === 'session');
+    setPillActive(btnTabModels, activeContextTab === 'models');
+    setPillActive(btnTabSpeed, activeContextTab === 'speed');
+    setPillActive(btnTabSettings, activeContextTab === 'settings');
+    btnTabSession?.setAttribute('aria-selected', String(activeContextTab === 'session'));
+    btnTabModels?.setAttribute('aria-selected', String(activeContextTab === 'models'));
+    btnTabSpeed?.setAttribute('aria-selected', String(activeContextTab === 'speed'));
+    btnTabSettings?.setAttribute('aria-selected', String(activeContextTab === 'settings'));
+  }
+
+  let prevTabBeforeSettings = 'models';
+
+  function switchContextTab(tabName) {
+    if (tabName !== 'session' && tabName !== 'models' && tabName !== 'speed' && tabName !== 'settings') return;
+    if (activeContextTab !== 'settings') {
+      prevTabBeforeSettings = activeContextTab;
+    }
+    activeContextTab = tabName;
+    isContextSettingsView = tabName === 'settings';
+    try { localStorage?.setItem(CTX_ACTIVE_TAB_KEY, tabName); } catch { }
+    applyContextViewVisibility();
+    if (tabName === 'models') {
+      renderModelSettingsTab();
+      if (!currentUnlockStatus && !unlockStatusFetchError) {
+        void refreshUnlockStatus();
+      }
+    } else if (tabName === 'speed') {
+      // 速度对比页只读取已有本地记录，绝不发起任何请求或 IPC
+      renderSpeedComparisonTab();
+    } else if (tabName === 'settings') {
+      void refreshModulesDisplay();
+      if (!currentUnlockStatus && !unlockStatusFetchError && typeof refreshUnlockStatus === 'function') {
+        void refreshUnlockStatus();
+      }
+      if (typeof refreshEnhanceStatus === 'function') void refreshEnhanceStatus();
+    }
+    positionFloatingPanels();
+  }
+
+  function openContextSettings(opts = {}) {
+    if (el('panel')?.hidden) showPanel('context');
+    switchContextTab('settings');
+    if (opts.openColors) {
+      toggleColorsDrawer(true);
+    }
+    positionFloatingPanels();
+  }
+
+  function closeContextSettings() {
+    switchContextTab(prevTabBeforeSettings || 'models');
+    positionFloatingPanels();
+  }
+
+  btnTabSession?.addEventListener('click', () => switchContextTab('session'));
+  btnTabModels?.addEventListener('click', () => switchContextTab('models'));
+  btnTabSpeed?.addEventListener('click', () => switchContextTab('speed'));
+  btnTabSettings?.addEventListener('click', () => switchContextTab('settings'));
+  btnCtxSettings?.addEventListener('click', () => switchContextTab('settings'));
+  btnCtxSettingsBack?.addEventListener('click', () => closeContextSettings());
+
+  btnGotoModelSettings?.addEventListener('click', () => {
+    if (activeSessionProductKey) {
+      selectedProductKey = activeSessionProductKey;
+      selectedEditModelKey = activeSessionModelKey || activeSessionProductKey;
+      manualModelSelection = false;
+      ctxDraftDirty = false;
+    }
+    switchContextTab('models');
+  });
+
+  btnCardGotoSpeed?.addEventListener('click', () => {
+    const products = getKnownModelProducts();
+    const curProd = products.find(p => p.productKey === selectedProductKey) || products[0];
+    if (curProd) {
+      const mergedCalls = mergeAvailableSpeedCalls();
+      const targetMember = curProd.members.find(m => m.modelId === activeSessionModelKey)
+        || curProd.members.find(m => mergedCalls.some(c => c.modelExactId === m.modelId && isValidSpeedSampleSafe(c)))
+        || curProd.members[0];
+      if (targetMember) selectedSpeedExactModelId = targetMember.modelId;
+    }
+    switchContextTab('speed');
+  });
+
+  btnCtxBackCurrent?.addEventListener('click', () => {
+    const hostSelected = extractHostSelectedModel();
+    if (hostSelected && hostSelected.productKey) {
+      activeSessionModelKey = hostSelected.modelId;
+      activeSessionProductKey = hostSelected.productKey;
+      activeSessionEffort = hostSelected.effort;
+      activeSessionModelConfirmed = true;
+    } else if (activeSessionProductKey) {
+      const curProd = getKnownModelProducts().find(p => p.productKey === activeSessionProductKey);
+      if (curProd && curProd.isHistorical) {
+        activeSessionModelConfirmed = false;
+        activeSessionProductKey = null;
+        activeSessionModelKey = null;
+      }
+    }
+    if (!activeSessionModelConfirmed || !activeSessionProductKey) {
+      if (typeof showToastNotification === 'function') {
+        showToastNotification(t('panel.ctx.currentModelUnconfirmed') || '当前会话模型待确认，未获取到可靠选择');
+      } else {
+        showUnlockResultBox(false, t('panel.ctx.currentModelUnconfirmed') || '当前会话模型待确认，未获取到可靠选择');
+      }
+      return;
+    }
+    manualModelSelection = false;
+    selectedProductKey = activeSessionProductKey;
+    selectedEditModelKey = activeSessionModelKey || activeSessionProductKey;
+    ctxDraftDirty = false;
+    loadDraftFromSelectedModel(true);
+    renderHeaderModelDropdown();
+    renderModelSettingsTab();
+  });
 
   function toggleUnlockDrawer(forceOpen) {
     if (!unlockDrawerBody) return;
     const isHidden = unlockDrawerBody.style.display === 'none' || !unlockDrawerBody.style.display;
-    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
+    const nextOpen = forceOpen === undefined ? isHidden : Boolean(forceOpen);
     unlockDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? '▲ 收起' : '▼ 展开';
-    btnUnlock?.setAttribute('aria-expanded', String(nextOpen));
-    if (nextOpen && !currentUnlockStatus) {
-      void refreshUnlockStatus();
+    if (unlockDrawerArrow) unlockDrawerArrow.textContent = nextOpen ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+    btnToggleUnlockDetails?.setAttribute('aria-expanded', String(nextOpen));
+    if (nextOpen && !currentUnlockStatus) void refreshUnlockStatus();
+  }
+
+  btnToggleUnlockDetails?.addEventListener('click', () => toggleUnlockDrawer());
+
+  function getSelectedProductObj() {
+    const products = getKnownModelProducts();
+    if (!products.length) return null;
+    if (selectedProductKey) {
+      const found = products.find(p => p.productKey === selectedProductKey);
+      if (found) return found;
+    }
+    if (activeSessionProductKey) {
+      const activeFound = products.find(p => p.productKey === activeSessionProductKey);
+      if (activeFound) return activeFound;
+    }
+    return products[0];
+  }
+
+  const MINI_QUOTA_RING_RADIUS = 5.5;
+  const MINI_QUOTA_RING_CIRC = 2 * Math.PI * MINI_QUOTA_RING_RADIUS;
+  const modelListChipByProductKey = new Map();
+  let lastModelQuotaSyncSig = '';
+  let quotaStateInitialized = false;
+
+  /**
+   * 安全获取额度视图（防止初始化阶段提前触发时出现 TDZ 异常）。
+   */
+  function getSafeQuotaViewForModelList(nowMs = Date.now()) {
+    if (!quotaStateInitialized || typeof computeEffectiveQuotaView !== 'function') return null;
+    try {
+      return computeEffectiveQuotaView(nowMs);
+    } catch {
+      return null;
     }
   }
-  btnUnlock?.addEventListener('click', () => toggleUnlockDrawer());
+
+  /**
+   * 兼容浏览器与精简测试环境的 SVG 节点创建函数。
+   */
+  function createQuotaSvgEl(tag) {
+    if (typeof document === 'undefined') return null;
+    if (typeof document.createElementNS === 'function') {
+      return document.createElementNS('http://www.w3.org/2000/svg', tag);
+    }
+    return typeof document.createElement === 'function' ? document.createElement(tag) : null;
+  }
+
+  /**
+   * 将模型产品对象映射到共享额度池并生成小圆环展示摘要。
+   */
+  function resolveProductQuotaSummary(product, quotaView = null, nowMs = Date.now()) {
+    const core = typeof __AGContextMeterCore !== 'undefined'
+      ? __AGContextMeterCore
+      : (globalThis.__AGContextMeterCore || null);
+    const view = quotaView || getSafeQuotaViewForModelList(nowMs);
+    const unknownText = t('quota.short.unknown');
+    if (!product) {
+      return {
+        status: 'unknown',
+        statusLabel: getQuotaStatusLabelText('unknown'),
+        shortText: unknownText,
+        fraction: null,
+        poolKey: '',
+        poolTitle: '',
+        tooltip: '',
+        ariaLabel: unknownText
+      };
+    }
+
+    const pools = Array.isArray(view?.pools) ? view.pools : [];
+    const membersList = Array.isArray(product.members)
+      ? product.members
+      : Array.from(product.members?.values?.() || []);
+    const candidateIds = new Set();
+    const candidateLabels = new Set();
+    const pKeyLower = String(product.productKey || '').trim().toLowerCase();
+    const pLabelLower = String(product.productLabel || '').trim().toLowerCase();
+    if (pLabelLower) candidateLabels.add(pLabelLower);
+    for (const m of membersList) {
+      if (m?.modelId) candidateIds.add(String(m.modelId).trim().toLowerCase());
+      if (m?.label) candidateLabels.add(String(m.label).trim().toLowerCase());
+    }
+
+    let matchedPool = null;
+    let matchedModel = null;
+    const isHistoryOnly = Boolean(product.isHistorical || !product.inAccountCatalog);
+
+    // 1. 优先通过 productKey / modelIds / aliases 精确命中账号额度池模型（仅历史记录模型不借用当前活跃额度池）
+    if (!isHistoryOnly) {
+      for (const pool of pools) {
+        for (const m of (pool.models || [])) {
+          const mProdKey = String(m.productKey || '').trim().toLowerCase();
+          const mLabel = String(m.productLabel || '').trim().toLowerCase();
+          const mIds = Array.isArray(m.modelIds) ? m.modelIds.map(x => String(x || '').trim().toLowerCase()) : [];
+          const mAliases = Array.isArray(m.aliases) ? m.aliases.map(x => String(x || '').trim().toLowerCase()) : [];
+          const hit =
+            (pKeyLower && mProdKey && mProdKey === pKeyLower) ||
+            mIds.some(id => candidateIds.has(id)) ||
+            mAliases.some(a => candidateIds.has(a) || candidateLabels.has(a)) ||
+            (mLabel && candidateLabels.has(mLabel));
+          if (hit) {
+            matchedPool = pool;
+            matchedModel = m;
+            break;
+          }
+        }
+        if (matchedPool) break;
+      }
+
+      // 2. 次级按共享额度池键归并当前账号目录内的模型
+      if (!matchedPool && core?.getSharedQuotaGroupKey) {
+        const probeInput = {
+          modelId: membersList[0]?.modelId || product.productKey,
+          label: product.productLabel || membersList[0]?.label || ''
+        };
+        const gKey = core.getSharedQuotaGroupKey(probeInput);
+        if (gKey) {
+          matchedPool = pools.find(p => p.poolKey === gKey) || null;
+        }
+      }
+    }
+
+    const syncState = view?.syncState || 'unknown';
+    const isNoPerm = Boolean(matchedModel?.noPermission || matchedPool?.noPermission || product.unavailable);
+    let status = 'unknown';
+    let shortText = unknownText;
+    let fraction = null;
+
+    if (isNoPerm) {
+      status = 'no_permission';
+      shortText = t('quota.short.no_permission');
+    } else if (syncState === 'error' && !matchedPool) {
+      status = 'error';
+      shortText = t('quota.short.error');
+    } else if (matchedPool) {
+      fraction = matchedPool.remainingFraction;
+      if (fraction === null || fraction === undefined) {
+        status = syncState === 'stale' ? 'stale' : 'unknown';
+        shortText = t(`quota.short.${status}`);
+      } else if (matchedPool.isExhausted || fraction === 0) {
+        status = syncState === 'stale' ? 'stale' : 'exhausted';
+        shortText = t('quota.short.exhausted');
+      } else {
+        status = syncState === 'stale' ? 'stale' : (fraction <= 0.2 ? 'low' : 'available');
+        shortText = core?.formatQuotaPercentText
+          ? core.formatQuotaPercentText(fraction)
+          : (matchedPool.percentText || `${Math.round(fraction * 100)}%`);
+      }
+    } else if (product.isHistorical || !product.inAccountCatalog) {
+      status = 'unknown';
+      shortText = unknownText;
+    } else {
+      status = syncState === 'stale' ? 'stale' : 'unknown';
+      shortText = t(`quota.short.${status}`);
+    }
+
+    const statusLabel = typeof getQuotaStatusLabelText === 'function'
+      ? getQuotaStatusLabelText(status)
+      : status;
+    const poolName = matchedPool?.title || (product.isHistorical ? t('quota.modelChip.historyHint') : t('quota.modelChip.unpooled'));
+    const tipParts = [
+      t('quota.modelChip.tooltip', {
+        model: product.productLabel,
+        pool: poolName,
+        status: statusLabel,
+        value: shortText
+      })
+    ];
+    if (matchedPool?.hasResetTime && matchedPool.resetTimeText) {
+      const cdStr = Number.isFinite(matchedPool.resetAtMs)
+        ? ` (${formatCountdownMsCompact((matchedPool.resetAtMs || 0) - nowMs)})`
+        : '';
+      tipParts.push(t('quota.modelChip.resetPart', { reset: `${matchedPool.resetTimeText}${cdStr}` }));
+    }
+    const reason = matchedModel?.unavailabilityReason || product.unavailabilityReason;
+    if (isNoPerm && reason) tipParts.push(String(reason));
+    if (matchedModel?.noticeText) tipParts.push(String(matchedModel.noticeText));
+    if (syncState === 'error' && view?.lastError && !matchedPool && !isNoPerm) {
+      tipParts.push(String(view.lastError));
+    }
+    const tooltip = tipParts.join(' · ');
+
+    return {
+      status,
+      statusLabel,
+      shortText,
+      fraction,
+      poolKey: matchedPool?.poolKey || '',
+      poolTitle: matchedPool?.title || '',
+      tooltip,
+      ariaLabel: tooltip
+    };
+  }
+
+  /**
+   * 更新小额度圆环芯片的圆弧进度、语义状态、数值文本与悬浮说明。
+   */
+  function updateMiniQuotaChipElement(chip, summary) {
+    if (!chip || !summary) return;
+    setQuotaAttrIfChanged(chip, 'data-quota-state', summary.status || 'unknown');
+    setQuotaAttrIfChanged(chip, 'data-pool-key', summary.poolKey || '');
+    setQuotaAttrIfChanged(chip, 'aria-label', summary.ariaLabel || summary.shortText);
+    if (chip.title !== summary.tooltip) chip.title = summary.tooltip;
+    if (chip._valNode && chip._valNode.textContent !== summary.shortText) {
+      chip._valNode.textContent = summary.shortText;
+    }
+    const fill = chip._ringFill;
+    if (!fill) return;
+    if (summary.status === 'unknown' || (summary.fraction == null && summary.status === 'stale')) {
+      setQuotaAttrIfChanged(fill, 'stroke-dasharray', '8 26.56');
+      setQuotaAttrIfChanged(fill, 'stroke-dashoffset', '0');
+    } else if (
+      summary.fraction == null ||
+      summary.status === 'exhausted' ||
+      summary.status === 'no_permission' ||
+      summary.status === 'error'
+    ) {
+      setQuotaAttrIfChanged(fill, 'stroke-dasharray', `0 ${MINI_QUOTA_RING_CIRC.toFixed(2)}`);
+      setQuotaAttrIfChanged(fill, 'stroke-dashoffset', '0');
+    } else {
+      const clamped = Math.max(0, Math.min(1, Number(summary.fraction) || 0));
+      const arcLen = clamped > 0 ? Math.max(1.6, clamped * MINI_QUOTA_RING_CIRC) : 0;
+      const dashStr = `${MINI_QUOTA_RING_CIRC.toFixed(2)} ${MINI_QUOTA_RING_CIRC.toFixed(2)}`;
+      const offsetStr = (MINI_QUOTA_RING_CIRC - arcLen).toFixed(2);
+      setQuotaAttrIfChanged(fill, 'stroke-dasharray', dashStr);
+      setQuotaAttrIfChanged(fill, 'stroke-dashoffset', offsetStr);
+    }
+  }
+
+  /**
+   * 创建贴近原生 UI 的小额度圆环进度与状态芯片节点。
+   */
+  function createMiniQuotaChipElement(summary, opts = {}) {
+    const chip = document.createElement('span');
+    chip.className = `ctx-model-quota-chip${opts.variant ? ` is-${opts.variant}` : ''}`;
+    const svg = createQuotaSvgEl('svg');
+    let fill = null;
+    if (svg) {
+      svg.setAttribute?.('class', 'ctx-quota-ring-svg');
+      svg.setAttribute?.('width', '13');
+      svg.setAttribute?.('height', '13');
+      svg.setAttribute?.('viewBox', '0 0 16 16');
+      svg.setAttribute?.('aria-hidden', 'true');
+      const track = createQuotaSvgEl('circle');
+      if (track) {
+        track.setAttribute?.('class', 'ctx-quota-ring-track');
+        track.setAttribute?.('cx', '8');
+        track.setAttribute?.('cy', '8');
+        track.setAttribute?.('r', String(MINI_QUOTA_RING_RADIUS));
+        track.setAttribute?.('fill', 'none');
+        track.setAttribute?.('stroke-width', '2');
+        svg.appendChild(track);
+      }
+      fill = createQuotaSvgEl('circle');
+      if (fill) {
+        fill.setAttribute?.('class', 'ctx-quota-ring-fill');
+        fill.setAttribute?.('cx', '8');
+        fill.setAttribute?.('cy', '8');
+        fill.setAttribute?.('r', String(MINI_QUOTA_RING_RADIUS));
+        fill.setAttribute?.('fill', 'none');
+        fill.setAttribute?.('stroke-width', '2');
+        fill.setAttribute?.('stroke-linecap', 'round');
+        fill.setAttribute?.('transform', 'rotate(-90 8 8)');
+        svg.appendChild(fill);
+      }
+      chip.appendChild(svg);
+    }
+    const valNode = document.createElement('span');
+    valNode.className = 'ctx-model-quota-val';
+    chip.appendChild(valNode);
+    chip._ringFill = fill;
+    chip._valNode = valNode;
+    updateMiniQuotaChipElement(chip, summary);
+    return chip;
+  }
+
+  /**
+   * 原地同步模型列表、下拉选择器与选中模型卡片中的小额度圆环状态，避免重建闪烁。
+   */
+  function syncModelListQuotaIndicators(quotaView = null, nowMs = Date.now(), force = false) {
+    const view = quotaView || getSafeQuotaViewForModelList(nowMs);
+    if (!view) return;
+    const poolSig = (view.pools || [])
+      .map(p => `${p.poolKey}:${p.remainingFraction ?? 'n'}:${p.noPermission ? 1 : 0}:${p.hasResetTime ? Math.floor(((p.resetAtMs || 0) - nowMs) / 60000) : 'x'}`)
+      .join('|');
+    const sig = `${view.syncState || ''}|${currentPanelLanguage}|${selectedProductKey || ''}|${poolSig}`;
+    if (!force && sig === lastModelQuotaSyncSig) return;
+    lastModelQuotaSyncSig = sig;
+
+    const products = getKnownModelProducts();
+    const byKey = new Map(products.map(p => [p.productKey, p]));
+    const summaryCache = new Map();
+    const getSummary = (prod) => {
+      if (!prod) return null;
+      if (!summaryCache.has(prod.productKey)) {
+        summaryCache.set(prod.productKey, resolveProductQuotaSummary(prod, view, nowMs));
+      }
+      return summaryCache.get(prod.productKey);
+    };
+
+    for (const [pKey, entry] of modelListChipByProductKey.entries()) {
+      const prod = byKey.get(pKey);
+      if (!prod || !entry?.chipEl) continue;
+      const summary = getSummary(prod);
+      updateMiniQuotaChipElement(entry.chipEl, summary);
+      if (entry.rowEl && entry.rowEl.title !== summary.tooltip) {
+        entry.rowEl.title = summary.tooltip;
+      }
+    }
+
+    if (ctxHeaderDropdownCtrl && typeof ctxHeaderDropdownCtrl.updateItemsInPlace === 'function') {
+      ctxHeaderDropdownCtrl.updateItemsInPlace((val, itemEl, extraEl) => {
+        const prod = byKey.get(val);
+        if (!prod) return;
+        const summary = getSummary(prod);
+        if (extraEl) updateMiniQuotaChipElement(extraEl, summary);
+        if (itemEl && itemEl.title !== summary.tooltip) itemEl.title = summary.tooltip;
+      });
+    }
+
+    if (ctxCardQuotaSlot) {
+      const currentProd = getSelectedProductObj();
+      if (!currentProd) {
+        ctxCardQuotaSlot.hidden = true;
+      } else {
+        const summary = getSummary(currentProd);
+        ctxCardQuotaSlot.hidden = false;
+        if (!ctxCardQuotaSlot._chipEl) {
+          ctxCardQuotaSlot._chipEl = createMiniQuotaChipElement(summary, { variant: 'card' });
+          if (typeof ctxCardQuotaSlot.replaceChildren === 'function') {
+            ctxCardQuotaSlot.replaceChildren(ctxCardQuotaSlot._chipEl);
+          } else {
+            ctxCardQuotaSlot.appendChild(ctxCardQuotaSlot._chipEl);
+          }
+        } else {
+          updateMiniQuotaChipElement(ctxCardQuotaSlot._chipEl, summary);
+        }
+      }
+    }
+  }
+
+  function renderHeaderModelDropdown() {
+    const products = getKnownModelProducts();
+    if (!selectedProductKey && products.length) {
+      selectedProductKey = activeSessionProductKey || products[0].productKey;
+    }
+    const currentProd = products.find(p => p.productKey === selectedProductKey) || products[0] || null;
+    if (currentProd) {
+      selectedProductKey = currentProd.productKey;
+      selectedEditModelKey = (activeSessionProductKey === currentProd.productKey && activeSessionModelKey)
+        ? activeSessionModelKey
+        : (currentProd.members[0]?.modelId || currentProd.productKey);
+    }
+
+    if (ctxModelSelectorRoleEl) {
+      ctxModelSelectorRoleEl.textContent = t('panel.ctx.viewModel');
+    }
+    if (btnCtxBackCurrent) {
+      btnCtxBackCurrent.hidden = !(manualModelSelection && activeSessionModelConfirmed && activeSessionProductKey && selectedProductKey && selectedProductKey !== activeSessionProductKey);
+    }
+
+    if (ctxModelSelect && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      if (typeof ctxModelSelect.replaceChildren === 'function') {
+        const optionEntries = products.map((p) => {
+          const pState = resolveProductPreferenceState(p);
+          const optText = `${p.productLabel} (${pState.shortText})${p.productKey === activeSessionProductKey ? ` [${t('models.list.currentTag')}]` : ''}`;
+          return { value: p.productKey, text: optText };
+        });
+        const optsSig = `${currentPanelLanguage}|${optionEntries.map(o => `${o.value}=${o.text}`).join('|')}`;
+        if (ctxModelSelect._lastOptionsSig !== optsSig) {
+          ctxModelSelect._lastOptionsSig = optsSig;
+          const opts = optionEntries.map((entry) => {
+            const opt = document.createElement('option');
+            opt.value = entry.value;
+            opt.textContent = entry.text;
+            return opt;
+          });
+          ctxModelSelect.replaceChildren(...opts);
+        }
+        if (selectedProductKey && ctxModelSelect.value !== selectedProductKey) {
+          ctxModelSelect.value = selectedProductKey;
+        }
+      }
+    }
+
+    const nextDropdownLabel = currentProd ? currentProd.productLabel : t('models.dropdown.empty');
+    if (ctxModelDropdownLabelEl && ctxModelDropdownLabelEl.textContent !== nextDropdownLabel) {
+      ctxModelDropdownLabelEl.textContent = nextDropdownLabel;
+    }
+
+    if (!ctxHeaderDropdownCtrl && typeof initDropdownController === 'function' && el('ctx-model-dropdown-wrap')) {
+      ctxHeaderDropdownCtrl = initDropdownController({
+        wrapId: 'ctx-model-dropdown-wrap',
+        triggerId: 'ctx-model-dropdown-trigger',
+        labelId: 'ctx-model-dropdown-label',
+        menuId: 'ctx-model-dropdown-menu',
+        selectId: 'ctx-model-select',
+        emptyLabel: () => t('models.dropdown.empty'),
+        searchPlaceholder: () => t('dropdown.modelSearch'),
+        emptyText: () => t('dropdown.modelEmpty'),
+        getSelectedValue: () => selectedProductKey || '',
+        renderOptionExtras: (opt) => opt?.quotaSummary ? createMiniQuotaChipElement(opt.quotaSummary, { variant: 'dropdown' }) : null,
+        onSelect: (opt) => {
+          const val = opt?.value || '';
+          if (!val) return;
+          manualModelSelection = Boolean(activeSessionProductKey && val !== activeSessionProductKey);
+          selectedProductKey = val;
+          ctxDraftDirty = false;
+          loadDraftFromSelectedModel(true);
+          renderHeaderModelDropdown();
+          renderModelSettingsTab();
+        },
+        getOptions: () => {
+          const list = getKnownModelProducts();
+          const nowMs = Date.now();
+          const qView = getSafeQuotaViewForModelList(nowMs);
+          const items = [];
+          const activeList = list.filter(p => p.inAccountCatalog);
+          const historyList = list.filter(p => !p.inAccountCatalog);
+          let lastVendor = '';
+          for (const p of activeList) {
+            if (p.vendor !== lastVendor) {
+              lastVendor = p.vendor;
+              items.push({
+                value: `__group_${p.vendor}`,
+                label: formatVendorLabel(p.vendor),
+                isGroupHeader: true,
+                dotColor: VENDOR_DOT_COLORS[p.vendor] || VENDOR_DOT_COLORS['其他']
+              });
+            }
+            const pState = resolveProductPreferenceState(p);
+            const qSummary = resolveProductQuotaSummary(p, qView, nowMs);
+            items.push({
+              value: p.productKey,
+              label: p.productLabel,
+              displayRight: pState.shortText,
+              quotaSummary: qSummary,
+              tooltip: qSummary.tooltip,
+              badgeText: p.productKey === activeSessionProductKey ? t('models.list.currentTag') : '',
+              aliases: [p.vendor, p.productKey]
+            });
+          }
+          if (historyList.length) {
+            items.push({
+              value: '__group_history',
+              label: t('models.list.historyGroup'),
+              isGroupHeader: true,
+              dotColor: VENDOR_DOT_COLORS['其他']
+            });
+            for (const p of historyList) {
+              const pState = resolveProductPreferenceState(p);
+              const qSummary = resolveProductQuotaSummary(p, qView, nowMs);
+              items.push({
+                value: p.productKey,
+                label: p.productLabel,
+                displayRight: pState.shortText,
+                quotaSummary: qSummary,
+                tooltip: qSummary.tooltip,
+                badgeText: p.productKey === activeSessionProductKey ? t('models.list.currentTag') : t('models.list.historyTag'),
+                aliases: [p.vendor, p.productKey]
+              });
+            }
+          }
+          return items;
+        }
+      });
+    } else if (ctxHeaderDropdownCtrl && typeof ctxHeaderDropdownCtrl.refresh === 'function') {
+      ctxHeaderDropdownCtrl.refresh();
+    }
+  }
+
+  ctxModelSelect?.addEventListener('change', (e) => {
+    const val = e?.target?.value || '';
+    if (!val) return;
+    manualModelSelection = Boolean(activeSessionProductKey && val !== activeSessionProductKey);
+    selectedProductKey = val;
+    ctxDraftDirty = false;
+    loadDraftFromSelectedModel(true);
+    renderHeaderModelDropdown();
+    renderModelSettingsTab();
+  });
+
+  function renderCompactSessionCard() {
+    const scopeMode = getContextScopeMode();
+    if (ctxCompactSavedEl) {
+      if (scopeMode === 'unified') {
+        ctxCompactSavedEl.textContent = formatSavedPrefLabel(contextUnifiedPreference);
+      } else if (!activeSessionModelConfirmed || !activeSessionProductKey) {
+        ctxCompactSavedEl.textContent = t('panel.ctx.currentModelUnconfirmed') || '当前模型待确认';
+      } else {
+        const products = getKnownModelProducts();
+        const targetProd = products.find(p => p.productKey === activeSessionProductKey) || null;
+        const pState = resolveProductPreferenceState(targetProd);
+        ctxCompactSavedEl.textContent = pState.pref == null && pState.status === 'none' ? t('status.savedDefault') : pState.displayText;
+      }
+    }
+    const statusInfo = mapUnlockDisplayStatus(currentUnlockStatus);
+    if (ctxCompactClientEl) {
+      if (unlockStatusFetchError) {
+        ctxCompactClientEl.textContent = t('status.badge.unavailable');
+      } else if (!currentUnlockStatus) {
+        ctxCompactClientEl.textContent = t('status.badge.reading');
+      } else if (currentUnlockStatus.status === 'patched_pending_restart' || needsRestartAfterApply) {
+        ctxCompactClientEl.textContent = `${describeClientModeValue(currentUnlockStatus)}（${t('models.status.pendingRestart') || statusInfo.badge}）`;
+      } else {
+        ctxCompactClientEl.textContent = `${describeClientModeValue(currentUnlockStatus)}（${statusInfo.badge}）`;
+      }
+    }
+  }
+
+  function renderClientStatusBar() {
+    const statusInfo = mapUnlockDisplayStatus(currentUnlockStatus);
+    if (unlockBadge) {
+      unlockBadge.textContent = statusInfo.badge;
+      unlockBadge.className = `key-pill ${statusInfo.pillClass}`;
+    }
+
+    if (ctxClientStatusText) {
+      if (unlockStatusFetchError) {
+        ctxClientStatusText.textContent = t('status.badge.unavailable');
+      } else if (!currentUnlockStatus) {
+        ctxClientStatusText.textContent = t('status.client.reading');
+      } else if (currentUnlockStatus.status === 'patched_pending_restart' || needsRestartAfterApply) {
+        ctxClientStatusText.textContent = t('status.client.pendingRestart', { val: describeClientModeValue(currentUnlockStatus) });
+      } else if (currentUnlockStatus.configuredMode === 'dynamic') {
+        ctxClientStatusText.textContent = t('status.client.loadedDynamic');
+      } else if (currentUnlockStatus.configuredMode === 'fixed' || currentUnlockStatus.limitTokens) {
+        ctxClientStatusText.textContent = t('status.client.loadedFixed', { val: describeClientModeValue(currentUnlockStatus) });
+      } else if (currentUnlockStatus.configuredMode === 'default' || currentUnlockStatus.status === 'unpatched_official') {
+        ctxClientStatusText.textContent = t('status.client.loadedDefault');
+      } else {
+        ctxClientStatusText.textContent = t('status.client.loadedFixed', { val: describeClientModeValue(currentUnlockStatus) });
+      }
+    }
+
+    if (ctxRestartMismatchNote) {
+      if (restartMismatchNotice) {
+        ctxRestartMismatchNote.textContent = restartMismatchNotice;
+        ctxRestartMismatchNote.hidden = false;
+      } else {
+        ctxRestartMismatchNote.hidden = true;
+      }
+    }
+
+    const showRestart = needsRestartAfterApply || currentUnlockStatus?.status === 'patched_pending_restart';
+    const isErrorStatus = currentUnlockStatus?.status === 'partial_match' || currentUnlockStatus?.status === 'failed';
+    if (btnRestartHost) {
+      btnRestartHost.hidden = !showRestart || !hostSupportsRestart;
+    }
+    if (ctxManualRestartNote) {
+      ctxManualRestartNote.hidden = hostSupportsRestart || !showRestart;
+    }
+    if (btnUnlockResultRestart) {
+      btnUnlockResultRestart.hidden = !showRestart || !hostSupportsRestart;
+    }
+    if (btnUnlockResultRetry) {
+      btnUnlockResultRetry.hidden = !isErrorStatus;
+    }
+    if (unlockResultManual) {
+      unlockResultManual.hidden = !(showRestart && !hostSupportsRestart);
+    }
+    if (unlockResultActions) {
+      const hasAction = (showRestart && hostSupportsRestart) || isErrorStatus;
+      unlockResultActions.hidden = !hasAction;
+    }
+    const btnEnhanceRestart = el('btn-enhance-restart-host');
+    if (btnEnhanceRestart) {
+      btnEnhanceRestart.hidden = !(showRestart && hostSupportsRestart);
+    }
+  }
+
+  function renderModelListGroup(products) {
+    if (!ctxModelListEl || typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+    const nowMs = Date.now();
+    const qView = getSafeQuotaViewForModelList(nowMs);
+    if (!products.length) {
+      modelListChipByProductKey.clear();
+      ctxModelListEl._lastStructSig = '';
+      ctxModelListEl.textContent = t('models.list.empty');
+      return;
+    }
+    const catalogConfigs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    const hasAccountCatalog = Array.isArray(catalogConfigs) && catalogConfigs.length > 0;
+    const structSig = `${currentPanelLanguage}|${selectedProductKey || ''}|${activeSessionProductKey || ''}|${hasAccountCatalog ? 1 : 0}|` + products.map((p) => {
+      const ps = resolveProductPreferenceState(p);
+      return `${p.productKey}:${p.productLabel}:${p.vendor}:${p.unavailable ? 1 : 0}:${p.inAccountCatalog ? 1 : 0}:${p.isHistorical ? 1 : 0}:${ps.status}:${ps.shortText}:${Boolean(p.notice)}`;
+    }).join(';');
+
+    if (ctxModelListEl._lastStructSig === structSig && modelListChipByProductKey.size > 0) {
+      syncModelListQuotaIndicators(qView, nowMs, false);
+      return;
+    }
+    ctxModelListEl._lastStructSig = structSig;
+    modelListChipByProductKey.clear();
+
+    const outerPanel = el('panel');
+    const prevPanelScrollTop = (outerPanel && typeof outerPanel.scrollTop === 'number') ? outerPanel.scrollTop : 0;
+    const prevScrollTop = ctxModelListEl.scrollTop || 0;
+    const accountProducts = hasAccountCatalog ? products.filter(p => p.inAccountCatalog) : products;
+    const historyProducts = hasAccountCatalog ? products.filter(p => !p.inAccountCatalog) : [];
+
+    const appendGroupRows = (fragNodes, vendor, list, isHistoryGroup = false) => {
+      const grp = document.createElement('div');
+      grp.className = 'ctx-model-group';
+
+      const hdr = document.createElement('div');
+      hdr.className = isHistoryGroup ? 'ctx-model-group-hdr is-history-hdr' : 'ctx-model-group-hdr';
+      const dot = document.createElement('span');
+      dot.className = 'ag-vendor-dot';
+      if (dot.style) dot.style.background = VENDOR_DOT_COLORS[vendor] || VENDOR_DOT_COLORS['其他'];
+      const vTxt = document.createElement('span');
+      vTxt.textContent = isHistoryGroup ? t('models.list.historyGroup') : formatVendorLabel(vendor);
+      hdr.appendChild(dot);
+      hdr.appendChild(vTxt);
+      grp.appendChild(hdr);
+
+      for (const prod of list) {
+        const pState = resolveProductPreferenceState(prod);
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = `ctx-product-row${prod.productKey === selectedProductKey ? ' is-active' : ''}${prod.unavailable ? ' is-unavailable' : ''}`;
+        row.setAttribute('data-product-key', prod.productKey);
+
+        const left = document.createElement('span');
+        left.className = 'ctx-product-row-left';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'ctx-product-row-name';
+        nameSpan.textContent = prod.productLabel;
+        left.appendChild(nameSpan);
+
+        if (prod.unavailable) {
+          const unavailTag = document.createElement('span');
+          unavailTag.className = 'ctx-product-row-unavailable-tag';
+          unavailTag.textContent = t('models.card.modelUnavailable') || '不可用';
+          if (prod.unavailabilityReason) unavailTag.title = prod.unavailabilityReason;
+          left.appendChild(unavailTag);
+        } else if (prod.notice) {
+          const noticeTag = document.createElement('span');
+          noticeTag.className = 'ctx-product-row-notice-tag';
+          noticeTag.textContent = 'Notice';
+          noticeTag.title = typeof prod.notice === 'string' ? prod.notice : JSON.stringify(prod.notice);
+          left.appendChild(noticeTag);
+        }
+
+        if (prod.productKey === activeSessionProductKey) {
+          const curTag = document.createElement('span');
+          curTag.className = 'ag-dropdown-badge';
+          curTag.textContent = t('models.list.currentTag');
+          left.appendChild(curTag);
+        } else if (isHistoryGroup || prod.isHistorical) {
+          const histTag = document.createElement('span');
+          histTag.className = 'ctx-product-row-history-tag';
+          histTag.textContent = t('models.list.historyTag');
+          left.appendChild(histTag);
+        }
+
+        const right = document.createElement('span');
+        right.className = 'ctx-product-row-right';
+        const qSummary = resolveProductQuotaSummary(prod, qView, nowMs);
+        const qChip = createMiniQuotaChipElement(qSummary, { variant: 'row' });
+        right.appendChild(qChip);
+        const valSpan = document.createElement('span');
+        valSpan.className = `ctx-product-row-val${pState.status === 'conflict' ? ' is-conflict' : ''}`;
+        valSpan.textContent = pState.shortText;
+        right.appendChild(valSpan);
+        row.title = qSummary.tooltip;
+        modelListChipByProductKey.set(prod.productKey, { rowEl: row, chipEl: qChip });
+
+        row.appendChild(left);
+        row.appendChild(right);
+        row.addEventListener('click', () => {
+          manualModelSelection = Boolean(activeSessionProductKey && prod.productKey !== activeSessionProductKey);
+          selectedProductKey = prod.productKey;
+          ctxDraftDirty = false;
+          loadDraftFromSelectedModel(true);
+          renderHeaderModelDropdown();
+          renderModelSettingsTab();
+        });
+        grp.appendChild(row);
+      }
+      fragNodes.push(grp);
+    };
+
+    const groups = new Map();
+    for (const p of accountProducts) {
+      if (!groups.has(p.vendor)) groups.set(p.vendor, []);
+      groups.get(p.vendor).push(p);
+    }
+    const fragNodes = [];
+    for (const [vendor, list] of groups.entries()) {
+      appendGroupRows(fragNodes, vendor, list, false);
+    }
+    if (historyProducts.length > 0) {
+      appendGroupRows(fragNodes, '其他', historyProducts, true);
+    }
+    if (typeof ctxModelListEl.replaceChildren === 'function') {
+      ctxModelListEl.replaceChildren(...fragNodes);
+    }
+    if (prevScrollTop > 0 && Math.abs((ctxModelListEl.scrollTop || 0) - prevScrollTop) > 1) {
+      ctxModelListEl.scrollTop = prevScrollTop;
+    }
+    if (outerPanel && prevPanelScrollTop > 0 && Math.abs((outerPanel.scrollTop || 0) - prevPanelScrollTop) > 1) {
+      outerPanel.scrollTop = prevPanelScrollTop;
+    }
+  }
+
+  function findLatestProductObservation(product, activeConvId = null) {
+    if (!product) return { latestBudgetObs: null, latestServiceLimitObs: null };
+    const scoped = budgetTracker ? budgetTracker.getScopedObservation(activeConvId, product.productKey) : null;
+    if (scoped) {
+      return {
+        latestBudgetObs: scoped.budget > 0 ? scoped : null,
+        latestServiceLimitObs: scoped.serviceLimit > 0 ? scoped : null
+      };
+    }
+    const memberIds = new Set((product.members || []).map(m => m.modelId));
+    if (product.productKey) memberIds.add(product.productKey);
+    let latestBudgetObs = null;
+    let latestServiceLimitObs = null;
+
+    for (const mid of memberIds) {
+      const obs = observedByModelId.get(mid);
+      if (!obs) continue;
+      if (activeConvId && obs.convoId && obs.convoId !== activeConvId) continue;
+      if (obs.budget > 0 && (!latestBudgetObs || obs.ts > latestBudgetObs.ts)) {
+        latestBudgetObs = obs;
+      }
+      if (obs.serviceLimit > 0 && (!latestServiceLimitObs || obs.ts > latestServiceLimitObs.ts)) {
+        latestServiceLimitObs = obs;
+      }
+    }
+    return { latestBudgetObs, latestServiceLimitObs };
+  }
+
+  function findPreRestartBudgetForProduct(product) {
+    if (!product || !preRestartSnapshot?.observations) return null;
+    const memberIds = new Set((product.members || []).map(m => m.modelId));
+    if (product.productKey) memberIds.add(product.productKey);
+    let best = null;
+    for (const mid of memberIds) {
+      const obs = preRestartSnapshot.observations[mid];
+      if (obs && obs.budget > 0 && (!best || obs.ts > best.ts)) best = obs;
+    }
+    return best;
+  }
+
+  async function resolveProductConflict(product, chosenEntry) {
+    if (!product || !chosenEntry) return;
+    const legacyKeys = resolveProductPreferenceState(product).legacyKeys;
+    const res = await saveSettingsPayloadBridge({
+      contextPreference: {
+        scope: 'product',
+        productKey: product.productKey,
+        modelId: product.productKey,
+        label: product.productLabel,
+        mode: chosenEntry.mode,
+        limitTokens: chosenEntry.limitTokens,
+        clearLegacyKeys: legacyKeys
+      }
+    });
+    if (!res || !res.ok) {
+      showUnlockResultBox(false, t('models.toast.saveFailed', { err: translateBackendText(res?.error) || t('models.err.saveFailed') }));
+      return;
+    }
+    if (res.contextPreferences && typeof res.contextPreferences === 'object') {
+      contextPreferencesMap = { ...res.contextPreferences };
+    } else {
+      for (const lk of legacyKeys) delete contextPreferencesMap[lk];
+      contextPreferencesMap[product.productKey] = {
+        scope: 'product',
+        productKey: product.productKey,
+        modelId: product.productKey,
+        label: product.productLabel,
+        mode: chosenEntry.mode,
+        limitTokens: chosenEntry.limitTokens,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    syncContextPreferencesCache(contextPreferencesMap);
+    ctxDraftDirty = false;
+    loadDraftFromSelectedModel(true);
+    renderHeaderModelDropdown();
+    renderModelSettingsTab();
+    showUnlockResultBox(true, t('models.toast.savedUniform'));
+  }
+
+  function evaluateModelContextStatus(product) {
+    if (!product) {
+      return {
+        status: 'unconfirmed',
+        badge: t('panel.ctx.currentModelUnconfirmed') || '待确认',
+        pillClass: 'pill-muted',
+        diagnosis: '未获取到模型信息',
+        targetText: '—',
+        requestText: '—',
+        observedText: '—',
+        convoId: '—'
+      };
+    }
+
+    const pState = resolveProductPreferenceState(product);
+    const scopeMode = getContextScopeMode();
+    const activePref = (scopeMode === 'unified') ? contextUnifiedPreference : pState.pref;
+    const targetMode = activePref?.mode || 'default';
+    const targetLimit = (targetMode === 'fixed') ? Number(activePref?.limitTokens) : null;
+    const capSummary = getProductCapabilitySummary(product);
+
+    let targetText = t('status.savedDefault') || '恢复客户端默认';
+    if (targetMode === 'dynamic') {
+      targetText = t('models.preset.dynamic') || '动态跟随';
+    } else if (targetMode === 'fixed' && targetLimit) {
+      targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+    }
+
+    const activeConvId = state.activeConversationId || state.conversationId || state.route || null;
+    const evalCore = budgetTracker
+      ? budgetTracker.evaluateStatus({
+        product,
+        scopeMode,
+        pref: activePref,
+        activeConvId,
+        modelHardLimit: capSummary?.modelTheoreticalMaxTokens || null
+      })
+      : {
+        status: 'saved_pending_dispatch',
+        convoId: activeConvId || '—',
+        targetMode,
+        targetLimit,
+        dispatched: null,
+        observation: findLatestProductObservation(product, activeConvId).latestBudgetObs
+      };
+
+    const dispatched = evalCore.dispatched;
+    const obs = evalCore.observation;
+    const obsBudget = Number(obs?.budget || 0);
+
+    let requestText = dispatched ? '默认透传（未附加自定义参数）' : '尚无本次验证';
+    if (dispatched) {
+      if (dispatched.status === 'send_failed') {
+        requestText = `发送失败（${dispatched.errorMessage || '请求未完成'}）`;
+      } else if (dispatched.status === 'aborted') {
+        requestText = '已取消发送';
+      } else if (dispatched.status === 'uninjectable') {
+        requestText = '透传未注入（缺少可靠模型/不支持帧）';
+      } else if (dispatched.sentMode === 'fixed' && dispatched.sentLimitTokens) {
+        requestText = `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
+      } else if (dispatched.sentMode === 'dynamic') {
+        requestText = '动态跟随（已清除固定数值）';
+      }
+      if (dispatched.timestamp) {
+        requestText += ` · ${formatMonthDayTime(dispatched.timestamp)}`;
+      }
+    }
+
+    function statusUsesExistingObs(st, diagCode) {
+      return st === 'confirmed'
+        || st === 'clamped_by_model_limit'
+        || st === 'mismatch'
+        || (st === 'default' && diagCode === 'default_confirmed');
+    }
+
+    let observedText = '尚无本次验证';
+    if (obsBudget > 0 && statusUsesExistingObs(evalCore.status, evalCore.diagnosisCode)) {
+      const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
+      const tTxt = obs.ts ? ` · ${formatMonthDayTime(obs.ts)}` : '';
+      observedText = `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
+    } else if (obsBudget > 0) {
+      const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
+      observedText = `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`;
+    }
+
+    const convoId = evalCore.convoId || activeConvId || '—';
+
+    let status = evalCore.status;
+    let badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
+    let pillClass = 'pill-muted';
+    let diagnosis = '已保存目标参数，将在下次发起请求时自动注入并发送。';
+
+    if (status === 'default') {
+      if (evalCore.diagnosisCode === 'default_confirmed') {
+        badge = t('status.savedDefault') || '使用模型默认值';
+        pillClass = 'pill-good';
+        diagnosis = `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`;
+      } else {
+        badge = t('status.savedDefault') || '使用模型默认值';
+        pillClass = 'pill-muted';
+        diagnosis = '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。';
+      }
+    } else if (status === 'send_failed') {
+      badge = '发送失败（未确认）';
+      pillClass = 'pill-bad';
+      diagnosis = `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`;
+    } else if (status === 'aborted') {
+      badge = '已取消（未确认）';
+      pillClass = 'pill-muted';
+      diagnosis = '本次请求在完成前被取消，未收到新回复。';
+    } else if (status === 'uninjectable') {
+      badge = '本次未注入（已透传）';
+      pillClass = 'pill-warn';
+      diagnosis = `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`;
+    } else if (status === 'confirmed') {
+      badge = t('models.status.confirmed') || '实际预算已确认';
+      pillClass = 'pill-good';
+      diagnosis = targetMode === 'dynamic'
+        ? `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`
+        : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`;
+    } else if (status === 'clamped_by_model_limit') {
+      badge = '受模型上限限制';
+      pillClass = 'pill-warn';
+      diagnosis = `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`;
+    } else if (status === 'mismatch') {
+      badge = t('models.status.mismatch') || '未生效：目标值与观测值不一致';
+      pillClass = 'pill-bad';
+      let detail = `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`;
+      if (product.unavailable && product.unavailabilityReason) {
+        detail += `（模型可用性说明：${product.unavailabilityReason}）`;
+      }
+      diagnosis = detail;
+    } else if (status === 'timeout_unconfirmed') {
+      badge = '确认超时（未观测到新回复）';
+      pillClass = 'pill-warn';
+      diagnosis = targetMode === 'default'
+        ? `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`
+        : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`;
+    } else if (status === 'dispatched_pending_confirm') {
+      badge = targetMode === 'default' ? '已默认透传，等待确认' : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
+      pillClass = 'pill-warn';
+      diagnosis = targetMode === 'default'
+        ? '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'
+        : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`;
+    } else {
+      status = 'saved_pending_dispatch';
+      badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
+      pillClass = 'pill-muted';
+      diagnosis = `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`;
+    }
+
+    return {
+      status,
+      badge,
+      pillClass,
+      diagnosis,
+      targetText,
+      requestText,
+      observedText,
+      convoId
+    };
+  }
+
+  function renderModelDetailCard(product) {
+    if (!product) {
+      if (ctxCardProductName) ctxCardProductName.textContent = t('models.card.waiting');
+      if (ctxCardVendorName) ctxCardVendorName.textContent = '—';
+      if (ctxCardQuotaSlot) ctxCardQuotaSlot.hidden = true;
+      if (ctxCardEffortsList) ctxCardEffortsList.textContent = t('models.card.effortsEmpty');
+      if (ctxCardSessionEffort) ctxCardSessionEffort.hidden = true;
+      if (ctxConflictBanner) ctxConflictBanner.hidden = true;
+      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = '待确认';
+      if (ctxSummaryLengthEl) ctxSummaryLengthEl.textContent = '—';
+      if (ctxSummaryStatusPillEl) ctxSummaryStatusPillEl.hidden = true;
+      return;
+    }
+
+    const evalResult = evaluateModelContextStatus(product);
+    const pState = resolveProductPreferenceState(product);
+    if (ctxCardVendorDot?.style) {
+      ctxCardVendorDot.style.background = VENDOR_DOT_COLORS[product.vendor] || VENDOR_DOT_COLORS['其他'];
+    }
+    if (ctxCardVendorName) ctxCardVendorName.textContent = formatVendorLabel(product.vendor);
+    if (ctxCardQuotaSlot) {
+      const nowMs = Date.now();
+      const qSummary = resolveProductQuotaSummary(product, null, nowMs);
+      ctxCardQuotaSlot.hidden = false;
+      if (!ctxCardQuotaSlot._chipEl) {
+        ctxCardQuotaSlot._chipEl = createMiniQuotaChipElement(qSummary, { variant: 'card' });
+        if (typeof ctxCardQuotaSlot.replaceChildren === 'function') {
+          ctxCardQuotaSlot.replaceChildren(ctxCardQuotaSlot._chipEl);
+        } else {
+          ctxCardQuotaSlot.appendChild(ctxCardQuotaSlot._chipEl);
+        }
+      } else {
+        updateMiniQuotaChipElement(ctxCardQuotaSlot._chipEl, qSummary);
+      }
+    }
+    if (ctxCardProductName) {
+      if (product.unavailable) {
+        ctxCardProductName.textContent = `${product.productLabel} [${t('models.card.modelUnavailable') || '不可用'}]`;
+      } else {
+        ctxCardProductName.textContent = product.productLabel;
+      }
+    }
+
+    const efforts = product.members.map(m => m.effort).filter(Boolean);
+    if (ctxCardEffortsList) {
+      ctxCardEffortsList.textContent = efforts.length
+        ? t('models.card.effortsList', { list: efforts.map(formatEffortZh).join(' · ') })
+        : t('models.card.effortStandard');
+    }
+    if (ctxCardSessionEffort) {
+      if (activeSessionProductKey === product.productKey && activeSessionEffort) {
+        ctxCardSessionEffort.textContent = t('models.card.sessionEffort', { effort: formatEffortZh(activeSessionEffort) });
+        ctxCardSessionEffort.hidden = false;
+      } else {
+        ctxCardSessionEffort.hidden = true;
+      }
+    }
+
+    // 旧档位冲突横幅
+    if (ctxConflictBanner && ctxConflictRows) {
+      if (pState.status === 'conflict' && pState.conflictEntries.length > 0) {
+        ctxConflictBanner.hidden = false;
+        if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxConflictRows.replaceChildren === 'function') {
+          const rows = [];
+          for (const ce of pState.conflictEntries) {
+            const r = document.createElement('div');
+            r.className = 'ctx-conflict-row';
+            const lbl = document.createElement('span');
+            lbl.textContent = `${ce.effortLabel} · ${formatSavedPrefLabel(ce)}`;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'ctx-conflict-btn';
+            btn.textContent = t('models.conflict.useThis');
+            btn.addEventListener('click', () => { void resolveProductConflict(product, ce); });
+            r.appendChild(lbl);
+            r.appendChild(btn);
+            rows.push(r);
+          }
+          const selfRow = document.createElement('div');
+          selfRow.className = 'ctx-conflict-row';
+          const selfHint = document.createElement('span');
+          selfHint.textContent = t('models.conflict.orCustom');
+          const selfBtn = document.createElement('button');
+          selfBtn.type = 'button';
+          selfBtn.className = 'ctx-conflict-btn';
+          selfBtn.textContent = t('models.conflict.selfSet');
+          selfBtn.addEventListener('click', () => {
+            ctxCustomInput?.focus?.();
+          });
+          selfRow.appendChild(selfHint);
+          selfRow.appendChild(selfBtn);
+          rows.push(selfRow);
+          ctxConflictRows.replaceChildren(...rows);
+        }
+      } else {
+        ctxConflictBanner.hidden = true;
+      }
+    }
+
+    // 0. 模型能力参考卡片渲染（紧邻预算设置区，不隐藏；严格区分模型上限 / 客户端限制 / 运行策略默认预算 / 可采纳范围）
+    const capSummary = getProductCapabilitySummary(product);
+    const runtimePolicy = capSummary?.runtimePolicy || resolveRuntimeUnlockPolicyClient();
+    if (ctxCapWindowEl) {
+      ctxCapWindowEl.textContent = capSummary?.maxTokens ? `${fmt(capSummary.maxTokens)} tokens` : '未知（待获取元数据）';
+    }
+    if (ctxCapOutputEl) {
+      ctxCapOutputEl.textContent = capSummary?.maxOutputTokens != null ? `${fmt(capSummary.maxOutputTokens)} tokens` : '未知';
+    }
+    if (ctxCapModelMaxEl) {
+      ctxCapModelMaxEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
+        ? `${fmt(capSummary.modelTheoreticalMaxTokens)} tokens`
+        : '未知（待获取元数据）';
+    }
+    if (ctxCapClientPolicyEl) {
+      if (!runtimePolicy || runtimePolicy.runtimeState === 'unknown') {
+        ctxCapClientPolicyEl.textContent = '未知（待读取运行策略）';
+      } else if (runtimePolicy.runtimeState === 'pending_restart') {
+        ctxCapClientPolicyEl.textContent = `待重启（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+      } else if (runtimePolicy.runtimeState === 'runtime_unconfirmed') {
+        ctxCapClientPolicyEl.textContent = `进程未确认（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+      } else if (runtimePolicy.runtimeState === 'partial') {
+        ctxCapClientPolicyEl.textContent = '部分异常（运行限制未知）';
+      } else if (runtimePolicy.runtimeMode === 'dynamic') {
+        ctxCapClientPolicyEl.textContent = 'Dynamic 动态跟随（按模型上限）';
+      } else if (runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
+        ctxCapClientPolicyEl.textContent = `固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} tokens`;
+      } else {
+        ctxCapClientPolicyEl.textContent = '默认限制 256,000 tokens';
+      }
+    }
+    if (ctxCapDefaultEl) {
+      if (capSummary?.currentStrategyDefaultBudget != null && runtimePolicy?.policyKnown) {
+        let stratNote = '';
+        if (runtimePolicy.runtimeMode === 'dynamic') {
+          stratNote = '（Dynamic 默认）';
+        } else if (runtimePolicy.runtimeMode === 'fixed') {
+          stratNote = `（受固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} 约束）`;
+        } else {
+          stratNote = '（受默认 256,000 约束）';
+        }
+        ctxCapDefaultEl.textContent = `${fmt(capSummary.currentStrategyDefaultBudget)} tokens${stratNote}`;
+      } else if (runtimePolicy && !runtimePolicy.policyKnown) {
+        ctxCapDefaultEl.textContent = '未知（运行策略待确认）';
+      } else {
+        ctxCapDefaultEl.textContent = '未知';
+      }
+    }
+    if (ctxCapRangeEl) {
+      if (capSummary?.maxAdjustableTokens != null) {
+        ctxCapRangeEl.textContent = `${fmt(capSummary.rangeMin || CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(capSummary.maxAdjustableTokens)} tokens`;
+      } else if (runtimePolicy && !runtimePolicy.policyKnown) {
+        ctxCapRangeEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
+          ? `运行策略未知（模型理论上限 ${fmt(capSummary.modelTheoreticalMaxTokens)}）`
+          : `运行策略未知（工程范围 ${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}）`;
+      } else {
+        ctxCapRangeEl.textContent = `${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}（模型上限未知）`;
+      }
+    }
+    if (ctxCapFormulaEl) {
+      const parts = [];
+      if (capSummary?.sources?.length) {
+        const srcText = capSummary.sources.map(s => (s === 'get_available_models' ? 'GetAvailableModels 目录' : (s === 'step_model_info' ? '会话 Step ModelInfo' : s))).join(' + ');
+        parts.push(`来源：${srcText}`);
+      }
+      if (capSummary?.formulaNote) {
+        parts.push(capSummary.formulaNote);
+      } else {
+        parts.push('尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。');
+      }
+      if (capSummary?.policyNote) {
+        parts.push(capSummary.policyNote);
+      }
+      if (capSummary?.hasTierVariance) {
+        parts.push('注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。');
+      }
+      if (runtimePolicy?.diskVsRuntimeMismatch) {
+        parts.push('磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。');
+      }
+      ctxCapFormulaEl.textContent = parts.join('；');
+    }
+    if (ctxRefSavedEl) {
+      const targetSavedLabel = getContextScopeMode() === 'unified'
+        ? formatSavedPrefLabel(contextUnifiedPreference)
+        : pState.displayText;
+      ctxRefSavedEl.textContent = targetSavedLabel;
+    }
+    if (ctxRefSentEl) {
+      ctxRefSentEl.textContent = evalResult.requestText || '尚无本次验证';
+    }
+    if (ctxRefAdoptedEl) {
+      ctxRefAdoptedEl.textContent = evalResult.observedText || '尚无本次验证';
+    }
+
+    if (ctxUnifiedProjEl) {
+      if (getContextScopeMode() === 'unified' && typeof budgetEngine.projectUnifiedBudgetForProducts === 'function') {
+        const allProducts = getKnownModelProducts().filter(p => p.inAccountCatalog);
+        const projections = budgetEngine.projectUnifiedBudgetForProducts(contextUnifiedPreference, allProducts, currentUnlockStatus, state.modelCapabilitiesById || null);
+        if (projections.length > 0 && typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxUnifiedProjEl.replaceChildren === 'function') {
+          const titleDiv = document.createElement('div');
+          titleDiv.className = 'ctx-unified-proj-title';
+          titleDiv.textContent = '统一模式各模型预计采用预算（预测值，非实机已确认）：';
+          const rowNodes = [titleDiv];
+          for (const pr of projections.slice(0, 8)) {
+            const row = document.createElement('div');
+            const isWarnRow = pr.outcome === 'clamped_to_model_max' || pr.outcome === 'exceeds_client_policy' || pr.outcome === 'clamped_by_client_policy' || pr.outcome === 'pending_restart_unconfirmed' || pr.outcome === 'partial_policy_unconfirmed' || pr.outcome === 'runtime_unconfirmed';
+            row.className = `ctx-unified-proj-row${isWarnRow ? ' is-clamped' : ''}`;
+            const lbl = document.createElement('span');
+            lbl.textContent = pr.productLabel;
+            const val = document.createElement('strong');
+            if (pr.outcome === 'clamped_to_model_max') {
+              val.textContent = `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`;
+            } else if (pr.outcome === 'exceeds_client_policy') {
+              val.textContent = `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+            } else if (pr.outcome === 'clamped_by_client_policy') {
+              val.textContent = `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+            } else if (pr.outcome === 'pending_restart_unconfirmed') {
+              val.textContent = '待验证（磁盘已改，客户端未重启）';
+            } else if (pr.outcome === 'runtime_unconfirmed') {
+              val.textContent = '待验证（运行中进程未确认）';
+            } else if (pr.outcome === 'partial_policy_unconfirmed') {
+              val.textContent = '未知（客户端处于部分异常状态）';
+            } else if (pr.outcome === 'unknown_policy') {
+              val.textContent = '未知（运行策略待读取）';
+            } else if (pr.outcome === 'unknown_cap') {
+              val.textContent = '模型上限未知';
+            } else if (pr.outcome === 'client_default' && pr.projectedTokens != null) {
+              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
+            } else if (pr.outcome === 'dynamic_follow' && pr.projectedTokens != null) {
+              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
+            } else if (pr.projectedTokens != null) {
+              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens`;
+            } else {
+              val.textContent = '待验证';
+            }
+            row.appendChild(lbl);
+            row.appendChild(val);
+            rowNodes.push(row);
+          }
+          ctxUnifiedProjEl.replaceChildren(...rowNodes);
+          ctxUnifiedProjEl.hidden = false;
+        } else {
+          ctxUnifiedProjEl.hidden = true;
+        }
+      } else {
+        ctxUnifiedProjEl.hidden = true;
+      }
+    }
+
+    if (ctxCardTierCapsRowEl && ctxCardTierCapsEl) {
+      if (capSummary?.tierDetails?.length) {
+        ctxCardTierCapsRowEl.hidden = false;
+        const lines = capSummary.tierDetails.map(td => {
+          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || '标准');
+          const winTxt = td.maxTokens ? `窗口 ${fmt(td.maxTokens)}` : '窗口未知';
+          const outTxt = td.maxOutputTokens != null ? `最大输出 ${fmt(td.maxOutputTokens)}` : '输出未知';
+          const maxInTxt = (td.maxTokens && td.maxOutputTokens != null && td.maxTokens > td.maxOutputTokens)
+            ? `可调上限 ${fmt(td.maxTokens - td.maxOutputTokens)}`
+            : '上限未知';
+          return `${tierName}：${winTxt} / ${outTxt} / ${maxInTxt}`;
+        });
+        if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxCardTierCapsEl.replaceChildren === 'function') {
+          ctxCardTierCapsEl.replaceChildren(...lines.map(l => {
+            const d = document.createElement('div');
+            d.textContent = l;
+            return d;
+          }));
+        } else {
+          ctxCardTierCapsEl.textContent = lines.join(' | ');
+        }
+      } else {
+        ctxCardTierCapsRowEl.hidden = true;
+      }
+    }
+
+    // 1. 目标值（已保存）
+    if (ctxCardSavedEl) {
+      ctxCardSavedEl.textContent = pState.displayText;
+      ctxCardSavedEl.title = (pState.pref?.mode === 'fixed' && pState.pref.limitTokens)
+        ? `${fmt(pState.pref.limitTokens)} tokens`
+        : '';
+    }
+
+    // 2. 本次请求携带值
+    if (ctxCardRequestEl) {
+      ctxCardRequestEl.textContent = evalResult.requestText;
+      ctxCardRequestEl.title = evalResult.requestText;
+    }
+
+    // 3. 对应会话
+    if (ctxCardConvoEl) {
+      ctxCardConvoEl.textContent = evalResult.convoId;
+      ctxCardConvoEl.title = evalResult.convoId;
+    }
+
+    // 4. 生效诊断
+    if (ctxCardDiagnosisEl) {
+      ctxCardDiagnosisEl.textContent = evalResult.diagnosis;
+      ctxCardDiagnosisEl.title = evalResult.diagnosis;
+      ctxCardDiagnosisEl.className = `ctx-metric-value ctx-metric-diagnosis-val is-${evalResult.status}`;
+    }
+
+    // 5. 底座引擎（严格区分磁盘配置与当前运行进程已加载状态）
+    const statusInfo = mapUnlockDisplayStatus(currentUnlockStatus);
+    if (ctxCardClientEl) {
+      if (unlockStatusFetchError) {
+        ctxCardClientEl.textContent = t('status.badge.unavailable');
+      } else if (!currentUnlockStatus) {
+        ctxCardClientEl.textContent = t('status.badge.reading');
+      } else if (runtimePolicy?.runtimeState === 'pending_restart') {
+        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（待重启生效）`;
+      } else if (runtimePolicy?.runtimeState === 'runtime_unconfirmed') {
+        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（运行态未确认）`;
+      } else if (runtimePolicy?.runtimeState === 'partial') {
+        ctxCardClientEl.textContent = '部分异常（请核对客户端状态）';
+      } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'dynamic') {
+        ctxCardClientEl.textContent = '动态跟随已确认运行（各模型独立）';
+      } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
+        ctxCardClientEl.textContent = `固定单一上限模式 (${formatKShort(runtimePolicy.currentClientLimitTokens)}，建议升级为动态跟随)`;
+      } else {
+        ctxCardClientEl.textContent = describeClientModeValue(currentUnlockStatus);
+      }
+    }
+    if (ctxCardClientTagEl) {
+      if (unlockStatusFetchError || !currentUnlockStatus) {
+        ctxCardClientTagEl.hidden = true;
+      } else {
+        ctxCardClientTagEl.hidden = false;
+        ctxCardClientTagEl.textContent = statusInfo.badge;
+        ctxCardClientTagEl.className = `key-pill ${statusInfo.pillClass}`;
+      }
+    }
+
+    // 6. 实测预算 + 独立 serviceLimit
+    const { latestBudgetObs, latestServiceLimitObs } = findLatestProductObservation(product);
+    const preObs = findPreRestartBudgetForProduct(product);
+    if (ctxCardObservedBudgetEl) {
+      if (pendingRestartVerification && !latestBudgetObs && preObs) {
+        ctxCardObservedBudgetEl.textContent = t('models.card.observedWaitRestart');
+        ctxCardObservedBudgetEl.title = '';
+      } else if (latestBudgetObs?.budget > 0) {
+        const effTxt = latestBudgetObs.effort ? ` · ${formatEffortZh(latestBudgetObs.effort)}` : '';
+        const tTxt = latestBudgetObs.ts ? ` · ${formatMonthDayTime(latestBudgetObs.ts)}` : '';
+        ctxCardObservedBudgetEl.textContent = `${formatKShort(latestBudgetObs.budget)}${effTxt}${tTxt}`;
+        ctxCardObservedBudgetEl.title = t('models.card.observedTitle', { val: fmt(latestBudgetObs.budget) });
+      } else {
+        ctxCardObservedBudgetEl.textContent = t('models.card.observedBudgetNone');
+        ctxCardObservedBudgetEl.title = '';
+      }
+    }
+    if (ctxCardPreRestartBudgetEl) {
+      if (!latestBudgetObs && preObs?.budget > 0) {
+        const effTxt = preObs.effort ? ` · ${formatEffortZh(preObs.effort)}` : '';
+        const tTxt = preObs.ts ? ` · ${formatMonthDayTime(preObs.ts)}` : '';
+        ctxCardPreRestartBudgetEl.textContent = `${t('models.card.preRestartTitle', { val: formatKShort(preObs.budget) }).replace(/ tokens$/, '')}${effTxt}${tTxt}`;
+        ctxCardPreRestartBudgetEl.title = t('models.card.preRestartTitle', { val: fmt(preObs.budget) });
+        ctxCardPreRestartBudgetEl.hidden = false;
+      } else {
+        ctxCardPreRestartBudgetEl.title = '';
+        ctxCardPreRestartBudgetEl.hidden = true;
+      }
+    }
+    if (ctxCardServiceLimitEl) {
+      if (latestServiceLimitObs?.serviceLimit > 0) {
+        const tTxt = latestServiceLimitObs.ts ? `（${formatMonthDayTime(latestServiceLimitObs.ts)}）` : '';
+        ctxCardServiceLimitEl.textContent = `${t('models.card.serviceLimit', { val: formatKShort(latestServiceLimitObs.serviceLimit) })}${tTxt}`;
+        ctxCardServiceLimitEl.title = t('models.card.serviceLimitTitle', { val: fmt(latestServiceLimitObs.serviceLimit) });
+        ctxCardServiceLimitEl.hidden = false;
+      } else {
+        ctxCardServiceLimitEl.title = '';
+        ctxCardServiceLimitEl.hidden = true;
+      }
+    }
+
+    // 7. 实测速度（按档位逐行显示中位数、样本数、时间，不跨档位借用）
+    if (ctxCardObservedSpeedEl) {
+      const mergedCalls = mergeAvailableSpeedCalls();
+      const summaryRows = typeof summarizeSpeedByModel === 'function'
+        ? summarizeSpeedByModel(mergedCalls, { days: 'all', cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [] })
+        : [];
+      const summaryByExact = new Map(summaryRows.map(r => [r.modelExactId, r]));
+      const members = product.members?.length ? product.members : [{ modelId: product.productKey, label: product.productLabel, effort: null }];
+      const lines = [];
+      for (const m of members) {
+        const stat = summaryByExact.get(m.modelId);
+        const prefix = m.effort ? `${formatEffortZh(m.effort)} ` : '';
+        if (stat && stat.medianTps != null) {
+          const tStr = stat.maxTs ? ` · ${formatMonthDayTime(stat.maxTs)}` : '';
+          const lowNote = stat.lowSample ? t('models.card.lowSampleParen') : '';
+          lines.push(t('models.card.speedLineText', { prefix, tps: stat.medianTps, count: stat.count, low: lowNote, ts: tStr }));
+        } else {
+          lines.push(`${prefix}${t('models.card.observedSpeedNone')}`);
+        }
+      }
+      if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxCardObservedSpeedEl.replaceChildren === 'function') {
+        const lineNodes = lines.map(txt => {
+          const d = document.createElement('div');
+          d.textContent = txt;
+          return d;
+        });
+        ctxCardObservedSpeedEl.replaceChildren(...lineNodes);
+      } else {
+        ctxCardObservedSpeedEl.textContent = lines.join(' | ');
+      }
+    }
+
+    // 8. 提示规则与 Notice 说明
+    if (ctxCardHintsEl) {
+      const hints = [];
+      if (product.notice) {
+        const nText = typeof product.notice === 'string' ? product.notice : (product.notice.message || JSON.stringify(product.notice));
+        hints.push(`模型提示：${nText}`);
+      }
+      if (product.unavailable && product.unavailabilityReason) {
+        hints.push(`不可用原因：${product.unavailabilityReason}`);
+      } else if (product.partialUnavailable && product.unavailabilityReason) {
+        hints.push(`部分档位受限：${product.unavailabilityReason}`);
+      }
+      if (
+        currentUnlockStatus?.configuredMode === 'fixed' &&
+        currentUnlockStatus.configuredLimitTokens &&
+        pState.pref &&
+        !(pState.pref.mode === 'fixed' && Number(pState.pref.limitTokens) === Number(currentUnlockStatus.configuredLimitTokens))
+      ) {
+        hints.push(t('models.card.hintDiffClient'));
+      }
+      if (pState.pref?.mode === 'dynamic') {
+        hints.push(t('models.validation.dynamicDesc'));
+      }
+      if (
+        currentUnlockStatus?.configuredMode === 'fixed' &&
+        currentUnlockStatus.configuredLimitTokens > 0 &&
+        latestBudgetObs?.budget > 0 &&
+        latestBudgetObs.budget < currentUnlockStatus.configuredLimitTokens
+      ) {
+        hints.push(t('models.card.hintBelowSet'));
+      }
+      if (hints.length > 0) {
+        ctxCardHintsEl.hidden = false;
+        if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxCardHintsEl.replaceChildren === 'function') {
+          const nodes = hints.map(h => {
+            const div = document.createElement('div');
+            div.className = 'ctx-card-hint-item';
+            div.textContent = h;
+            return div;
+          });
+          ctxCardHintsEl.replaceChildren(...nodes);
+        } else {
+          ctxCardHintsEl.textContent = hints.join(' ');
+        }
+      } else {
+        ctxCardHintsEl.hidden = true;
+      }
+    }
+
+    // 9. 精简主界面展示：当前模式、当前模型、目标设置与状态
+    if (ctxSummaryModeEl) {
+      ctxSummaryModeEl.textContent = contextScopeMode === 'unified'
+        ? (t('models.mode.unifiedTitle') || '所有模型统一设置')
+        : (t('models.mode.perModelTitle') || '按模型分别设置');
+    }
+    if (ctxSummaryModelEl) {
+      if (contextScopeMode === 'unified') {
+        ctxSummaryModelEl.textContent = t('models.summary.unifiedTarget') || '所有模型（统一生效）';
+      } else if (activeSessionModelConfirmed && activeSessionProductKey === product.productKey) {
+        ctxSummaryModelEl.textContent = product.productLabel;
+      } else if (activeSessionModelConfirmed && activeSessionProductKey) {
+        const cur = getKnownModelProducts().find(p => p.productKey === activeSessionProductKey);
+        ctxSummaryModelEl.textContent = cur ? cur.productLabel : product.productLabel;
+      } else if (product) {
+        ctxSummaryModelEl.textContent = product.productLabel;
+      } else {
+        ctxSummaryModelEl.textContent = '待确认';
+      }
+    }
+    if (ctxSummaryLengthEl) {
+      ctxSummaryLengthEl.textContent = evalResult.targetText;
+    }
+    if (ctxSummaryStatusPillEl) {
+      if (needsRestartAfterApply) {
+        ctxSummaryStatusPillEl.hidden = false;
+        ctxSummaryStatusPillEl.textContent = t('models.summary.pendingRestart') || '待重启生效';
+        ctxSummaryStatusPillEl.className = 'key-pill pill-warn';
+      } else {
+        ctxSummaryStatusPillEl.hidden = false;
+        ctxSummaryStatusPillEl.textContent = evalResult.badge;
+        ctxSummaryStatusPillEl.className = `key-pill ${evalResult.pillClass}`;
+      }
+    }
+
+    if (btnSaveModelCtx) btnSaveModelCtx.disabled = (contextScopeMode === 'unified') ? false : !product;
+    if (btnResetModelCtx) btnResetModelCtx.disabled = (contextScopeMode === 'unified') ? false : !product;
+  }
+
+  function renderPresetSelectionUI() {
+    const targetMode = ctxDraft.mode;
+    const targetLimit = ctxDraft.limitTokens;
+    const isUnified = contextScopeMode === 'unified';
+    const currentProd = isUnified ? null : getSelectedProductObj();
+    const capSummary = currentProd ? getProductCapabilitySummary(currentProd) : null;
+    const knownEnvMax = (!isUnified && capSummary?.maxAdjustableTokens != null) ? capSummary.maxAdjustableTokens : null;
+    const knownModelMax = (!isUnified && capSummary?.modelTheoreticalMaxTokens != null) ? capSummary.modelTheoreticalMaxTokens : null;
+    const rp = capSummary?.runtimePolicy || resolveRuntimeUnlockPolicyClient();
+    const policyKnown = Boolean(rp?.policyKnown);
+
+    if (ctxPresetModelMaxSubEl) {
+      if (isUnified) {
+        ctxPresetModelMaxSubEl.textContent = '统一模式下各模型不同（已禁用）';
+      } else if (knownEnvMax != null) {
+        ctxPresetModelMaxSubEl.textContent = `当前环境最大可采纳：${fmt(knownEnvMax)} tokens`;
+      } else if (!policyKnown && knownModelMax != null) {
+        ctxPresetModelMaxSubEl.textContent = `运行策略未确认（模型理论上限 ${fmt(knownModelMax)}，暂不可用）`;
+      } else {
+        ctxPresetModelMaxSubEl.textContent = '模型元数据待获取（暂不可用）';
+      }
+    }
+
+    const btns = ctxPresetGrid?.children || [];
+    const applyPresetState = btn => {
+      if (!btn) return;
+      const bMode = btn.getAttribute?.('data-ctx-mode') || btn.dataset?.ctxMode;
+      const bLimRaw = btn.getAttribute?.('data-ctx-limit') ?? btn.dataset?.ctxLimit;
+      const bLim = bLimRaw ? Number(bLimRaw) : null;
+
+      let disabled = false;
+      let disableReason = '';
+      if (bMode === 'model_max') {
+        if (isUnified) {
+          disabled = true;
+          disableReason = '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。';
+        } else if (knownModelMax == null) {
+          disabled = true;
+          disableReason = '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。';
+        } else if (!policyKnown || knownEnvMax == null) {
+          disabled = true;
+          disableReason = '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。';
+        }
+      } else if (bMode === 'fixed' && bLim && knownModelMax != null && bLim > knownModelMax) {
+        disabled = true;
+        disableReason = `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`;
+      }
+
+      if ('disabled' in btn) btn.disabled = disabled;
+      if (btn.classList) {
+        if (disabled) btn.classList.add('is-disabled');
+        else btn.classList.remove('is-disabled');
+      }
+      if ('title' in btn) btn.title = disableReason;
+
+      const matched = !disabled && (
+        (bMode === 'model_max' && targetMode === 'fixed' && knownEnvMax != null && targetLimit === knownEnvMax) ||
+        (bMode === targetMode && (targetMode !== 'fixed' || bLim === targetLimit))
+      );
+      if (btn.classList) {
+        if (matched) btn.classList.add('active');
+        else btn.classList.remove('active');
+      }
+      btn.setAttribute?.('aria-pressed', String(Boolean(matched)));
+    };
+    if (typeof ctxPresetGrid?.querySelectorAll === 'function') {
+      const list = ctxPresetGrid.querySelectorAll('.ctx-preset-btn');
+      if (list && typeof list.length === 'number') {
+        for (let i = 0; i < list.length; i++) applyPresetState(list[i]);
+      }
+    } else if (Array.isArray(btns)) {
+      for (const b of btns) applyPresetState(b);
+    }
+
+    if (ctxCustomInput && 'value' in ctxCustomInput) {
+      if (targetMode === 'dynamic') {
+        ctxCustomInput.value = '';
+        ctxCustomInput.placeholder = t('models.input.phFollow');
+      } else if (targetMode === 'default') {
+        ctxCustomInput.value = '';
+        ctxCustomInput.placeholder = t('models.input.phDefault');
+      } else if (targetLimit != null) {
+        const cleanVal = String(targetLimit);
+        if (ctxCustomInput.value !== cleanVal && !ctxDraftDirty) {
+          ctxCustomInput.value = cleanVal;
+        }
+      }
+    }
+    updateValidationMessageUI();
+  }
+
+  function updateValidationMessageUI() {
+    if (!ctxValidationEl) return;
+    if (ctxDraft.mode === 'dynamic') {
+      ctxValidationEl.className = 'ctx-validation-msg';
+      ctxValidationEl.textContent = t('models.validation.dynamicDesc');
+      return;
+    }
+    if (ctxDraft.mode === 'default') {
+      ctxValidationEl.className = 'ctx-validation-msg';
+      ctxValidationEl.textContent = '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。';
+      return;
+    }
+    const rawVal = ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== ''
+      ? ctxCustomInput.value
+      : ctxDraft.limitTokens;
+    const val = validateCustomLimitClient(rawVal, 'fixed');
+    if (!val.ok) {
+      ctxValidationEl.className = 'ctx-validation-msg is-error';
+      ctxValidationEl.textContent = val.error;
+      return;
+    }
+    if (val.warnings && val.warnings.length > 0) {
+      ctxValidationEl.className = 'ctx-validation-msg is-warn';
+      ctxValidationEl.textContent = val.warnings.join(' ');
+      return;
+    }
+    ctxValidationEl.className = 'ctx-validation-msg';
+    ctxValidationEl.textContent = t('models.input.validFixed', { short: formatKShort(val.limitTokens), full: fmt(val.limitTokens) });
+  }
+
+  function loadDraftFromSelectedModel(forceResetDraft = false) {
+    if (!ctxDraftDirty || forceResetDraft) {
+      if (contextScopeMode === 'unified') {
+        const pref = contextUnifiedPreference;
+        if (pref && pref.mode) {
+          ctxDraft = {
+            mode: pref.mode || 'default',
+            limitTokens: pref.mode === 'fixed' ? (pref.limitTokens || null) : null
+          };
+        } else {
+          ctxDraft = { mode: 'default', limitTokens: null };
+        }
+      } else {
+        const prod = getSelectedProductObj();
+        const pState = resolveProductPreferenceState(prod);
+        const pref = pState.pref;
+        if (pref) {
+          ctxDraft = {
+            mode: pref.mode || 'default',
+            limitTokens: pref.mode === 'fixed' ? (pref.limitTokens || null) : null
+          };
+        } else {
+          const rp = resolveRuntimeUnlockPolicyClient();
+          if (rp?.policyKnown && rp.runtimeMode !== 'unknown' && rp.runtimeMode !== 'partial') {
+            ctxDraft = {
+              mode: rp.runtimeMode,
+              limitTokens: rp.runtimeMode === 'fixed' ? (rp.currentClientLimitTokens ?? null) : null
+            };
+          } else {
+            ctxDraft = { mode: 'default', limitTokens: null };
+          }
+        }
+      }
+      ctxDraftDirty = false;
+      if (ctxCustomInput && 'value' in ctxCustomInput) {
+        ctxCustomInput.value = (ctxDraft.mode === 'fixed' && ctxDraft.limitTokens != null) ? String(ctxDraft.limitTokens) : '';
+      }
+    }
+    renderModelSettingsTab();
+    renderPresetSelectionUI();
+  }
+
+  function renderModelSettingsTab() {
+    const products = getKnownModelProducts();
+    const currentProd = getSelectedProductObj();
+    if (btnModeUnified) {
+      if (contextScopeMode === 'unified') addClass(btnModeUnified, 'is-active');
+      else removeClass(btnModeUnified, 'is-active');
+      btnModeUnified.setAttribute('aria-checked', contextScopeMode === 'unified' ? 'true' : 'false');
+    }
+    if (btnModePerModel) {
+      if (contextScopeMode === 'per_model') addClass(btnModePerModel, 'is-active');
+      else removeClass(btnModePerModel, 'is-active');
+      btnModePerModel.setAttribute('aria-checked', contextScopeMode === 'per_model' ? 'true' : 'false');
+    }
+    if (ctxModelsToolbar) {
+      ctxModelsToolbar.hidden = (contextScopeMode === 'unified');
+    }
+    if (ctxModelListEl) {
+      ctxModelListEl.hidden = (contextScopeMode === 'unified');
+    }
+    renderCompactSessionCard();
+    renderClientStatusBar();
+    renderModelListGroup(products);
+    renderModelDetailCard(currentProd);
+    renderPresetSelectionUI();
+  }
+
+  function recordObservationFromSummary(summary, convoId, opts = {}) {
+    if (!summary) return;
+    const rawId = resolveStableModelKeyClient(summary);
+    if (!rawId && !summary.model) return;
+    const g = groupProductSafe({
+      modelId: rawId || summary.model,
+      label: summary.model || rawId,
+      modelOrAlias: summary.modelOrAlias,
+      effort: summary.effort
+    });
+    if (!g?.productKey) return;
+
+    if (budgetTracker && (summary.budget > 0 || summary.serviceLimit > 0 || opts.callId)) {
+      budgetTracker.recordObservation({
+        convoId: convoId || state.activeConversationId || state.route || null,
+        productKey: g.productKey,
+        modelId: rawId || g.productKey,
+        modelLabel: summary.model || g.productLabel,
+        effort: g.effort || summary.effort || null,
+        budget: Number(summary.budget || 0),
+        serviceLimit: Number(summary.serviceLimit || 0),
+        callId: opts.callId || null,
+        stepCount: Number.isFinite(opts.stepCount) ? opts.stepCount : -1,
+        ts: opts.ts || 0
+      });
+    }
+  }
+
+  function syncContextModelSelectionFromState() {
+    const prevProd = activeSessionProductKey;
+    const activeConvId = state.activeConversationId || state.conversationId || state.route || null;
+
+    // 1. 最高优先级：宿主输入框旁真实选中的模型（排除插件自身 DOM）
+    const hostSelected = extractHostSelectedModel();
+    let exactId = null;
+    let detectedProduct = null;
+    let detectedEffort = null;
+    let isConfirmed = false;
+
+    if (hostSelected && hostSelected.productKey) {
+      exactId = hostSelected.modelId;
+      detectedProduct = hostSelected.productKey;
+      detectedEffort = hostSelected.effort;
+      isConfirmed = true;
+    } else if (state.latest && activeConvId) {
+      // 2. 次优先级：检查 state.latest 是否属于当前活跃会话且非历史归档模型
+      const candidateId = resolveStableModelKeyClient(state.latest);
+      if (candidateId) {
+        const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+        const matchedCfg = Array.isArray(configs) && configs.length > 0
+          ? configs.find(c => (resolveStableModelKeyClient(c) || c.modelId) === candidateId)
+          : null;
+        const isAllowedInCatalog = Array.isArray(configs) && configs.length > 0
+          ? Boolean(matchedCfg && !matchedCfg.isHistorical)
+          : true;
+        if (isAllowedInCatalog) {
+          const g = groupProductSafe({
+            modelId: candidateId,
+            label: state.latest?.model || candidateId,
+            modelOrAlias: state.latest?.modelOrAlias,
+            effort: state.latest?.effort
+          });
+          exactId = candidateId;
+          detectedProduct = g.productKey;
+          detectedEffort = g.effort || state.latest?.effort || null;
+          isConfirmed = true;
+        }
+      }
+    }
+
+    if (isConfirmed && exactId && detectedProduct) {
+      activeSessionModelKey = exactId;
+      activeSessionProductKey = detectedProduct;
+      activeSessionEffort = detectedEffort;
+      activeSessionModelConfirmed = true;
+      // 严禁在此处用 Date.now() 伪造观测时间戳；仅当无观测记录且有明确后端快照时保留已有真实观测
+    } else {
+      activeSessionModelConfirmed = false;
+      activeSessionModelKey = null;
+      activeSessionProductKey = null;
+      activeSessionEffort = null;
+    }
+
+    if (activeSessionModelConfirmed && activeSessionProductKey && (!manualModelSelection || !selectedProductKey)) {
+      const switched = prevProd !== activeSessionProductKey || selectedProductKey !== activeSessionProductKey;
+      selectedProductKey = activeSessionProductKey;
+      selectedEditModelKey = activeSessionModelKey;
+      if (switched) {
+        ctxDraftDirty = false;
+        loadDraftFromSelectedModel(true);
+      }
+    }
+    renderHeaderModelDropdown();
+    renderCompactSessionCard();
+    if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
+    if (!isContextSettingsView && activeContextTab === 'models') {
+      renderModelSettingsTab();
+    } else if (!isContextSettingsView && activeContextTab === 'speed') {
+      renderSpeedComparisonTab();
+    }
+  }
+
+  ctxPresetGrid?.addEventListener('click', (e) => {
+    const btn = e?.target?.closest?.('.ctx-preset-btn');
+    if (!btn || btn.disabled) return;
+    const mode = btn.getAttribute?.('data-ctx-mode') || btn.dataset?.ctxMode || 'default';
+    const rawLim = btn.getAttribute?.('data-ctx-limit') ?? btn.dataset?.ctxLimit;
+    ctxDraftDirty = true;
+    if (mode === 'dynamic') {
+      ctxDraft = { mode: 'dynamic', limitTokens: null };
+    } else if (mode === 'default') {
+      ctxDraft = { mode: 'default', limitTokens: null };
+    } else if (mode === 'model_max') {
+      const prod = contextScopeMode === 'unified' ? null : getSelectedProductObj();
+      const cap = prod ? getProductCapabilitySummary(prod) : null;
+      if (!cap || !cap.runtimePolicy?.policyKnown || cap.maxAdjustableTokens == null) {
+        updateValidationMessageUI();
+        return;
+      }
+      ctxDraft = { mode: 'fixed', limitTokens: cap.maxAdjustableTokens };
+    } else {
+      const lim = Number(rawLim || 512000);
+      ctxDraft = { mode: 'fixed', limitTokens: lim };
+    }
+    if (ctxCustomInput && 'value' in ctxCustomInput) {
+      ctxCustomInput.value = (ctxDraft.mode === 'fixed' && ctxDraft.limitTokens != null) ? String(ctxDraft.limitTokens) : '';
+    }
+    if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
+    renderPresetSelectionUI();
+  });
+
+  ctxCustomInput?.addEventListener('input', () => {
+    const rawStr = String(ctxCustomInput.value || '').trim();
+    ctxDraftDirty = true;
+    if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
+    if (!rawStr) {
+      ctxDraft = { mode: 'fixed', limitTokens: null };
+      renderPresetSelectionUI();
+      return;
+    }
+    const val = validateCustomLimitClient(rawStr, 'fixed');
+    ctxDraft = {
+      mode: 'fixed',
+      limitTokens: val.ok ? val.limitTokens : null
+    };
+    renderPresetSelectionUI();
+  });
+
+  async function saveSettingsPayloadBridge(payload = {}) {
+    if (window.contextMeterAPI?.saveSettings) {
+      return await window.contextMeterAPI.saveSettings(payload);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const r = await fetch(`http://127.0.0.1:${live.port}/save-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify(payload)
+      });
+      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    }
+    return { ok: false, error: t('msg.noHostBridge') };
+  }
+
+  function showUnlockResultBox(isSuccess, html, opts = {}) {
+    if (!unlockResultBox || !unlockResultText) return;
+    unlockResultBox.style.display = 'block';
+    unlockResultBox.className = `unlock-result-box ${isSuccess ? 'result-success' : 'result-error'}`;
+    unlockResultText.innerHTML = html;
+    const canRestartHost = Boolean(hostSupportsRestart);
+    const needRestart = Boolean(opts.needsRestart);
+    const showRetry = Boolean(opts.showRetry);
+    if (btnUnlockResultRestart) btnUnlockResultRestart.hidden = !(needRestart && canRestartHost);
+    if (btnUnlockResultRetry) btnUnlockResultRetry.hidden = !showRetry;
+    if (unlockResultManual) unlockResultManual.hidden = !(needRestart && !canRestartHost);
+    if (unlockResultActions) unlockResultActions.hidden = !((needRestart && canRestartHost) || showRetry);
+  }
+
+  async function saveCurrentProductDraft() {
+    if (contextScopeMode === 'unified') {
+      const rawLimit = ctxDraft.mode === 'fixed'
+        ? (ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== '' ? ctxCustomInput.value : ctxDraft.limitTokens)
+        : ctxDraft.limitTokens;
+      const val = validateCustomLimitClient(rawLimit, ctxDraft.mode);
+      if (!val.ok) {
+        updateValidationMessageUI();
+        return { ok: false, error: val.error };
+      }
+      contextUnifiedPreference = {
+        modelId: 'unified',
+        mode: val.mode,
+        limitTokens: val.limitTokens,
+        updatedAt: new Date().toISOString()
+      };
+      const res = await saveSettingsPayloadBridge({
+        contextUnifiedPreference,
+        contextScopeMode: 'unified'
+      });
+      if (!res || !res.ok) {
+        return { ok: false, error: translateBackendText(res?.error) || t('msg.saveFail') };
+      }
+      syncContextPreferencesCache(contextPreferencesMap);
+      ctxDraftDirty = false;
+      renderModelSettingsTab();
+      let notice = null;
+      if (val.mode === 'fixed' && typeof budgetEngine.projectUnifiedBudgetForProducts === 'function') {
+        const projs = budgetEngine.projectUnifiedBudgetForProducts(contextUnifiedPreference, getKnownModelProducts().filter(p => p.inAccountCatalog), currentUnlockStatus, state.modelCapabilitiesById || null);
+        const clampedModel = projs.filter(p => p.outcome === 'clamped_to_model_max');
+        const clampedClient = projs.filter(p => p.outcome === 'exceeds_client_policy' || p.outcome === 'clamped_by_client_policy');
+        const unconfirmed = projs.filter(p => p.outcome === 'pending_restart_unconfirmed' || p.outcome === 'runtime_unconfirmed' || p.outcome === 'partial_policy_unconfirmed' || p.outcome === 'unknown_policy');
+        const msgParts = [];
+        if (clampedModel.length > 0) {
+          msgParts.push(`部分模型低于统一值：${clampedModel.map(c => `${c.productLabel}(上限 ${fmt(c.projectedTokens)})`).join('、')} 预计仅采用各自最大可用上限`);
+        }
+        if (clampedClient.length > 0) {
+          msgParts.push(`当前客户端限制为 ${fmt(clampedClient[0].clientLimitTokens)} tokens，超限模型预计仅保底 ${clampedClient.map(c => `${c.productLabel}(${fmt(c.projectedTokens)})`).join('、')}`);
+        }
+        if (unconfirmed.length > 0) {
+          msgParts.push('当前客户端运行策略尚未确认/待重启，统一值能否实机采用需后续发送请求验证');
+        }
+        if (msgParts.length > 0) {
+          notice = `已保存统一目标 ${fmt(val.limitTokens)} tokens。注意：${msgParts.join('；')}。`;
+        }
+      }
+      return { ok: true, prod: null, val, notice };
+    }
+
+    const prod = getSelectedProductObj();
+    if (!prod) {
+      return { ok: false, error: t('msg.noModelsDetected') };
+    }
+    const rawLimit = ctxDraft.mode === 'fixed'
+      ? (ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== '' ? ctxCustomInput.value : ctxDraft.limitTokens)
+      : ctxDraft.limitTokens;
+    const val = validateCustomLimitClient(rawLimit, ctxDraft.mode, prod);
+    if (!val.ok) {
+      updateValidationMessageUI();
+      return { ok: false, error: val.error };
+    }
+    if (val.exceedsModelLimit) {
+      updateValidationMessageUI();
+      const capSummary = getProductCapabilitySummary(prod);
+      const modelMaxCap = capSummary?.modelTheoreticalMaxTokens ?? val.adoptableTokens;
+      const capText = modelMaxCap != null ? `${fmt(modelMaxCap)} tokens` : '已知模型理论上限';
+      return {
+        ok: false,
+        error: `输入 ${fmt(val.limitTokens)} 超出 ${prod.productLabel} 模型理论输入上限 ${capText}（依据元数据：总窗口 - 最大输出）。请修改为 <= ${capText} 或重新选择合法档位，系统不会静默改写数值。`
+      };
+    }
+    const legacyKeys = resolveProductPreferenceState(prod).legacyKeys;
+    const thisSaveSeq = ++contextPrefSaveSeq;
+    const res = await saveSettingsPayloadBridge({
+      contextPreference: {
+        scope: 'product',
+        productKey: prod.productKey,
+        modelId: prod.productKey,
+        label: prod.productLabel,
+        mode: val.mode,
+        limitTokens: val.limitTokens,
+        clearLegacyKeys: legacyKeys
+      }
+    });
+    if (thisSaveSeq !== contextPrefSaveSeq) return { ok: false, stale: true };
+    if (!res || !res.ok) {
+      return { ok: false, error: translateBackendText(res?.error) || t('msg.saveFail') };
+    }
+    if (res.contextPreferences && typeof res.contextPreferences === 'object') {
+      contextPreferencesMap = { ...res.contextPreferences };
+    } else {
+      for (const lk of legacyKeys) delete contextPreferencesMap[lk];
+      contextPreferencesMap[prod.productKey] = {
+        scope: 'product',
+        productKey: prod.productKey,
+        modelId: prod.productKey,
+        label: prod.productLabel,
+        mode: val.mode,
+        limitTokens: val.limitTokens,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    syncContextPreferencesCache(contextPreferencesMap);
+    ctxDraftDirty = false;
+    renderHeaderModelDropdown();
+    renderModelSettingsTab();
+    return { ok: true, prod, val };
+  }
+
+  btnSaveModelCtx?.addEventListener('click', async () => {
+    if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
+    const res = await saveCurrentProductDraft();
+    if (res.stale) return;
+    if (!res.ok) {
+      showUnlockResultBox(false, res.error);
+      return;
+    }
+    showUnlockResultBox(true, res.notice || t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用');
+  });
+
+  btnResetModelCtx?.addEventListener('click', async () => {
+    if (contextScopeMode === 'unified') {
+      contextUnifiedPreference = {
+        modelId: 'unified',
+        mode: 'default',
+        limitTokens: null,
+        updatedAt: new Date().toISOString()
+      };
+      const res = await saveSettingsPayloadBridge({
+        contextUnifiedPreference: { mode: 'default' },
+        contextScopeMode: 'unified'
+      });
+      if (!res || !res.ok) {
+        showUnlockResultBox(false, t('msg.clearFail', { err: translateBackendText(res?.error) || t('msg.unknownErr') }));
+        return;
+      }
+      syncContextPreferencesCache(contextPreferencesMap);
+      ctxDraft = { mode: 'default', limitTokens: null };
+      ctxDraftDirty = false;
+      if (ctxCustomInput && 'value' in ctxCustomInput) ctxCustomInput.value = '';
+      renderModelSettingsTab();
+      renderPresetSelectionUI();
+      showUnlockResultBox(true, t('models.summary.modelDefault') || '已恢复默认值');
+      return;
+    }
+
+    const prod = getSelectedProductObj();
+    if (!prod) return;
+    const pState = resolveProductPreferenceState(prod);
+    const oldSavedPref = pState.pref;
+    const clearAll = [prod.productKey, ...pState.legacyKeys];
+    const thisSaveSeq = ++contextPrefSaveSeq;
+    const res = await saveSettingsPayloadBridge({
+      clearContextPreferences: clearAll
+    });
+    if (thisSaveSeq !== contextPrefSaveSeq) return;
+    if (!res || !res.ok) {
+      showUnlockResultBox(false, t('msg.clearFail', { err: translateBackendText(res?.error) || t('msg.unknownErr') }));
+      return;
+    }
+    if (res.contextPreferences && typeof res.contextPreferences === 'object') {
+      contextPreferencesMap = { ...res.contextPreferences };
+    } else {
+      for (const k of clearAll) delete contextPreferencesMap[k];
+    }
+    syncContextPreferencesCache(contextPreferencesMap);
+    ctxDraft = { mode: 'default', limitTokens: null };
+    ctxDraftDirty = false;
+    if (ctxCustomInput && 'value' in ctxCustomInput) ctxCustomInput.value = '';
+    renderHeaderModelDropdown();
+    renderModelSettingsTab();
+    renderPresetSelectionUI();
+
+    if (ctxResetNoticeEl) {
+      const clientUsingSame = oldSavedPref && currentUnlockStatus && (
+        (oldSavedPref.mode === 'dynamic' && currentUnlockStatus.configuredMode === 'dynamic') ||
+        (oldSavedPref.mode === 'fixed' && currentUnlockStatus.configuredMode === 'fixed' && Number(oldSavedPref.limitTokens) === Number(currentUnlockStatus.configuredLimitTokens))
+      );
+      if (clientUsingSame) {
+        const curVal = describeClientModeValue(currentUnlockStatus);
+        ctxResetNoticeEl.textContent = t('msg.resetStillUsing', { val: curVal });
+        ctxResetNoticeEl.hidden = false;
+      } else {
+        ctxResetNoticeEl.hidden = true;
+      }
+    }
+    showUnlockResultBox(true, t('msg.resetDefault'));
+  });
+
+  function setScopeMode(newMode) {
+    contextScopeMode = newMode === 'per_model' ? 'per_model' : 'unified';
+    if (btnModeUnified) {
+      if (contextScopeMode === 'unified') addClass(btnModeUnified, 'is-active');
+      else removeClass(btnModeUnified, 'is-active');
+      btnModeUnified.setAttribute('aria-checked', contextScopeMode === 'unified' ? 'true' : 'false');
+    }
+    if (btnModePerModel) {
+      if (contextScopeMode === 'per_model') addClass(btnModePerModel, 'is-active');
+      else removeClass(btnModePerModel, 'is-active');
+      btnModePerModel.setAttribute('aria-checked', contextScopeMode === 'per_model' ? 'true' : 'false');
+    }
+    if (ctxModelsToolbar) {
+      ctxModelsToolbar.hidden = (contextScopeMode === 'unified');
+    }
+    if (ctxModelListEl) {
+      ctxModelListEl.hidden = (contextScopeMode === 'unified');
+    }
+    syncContextPreferencesCache(contextPreferencesMap);
+    void saveSettingsPayloadBridge({ contextScopeMode });
+    loadDraftFromSelectedModel(true);
+    const prod = getSelectedProductObj();
+    if (prod) renderModelDetailCard(prod);
+  }
+
+  btnModeUnified?.addEventListener('click', () => setScopeMode('unified'));
+  btnModePerModel?.addEventListener('click', () => setScopeMode('per_model'));
 
   async function invokeUnlockApi(endpoint, payload = {}) {
     if (endpoint === 'status' && window.contextMeterAPI?.getContextUnlockStatus) {
@@ -1659,11 +5314,81 @@
       });
       return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
     }
-    return { ok: false, error: '未连接到桥接服务（请重启客户端生效新 IPC，或执行 node cli.js live）' };
+    return { ok: false, error: t('models.err.noApplyBridge') };
+  }
+
+  async function invokeRestartHostApi() {
+    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.restartHost === 'function') {
+      return await window.contextMeterAPI.restartHost();
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const r = await fetch(`http://127.0.0.1:${live.port}/restart-host`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: '{}'
+      });
+      return await r.json().catch(() => ({ ok: true, supported: false }));
+    }
+    return { ok: true, supported: false };
+  }
+
+  async function invokeEnhanceApi(endpoint, payload = {}) {
+    if (endpoint === 'status' && window.contextMeterAPI?.getEnhanceStatus) {
+      return await window.contextMeterAPI.getEnhanceStatus(payload);
+    }
+    if (endpoint === 'apply' && window.contextMeterAPI?.applyEnhancePatch) {
+      return await window.contextMeterAPI.applyEnhancePatch(payload);
+    }
+    if (endpoint === 'restore' && window.contextMeterAPI?.restoreAllEnhance) {
+      return await window.contextMeterAPI.restoreAllEnhance(payload);
+    }
+    if (endpoint === 'restart-ls' && window.contextMeterAPI?.restartLanguageServers) {
+      return await window.contextMeterAPI.restartLanguageServers(payload);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const routeMap = {
+        status: '/enhance-status',
+        apply: '/enhance-apply',
+        restore: '/enhance-restore',
+        'restart-ls': '/restart-language-servers'
+      };
+      const path = routeMap[endpoint];
+      if (path) {
+        const r = await fetch(`http://127.0.0.1:${live.port}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+          body: JSON.stringify(payload)
+        });
+        return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+      }
+    }
+    return { ok: false, errorKey: 'enhance.result.noBridge', error: t('enhance.result.noBridge'), unavailable: true };
+  }
+
+  async function invokeModulesApi(action, name, enable, opts = {}) {
+    if (action === 'status' && window.contextMeterAPI?.getModulesStatus) {
+      return await window.contextMeterAPI.getModulesStatus();
+    }
+    if (action === 'toggle' && window.contextMeterAPI?.toggleModule) {
+      return await window.contextMeterAPI.toggleModule(name, enable, opts);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const route = action === 'status' ? '/modules-status' : '/toggle-module';
+      const body = action === 'status' ? {} : { name, enable, opts };
+      const r = await fetch(`http://127.0.0.1:${live.port}${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify(body)
+      });
+      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    }
+    return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
   }
 
   async function refreshUnlockStatus() {
-    if (!unlockBadge) return;
     const thisSeq = ++unlockReqSeq;
     try {
       const currentObservedBudget = (state.latest?.budget && state.latest.budget > 0)
@@ -1673,73 +5398,107 @@
       if (thisSeq !== unlockReqSeq) return;
 
       if (!res || !res.ok || !res.data) {
-        unlockBadge.textContent = '检测失败';
-        unlockBadge.className = 'key-pill pill-danger';
-        if (unlockStatusDesc) unlockStatusDesc.textContent = res?.error || '获取后端状态失败。';
+        unlockStatusFetchError = true;
+        currentUnlockStatus = null;
+        if (unlockStatusDesc) unlockStatusDesc.textContent = t('status.client.unavailable');
+        renderCompactSessionCard();
+        renderClientStatusBar();
+        if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
         return;
       }
+
+      unlockStatusFetchError = false;
       const data = res.data;
       currentUnlockStatus = data;
-
-      unlockBadge.textContent = data.statusText || data.status;
-      if (data.status === 'verified_active') {
-        unlockBadge.className = 'key-pill pill-ok';
-      } else if (data.status === 'patched_runtime_unconfirmed') {
-        unlockBadge.className = 'key-pill pill-info';
-      } else if (data.status === 'patched_pending_restart') {
-        unlockBadge.className = 'key-pill pill-warn';
-      } else if (data.status === 'not_patched') {
-        unlockBadge.className = 'key-pill pill-muted';
-      } else {
-        unlockBadge.className = 'key-pill pill-danger';
+      lastPartialReason = data.partialMatchReason || data.error || '';
+      if (typeof data.hostSupportsRestart === 'boolean') {
+        hostSupportsRestart = data.hostSupportsRestart;
+      }
+      if (data.status === 'patched_pending_restart') {
+        needsRestartAfterApply = true;
+      } else if (data.status === 'patched_loaded' || data.status === 'not_patched') {
+        needsRestartAfterApply = false;
       }
 
-      if (unlockStatusDesc) {
-        unlockStatusDesc.textContent = data.details || data.reason || '状态已更新。';
-      }
-
-      if (unlockMetaTarget) unlockMetaTarget.textContent = data.targetPath || '未检测到';
-      if (unlockMetaArch) unlockMetaArch.textContent = `${data.arch || '未知'} (${data.format || '未知'}, ${data.mode || '未知'})`;
-      if (unlockMetaSha) unlockMetaSha.textContent = data.sha256 ? `${data.sha256.slice(0, 16)}…` : '—';
-      if (unlockMetaBackup) {
-        if (data.hasBackup && data.backupInfo) {
-          unlockMetaBackup.textContent = `已备份 (${data.backupInfo.backupPath})`;
-        } else {
-          unlockMetaBackup.textContent = '尚未备份（首次应用时将自动安全备份至应用目录外部）';
+      // 重启后校验核对
+      if (pendingRestartVerification) {
+        if (data.runtimeEvidence?.restartDetected === true) {
+          if (data.status === 'patched_loaded' && doesClientMatchVerification(data, pendingRestartVerification)) {
+            restartMismatchNotice = '';
+          } else {
+            restartMismatchNotice = t('models.status.restartMismatch', { actual: describeClientModeValue(data) });
+          }
+          pendingRestartVerification = null;
+          void saveSettingsPayloadBridge({ uiPreferences: { restartVerification: null } });
         }
       }
 
+      const statusInfo = mapUnlockDisplayStatus(data);
+      if (unlockStatusDesc) {
+        unlockStatusDesc.textContent = t('models.status.line', { badge: statusInfo.badge, mode: describeClientModeValue(data) });
+      }
+      if (unlockMetaMode) {
+        unlockMetaMode.textContent = `${describeClientModeValue(data)}（${statusInfo.badge}）`;
+      }
+      if (unlockMetaTarget) {
+        unlockMetaTarget.textContent = data.arch ? t('models.meta.targetDesktopArch', { arch: data.arch }) : t('models.meta.targetDesktop');
+      }
+      if (unlockMetaArch) unlockMetaArch.textContent = data.arch || t('models.meta.archUnknown');
+      if (unlockMetaBackup) {
+        unlockMetaBackup.textContent = data.hasBackup
+          ? (data.backupStaleReason ? t('models.meta.backupStale') : t('models.meta.backupReady'))
+          : t('models.meta.backupNone');
+      }
+
       if (btnApplyUnlock) {
-        if (data.status === 'not_patched') {
+        const writableStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
+        if (writableStatuses.has(data.status) && (!data.arch || data.arch === 'x86-64' || data.arch === 'arm64')) {
           btnApplyUnlock.disabled = false;
-          btnApplyUnlock.textContent = '⚡ 立即应用加长补丁';
-        } else if (data.status === 'verified_active') {
+          btnApplyUnlock.textContent = t('models.btn.saveApply');
+        } else if (data.status === 'partial_match') {
           btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '✅ 已生效（无需重复应用）';
-        } else if (data.status === 'patched_runtime_unconfirmed') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '🔍 补丁已写入（运行状态待确认）';
-        } else if (data.status === 'patched_pending_restart') {
-          btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⏳ 已打补丁（待重启客户端）';
+          btnApplyUnlock.textContent = t('models.btn.partialBlocked');
+        } else if (data.status === 'failed') {
+          btnApplyUnlock.disabled = false;
+          btnApplyUnlock.textContent = t('models.btn.retryApply');
         } else {
           btnApplyUnlock.disabled = true;
-          btnApplyUnlock.textContent = '⚠️ 当前目标不受支持';
+          btnApplyUnlock.textContent = t('models.btn.unsupported');
         }
       }
 
       if (btnRestoreUnlock) {
-        if (data.status === 'verified_active' || data.status === 'patched_pending_restart' || data.status === 'patched_runtime_unconfirmed' || data.hasBackup) {
-          btnRestoreUnlock.disabled = false;
-        } else {
-          btnRestoreUnlock.disabled = true;
-        }
+        btnRestoreUnlock.disabled = !(
+          (data.hasBackup && data.backupValidForCurrentBinary !== false) ||
+          data.hasMatchingGate3BSidecar ||
+          (data.status && data.status !== 'not_patched' && data.status !== 'unsupported')
+        );
       }
-    } catch (e) {
+
+      if (data.status === 'partial_match' && unlockResultBox && (!unlockResultBox.style.display || unlockResultBox.style.display === 'none')) {
+        showUnlockResultBox(
+          false,
+          t('models.card.partialFailDetail', { reason: translateBackendText(lastPartialReason) || '' }),
+          { showRetry: true }
+        );
+      }
+
+      if (!ctxDraftDirty && !resolveProductPreferenceState(getSelectedProductObj()).pref) {
+        loadDraftFromSelectedModel(false);
+      } else {
+        renderCompactSessionCard();
+        renderClientStatusBar();
+        if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
+      }
+      if (typeof syncEnhanceInteractiveDisabledState === 'function') {
+        syncEnhanceInteractiveDisabledState();
+      }
+    } catch {
       if (thisSeq !== unlockReqSeq) return;
-      unlockBadge.textContent = '异常';
-      unlockBadge.className = 'key-pill pill-danger';
-      if (unlockStatusDesc) unlockStatusDesc.textContent = `检测异常: ${e.message}`;
+      unlockStatusFetchError = true;
+      currentUnlockStatus = null;
+      renderCompactSessionCard();
+      renderClientStatusBar();
     }
   }
 
@@ -1747,61 +5506,564 @@
     void refreshUnlockStatus();
   });
 
+  function yieldForSettingsPaint() {
+    if (typeof requestAnimationFrame === 'function') {
+      return new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (typeof MessageChannel === 'function') {
+      return new Promise((resolve) => {
+        const mc = new MessageChannel();
+        mc.port1.onmessage = () => resolve();
+        mc.port2.postMessage(null);
+      });
+    }
+    return Promise.resolve();
+  }
+
   btnApplyUnlock?.addEventListener('click', async () => {
     if (isUnlocking) return;
+    if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
+    const saved = await saveCurrentProductDraft();
+    if (saved.stale) return;
+    if (!saved.ok) {
+      showUnlockResultBox(false, saved.error);
+      return;
+    }
+
     isUnlocking = true;
     if (btnApplyUnlock) btnApplyUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
+    if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
+    showUnlockResultBox(true, t('mod.processing'));
+    needsRestartAfterApply = false;
+    restartMismatchNotice = '';
 
     try {
-      const res = await invokeUnlockApi('apply');
+      await yieldForSettingsPaint();
+      // ELV-41: 底座统一应用为动态透传模式 (mov esi, edx)，使各模型设置能够独立生效，绝不把单一模型的数值固化进二进制
+      const res = await invokeUnlockApi('apply', {
+        mode: 'dynamic',
+        limitTokens: null,
+        serviceLimit: state.latest?.serviceLimit || undefined
+      });
       if (!res || !res.ok) {
-        throw new Error(res?.error || '应用补丁失败');
+        needsRestartAfterApply = false;
+        showUnlockResultBox(false, buildFriendlyWriteError(res?.error), { showRetry: true });
+        return;
       }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🎉 解锁成功！</strong><br>${res.message || '补丁已安全写入。'}`;
+      if (res.needsRestart === true) {
+        needsRestartAfterApply = true;
+        showUnlockResultBox(true, t('msg.appliedRestart'), { needsRestart: true });
+      } else if (res.alreadyMatched) {
+        needsRestartAfterApply = false;
+        showUnlockResultBox(true, '底座引擎已处于动态跟随状态。当前模型设置已保存，下一次发送时尝试应用。');
+      } else {
+        needsRestartAfterApply = false;
+        showUnlockResultBox(true, '已应用底座配置。当前模型设置已保存，下一次发送时尝试应用。');
       }
     } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 应用补丁失败：</strong>${e.message}`;
-      }
+      needsRestartAfterApply = false;
+      showUnlockResultBox(false, buildFriendlyWriteError(e?.message), { showRetry: true });
     } finally {
       isUnlocking = false;
+      if (btnApplyUnlock) btnApplyUnlock.disabled = false;
+      if (btnRestoreUnlock) btnRestoreUnlock.disabled = false;
       await refreshUnlockStatus();
+      if (!needsRestartAfterApply && currentUnlockStatus?.status === 'patched_pending_restart') {
+        needsRestartAfterApply = true;
+        renderClientStatusBar();
+      }
     }
   });
+
+  let isRestartInProgress = false;
+
+  async function executeClientRestart(fromModal = false) {
+    if (isRestartInProgress) return;
+    isRestartInProgress = true;
+    if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = true;
+    if (btnRestartConfirmGo) btnRestartConfirmGo.disabled = true;
+
+    // 记录重启前的观测快照（不保存草稿）
+    try {
+      const obsObj = budgetTracker ? { ...budgetTracker.exportAllObservationsByProduct() } : {};
+      for (const [mid, val] of observedByModelId.entries()) obsObj[mid] = val;
+      preRestartSnapshot = { requestedAt: new Date().toISOString(), observations: obsObj };
+      localStorage?.setItem(CTX_PRE_RESTART_OBS_KEY, JSON.stringify(preRestartSnapshot));
+    } catch { }
+
+    const feedbackEl = fromModal ? modalRestartFeedback : (modalRestartFeedback || ctxRestartFeedback);
+    if (feedbackEl) {
+      feedbackEl.textContent = t('client.restart.triggering');
+      feedbackEl.hidden = false;
+    }
+
+    const res = await invokeRestartHostApi();
+    if (!res || res.supported === false) {
+      hostSupportsRestart = false;
+      if (feedbackEl) {
+        feedbackEl.textContent = t('client.restart.hostNotSupported');
+        feedbackEl.hidden = false;
+      }
+      isRestartInProgress = false;
+      if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
+      if (btnRestartConfirmGo) btnRestartConfirmGo.disabled = false;
+      renderClientStatusBar();
+      return;
+    }
+    if (res.ok === false) {
+      if (feedbackEl) {
+        feedbackEl.textContent = t('client.restart.failed', { err: translateBackendText(res.error) || t('msg.unknownErr') });
+        feedbackEl.hidden = false;
+      }
+      isRestartInProgress = false;
+      if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
+      if (btnRestartConfirmGo) btnRestartConfirmGo.disabled = false;
+      return;
+    }
+
+    if (feedbackEl) {
+      feedbackEl.textContent = t('models.restart.restarting');
+      feedbackEl.hidden = false;
+    }
+    if (restartTimeoutTimer) clearTimeout(restartTimeoutTimer);
+    restartTimeoutTimer = setTimeout(() => {
+      if (!state.disposed && feedbackEl) {
+        feedbackEl.textContent = t('models.restart.notExited');
+        feedbackEl.hidden = false;
+      }
+      isRestartInProgress = false;
+      if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
+      if (btnRestartConfirmGo) btnRestartConfirmGo.disabled = false;
+    }, 15000);
+  }
+
+  function openClientRestartConfirmFlow() {
+    if (!hostSupportsRestart) {
+      showUnlockResultBox(true, t('client.restart.hostNotSupported'), { needsRestart: true });
+      return;
+    }
+    if (globalRestartModal) {
+      if (modalRestartFeedback) {
+        modalRestartFeedback.textContent = '';
+        modalRestartFeedback.hidden = true;
+      }
+      if (btnModalRestartConfirm) btnModalRestartConfirm.disabled = false;
+      isRestartInProgress = false;
+      globalRestartModal.hidden = false;
+      return;
+    }
+    if (ctxRestartConfirm) {
+      ctxRestartConfirm.hidden = false;
+      if (ctxRestartFeedback) ctxRestartFeedback.hidden = true;
+    }
+  }
+
+  btnRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
+  btnUnlockResultRestart?.addEventListener('click', openClientRestartConfirmFlow);
+  btnUnlockResultRetry?.addEventListener('click', () => {
+    if (unlockResultBox) unlockResultBox.style.display = 'none';
+    void refreshUnlockStatus();
+  });
+
+  btnModalRestartCancel?.addEventListener('click', () => {
+    if (globalRestartModal) globalRestartModal.hidden = true;
+  });
+  globalRestartModal?.addEventListener('click', (e) => {
+    if (e.target === globalRestartModal) {
+      globalRestartModal.hidden = true;
+    }
+  });
+
+  btnModalRestartConfirm?.addEventListener('click', () => executeClientRestart(true));
+
+  btnRestartCancel?.addEventListener('click', () => {
+    if (ctxRestartConfirm) ctxRestartConfirm.hidden = true;
+  });
+
+  btnRestartConfirmGo?.addEventListener('click', () => executeClientRestart(false));
 
   btnRestoreUnlock?.addEventListener('click', async () => {
     if (isUnlocking) return;
     isUnlocking = true;
     if (btnRestoreUnlock) btnRestoreUnlock.disabled = true;
-    if (unlockResultBox) unlockResultBox.style.display = 'none';
+    if (btnApplyUnlock) btnApplyUnlock.disabled = true;
+    showUnlockResultBox(true, t('mod.processing'));
 
     try {
+      await yieldForSettingsPaint();
       const res = await invokeUnlockApi('restore');
       if (!res || !res.ok) {
-        throw new Error(res?.error || '恢复原版失败');
+        showUnlockResultBox(false, buildFriendlyWriteError(res?.error || t('msg.restoreFail')), { showRetry: true });
+        return;
       }
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-success';
-        unlockResultText.innerHTML = `<strong>🔄 恢复成功！</strong><br>${res.message || '已成功还原官方原版二进制。'}`;
-      }
+      needsRestartAfterApply = true;
+      showUnlockResultBox(true, t('msg.restoredRestart'), { needsRestart: true });
     } catch (e) {
-      if (unlockResultBox && unlockResultText) {
-        unlockResultBox.style.display = 'block';
-        unlockResultBox.className = 'unlock-result-box result-error';
-        unlockResultText.innerHTML = `<strong>❌ 恢复原版失败：</strong>${e.message}`;
-      }
+      showUnlockResultBox(false, buildFriendlyWriteError(e?.message), { showRetry: true });
     } finally {
       isUnlocking = false;
+      if (btnRestoreUnlock) btnRestoreUnlock.disabled = false;
+      if (btnApplyUnlock) btnApplyUnlock.disabled = false;
       await refreshUnlockStatus();
     }
   });
+
+  // -----------------------------------------------------------------------
+  // 速度对比分页与纯 SVG 图表渲染
+  // -----------------------------------------------------------------------
+  function isValidSpeedSampleSafe(c) {
+    if (typeof isValidSpeedSample === 'function') return isValidSpeedSample(c);
+    return Boolean(c && c.status === 'final' && !c.estimated && Number(c.outputTokens) > 0 && Number(c.durationSec) > 0 && Number(c.tps) > 0);
+  }
+
+  function mergeAvailableSpeedCalls() {
+    const byId = new Map();
+    const hist = Array.isArray(ANTIGRAVITY_TOKEN_DATA.speedRecords) ? ANTIGRAVITY_TOKEN_DATA.speedRecords : [];
+    for (const r of hist) {
+      if (r && r.callId) byId.set(r.callId, r);
+    }
+    const cur = Array.isArray(state.sessionCalls) ? state.sessionCalls : [];
+    for (const r of cur) {
+      if (!r || !r.callId) continue;
+      const prev = byId.get(r.callId);
+      if (!prev || (!isValidSpeedSampleSafe(prev) && isValidSpeedSampleSafe(r)) || Number(r.outputTokens || 0) > Number(prev.outputTokens || 0)) {
+        byId.set(r.callId, r);
+      }
+    }
+    return Array.from(byId.values());
+  }
+
+  function createSvgEl(tag, attrs = {}) {
+    const doc = typeof document !== 'undefined' ? document : null;
+    if (!doc) return null;
+    const node = typeof doc.createElementNS === 'function'
+      ? doc.createElementNS('http://www.w3.org/2000/svg', tag)
+      : (typeof doc.createElement === 'function' ? doc.createElement(tag) : null);
+    if (!node) return null;
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v != null && typeof node.setAttribute === 'function') node.setAttribute(k, String(v));
+    }
+    return node;
+  }
+
+  function renderSpeedBarChart(groups) {
+    const svg = el('speed-bar-svg');
+    const wrap = el('speed-bar-chart-wrap');
+    const emptyEl = el('speed-bar-empty');
+    const tooltip = el('speed-bar-tooltip');
+    const titleEl = el('speed-bar-title');
+
+    const metricTitleMap = { tps: t('speed.barTitle.tps'), ttft: t('speed.barTitle.ttft'), duration: t('speed.barTitle.duration') };
+    if (titleEl) titleEl.textContent = metricTitleMap[speedMetric] || t('speed.barTitle.tps');
+
+    if (!groups.length) {
+      if (emptyEl) emptyEl.hidden = false;
+      if (wrap) wrap.hidden = true;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+    if (wrap) wrap.hidden = false;
+    if (!svg || typeof svg.replaceChildren !== 'function') return;
+
+    const width = 420;
+    const rowH = 34;
+    const padTop = 8;
+    const padBottom = 10;
+    const labelW = 148;
+    const valW = 86;
+    const barAreaW = width - labelW - valW - 12;
+    const height = padTop + padBottom + groups.length * rowH;
+
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+
+    const getVal = g => speedMetric === 'ttft' ? g.medianTtft : speedMetric === 'duration' ? g.medianDuration : g.medianTps;
+    const maxVal = Math.max(...groups.map(g => getVal(g) || 0), 0.1);
+
+    const nodes = [];
+    groups.forEach((g, idx) => {
+      const y = padTop + idx * rowH;
+      const val = getVal(g) || 0;
+      const w = Math.max(4, (val / maxVal) * barAreaW);
+      const effText = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
+      const displayLabel = `${g.productLabel}${effText}`;
+      const unitStr = speedMetric === 'tps' ? `${val} tok/s` : t('speed.unitSec', { val });
+
+      const rowGrp = createSvgEl('g', { style: 'cursor:pointer' });
+      const bgHit = createSvgEl('rect', { x: 0, y, width, height: rowH - 4, rx: 4, fill: 'transparent' });
+      const dot = createSvgEl('circle', {
+        cx: 7,
+        cy: y + 14,
+        r: 3.5,
+        fill: VENDOR_DOT_COLORS[g.vendor] || '#8a8a94'
+      });
+      const lbl = createSvgEl('text', {
+        x: 15,
+        y: y + 18,
+        fill: 'var(--ag-text-primary, #ececef)',
+        'font-size': '10.5'
+      });
+      if (lbl) lbl.textContent = displayLabel.length > 20 ? displayLabel.slice(0, 19) + '…' : displayLabel;
+
+      const track = createSvgEl('rect', {
+        x: labelW,
+        y: y + 7,
+        width: barAreaW,
+        height: 14,
+        rx: 3,
+        fill: 'var(--ag-track-bg, rgba(255,255,255,0.08))'
+      });
+      const bar = createSvgEl('rect', {
+        x: labelW,
+        y: y + 7,
+        width: w.toFixed(1),
+        height: 14,
+        rx: 3,
+        fill: VENDOR_DOT_COLORS[g.vendor] || 'var(--ag-custom-speed, #38bdf8)',
+        opacity: g.lowSample ? '0.45' : '0.92'
+      });
+      const valTxt = createSvgEl('text', {
+        x: labelW + barAreaW + 6,
+        y: y + 18,
+        fill: g.lowSample ? 'var(--ag-text-muted, #8a8a94)' : 'var(--ag-text-secondary, #c8c8d0)',
+        'font-size': '10'
+      });
+      if (valTxt) valTxt.textContent = `${unitStr}${g.lowSample ? ` ${t('speed.lowSample')}` : ''}`;
+
+      if (rowGrp) {
+        if (bgHit) rowGrp.appendChild(bgHit);
+        if (dot) rowGrp.appendChild(dot);
+        if (lbl) rowGrp.appendChild(lbl);
+        if (track) rowGrp.appendChild(track);
+        if (bar) rowGrp.appendChild(bar);
+        if (valTxt) rowGrp.appendChild(valTxt);
+        rowGrp.addEventListener?.('mouseenter', () => {
+          if (!tooltip) return;
+          const rangeTxt = g.minTs && g.maxTs
+            ? `${formatMonthDayTime(g.minTs)} ~ ${formatMonthDayTime(g.maxTs)}`
+            : '—';
+          tooltip.innerHTML =
+            `<strong>${displayLabel}</strong><br>` +
+            `${t('speed.tip.samples', { n: g.count, low: g.lowSample ? t('models.card.lowSampleParen') : '' })}<br>` +
+            `${t('speed.tip.timeRange', { range: rangeTxt })}<br>` +
+            `${t('speed.tip.medOut', { val: fmt(g.medianOutputTokens) })}<br>` +
+            `${t('speed.tip.medIn', { val: fmt(g.medianInputTokens) })}`;
+          tooltip.hidden = false;
+          if (tooltip.style) {
+            tooltip.style.top = `${Math.max(4, y - 4)}px`;
+            tooltip.style.right = '8px';
+          }
+        });
+        rowGrp.addEventListener?.('mouseleave', () => {
+          if (tooltip) tooltip.hidden = true;
+        });
+        rowGrp.addEventListener?.('click', () => {
+          selectedSpeedExactModelId = g.modelExactId;
+          renderSpeedComparisonTab();
+        });
+        nodes.push(rowGrp);
+      }
+    });
+    svg.replaceChildren(...nodes);
+  }
+
+  function renderSpeedLineChart(selectedGroup) {
+    const svg = el('speed-line-svg');
+    const wrap = el('speed-line-chart-wrap');
+    const emptyEl = el('speed-line-empty');
+    const tooltip = el('speed-line-tooltip');
+
+    const samples = (selectedGroup?.samples || []).filter(s => s && s.tps > 0);
+    if (!samples.length) {
+      if (emptyEl) emptyEl.hidden = false;
+      if (wrap) wrap.hidden = true;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+    if (wrap) wrap.hidden = false;
+    if (!svg || typeof svg.replaceChildren !== 'function') return;
+
+    const width = 420;
+    const height = 148;
+    const padL = 38;
+    const padR = 14;
+    const padT = 14;
+    const padB = 24;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
+
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+
+    const maxTps = Math.max(...samples.map(s => Number(s.tps) || 0), 10);
+    const minTps = Math.max(0, Math.min(...samples.map(s => Number(s.tps) || 0)) * 0.8);
+    const spanTps = Math.max(1, maxTps - minTps);
+
+    const nodes = [];
+    // Y 轴参考线与刻度
+    [0, 0.5, 1].forEach(ratio => {
+      const y = padT + plotH * (1 - ratio);
+      const val = Math.round(minTps + spanTps * ratio);
+      const grid = createSvgEl('line', {
+        x1: padL, y1: y.toFixed(1), x2: width - padR, y2: y.toFixed(1),
+        stroke: 'var(--ag-border-subtle, rgba(255,255,255,0.08))', 'stroke-width': 1
+      });
+      const txt = createSvgEl('text', {
+        x: padL - 5, y: (y + 3).toFixed(1), 'text-anchor': 'end',
+        fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9.5'
+      });
+      if (txt) txt.textContent = String(val);
+      if (grid) nodes.push(grid);
+      if (txt) nodes.push(txt);
+    });
+
+    const pts = samples.map((s, idx) => {
+      const x = samples.length === 1 ? padL + plotW / 2 : padL + (idx / (samples.length - 1)) * plotW;
+      const y = padT + plotH * (1 - ((Number(s.tps) - minTps) / spanTps));
+      return { x, y, sample: s };
+    });
+
+    if (pts.length >= 2) {
+      const dAttr = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+      const path = createSvgEl('path', {
+        d: dAttr, fill: 'none',
+        stroke: VENDOR_DOT_COLORS[selectedGroup.vendor] || 'var(--ag-custom-speed, #38bdf8)',
+        'stroke-width': 1.8
+      });
+      if (path) nodes.push(path);
+    }
+
+    pts.forEach((pt, idx) => {
+      const circle = createSvgEl('circle', {
+        cx: pt.x.toFixed(1),
+        cy: pt.y.toFixed(1),
+        r: 3.5,
+        fill: VENDOR_DOT_COLORS[selectedGroup.vendor] || 'var(--ag-custom-speed, #38bdf8)',
+        stroke: 'var(--ag-bg-panel, #181818)',
+        'stroke-width': 1.2,
+        style: 'cursor:pointer'
+      });
+      if (circle) {
+        circle.addEventListener?.('mouseenter', () => {
+          if (!tooltip) return;
+          const s = pt.sample;
+          const originTxt = s.origin === 'speed-test' ? t('speed.originProbe') : t('speed.origin.chat');
+          const ttftTxt = s.ttftSec != null ? t('speed.unitSec', { val: s.ttftSec }) : t('speed.unknown');
+          tooltip.innerHTML =
+            `<strong>${t('speed.tip.tpsLine', { idx: idx + 1, tps: s.tps })}</strong><br>` +
+            `${t('speed.tip.time', { val: formatMonthDayTime(s.ts || s.createdAt) || '—' })}<br>` +
+            `${t('speed.tip.output', { val: fmt(s.outputTokens) })}<br>` +
+            `${t('speed.tip.ttft', { val: ttftTxt })}<br>` +
+            `${t('speed.tip.origin', { val: originTxt })}`;
+          tooltip.hidden = false;
+          if (tooltip.style) {
+            tooltip.style.top = '6px';
+            tooltip.style.right = '8px';
+          }
+        });
+        circle.addEventListener?.('mouseleave', () => {
+          if (tooltip) tooltip.hidden = true;
+        });
+        nodes.push(circle);
+      }
+    });
+
+    const firstLbl = createSvgEl('text', { x: padL, y: height - 6, fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9.5' });
+    if (firstLbl) firstLbl.textContent = formatMonthDayTime(samples[0].ts || samples[0].createdAt) || '#1';
+    const lastLbl = createSvgEl('text', { x: width - padR, y: height - 6, 'text-anchor': 'end', fill: 'var(--ag-text-muted, #8a8a94)', 'font-size': '9.5' });
+    if (lastLbl && samples.length > 1) lastLbl.textContent = formatMonthDayTime(samples[samples.length - 1].ts || samples[samples.length - 1].createdAt) || `#${samples.length}`;
+    if (firstLbl) nodes.push(firstLbl);
+    if (lastLbl) nodes.push(lastLbl);
+
+    svg.replaceChildren(...nodes);
+  }
+
+  let lastSpeedGroups = [];
+
+  function renderSpeedComparisonTab() {
+    const mergedCalls = mergeAvailableSpeedCalls();
+    const daysArg = speedRangeDays === 'all' ? 'all' : Number(speedRangeDays);
+    const groups = typeof summarizeSpeedByModel === 'function'
+      ? summarizeSpeedByModel(mergedCalls, {
+        days: daysArg,
+        origin: speedOriginFilter,
+        metric: speedMetric,
+        cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || []
+      })
+      : [];
+    lastSpeedGroups = groups;
+
+    renderSpeedBarChart(groups);
+
+    if (!selectedSpeedExactModelId || !groups.some(g => g.modelExactId === selectedSpeedExactModelId)) {
+      selectedSpeedExactModelId = groups[0]?.modelExactId || null;
+    }
+    const chosenGroup = groups.find(g => g.modelExactId === selectedSpeedExactModelId) || null;
+    const speedDropLabel = el('speed-model-dropdown-label');
+    if (speedDropLabel) {
+      if (chosenGroup) {
+        const effStr = chosenGroup.effort ? ` (${formatEffortZh(chosenGroup.effort)})` : '';
+        speedDropLabel.textContent = `${chosenGroup.productLabel}${effStr}`;
+      } else {
+        speedDropLabel.textContent = t('speed.lineNoModel');
+      }
+    }
+
+    if (!speedModelDropdownCtrl && typeof initDropdownController === 'function' && el('speed-model-dropdown-wrap')) {
+      speedModelDropdownCtrl = initDropdownController({
+        wrapId: 'speed-model-dropdown-wrap',
+        triggerId: 'speed-model-dropdown-trigger',
+        labelId: 'speed-model-dropdown-label',
+        menuId: 'speed-model-dropdown-menu',
+        emptyLabel: () => t('speed.lineNoModel'),
+        searchPlaceholder: () => t('dropdown.speedSearch'),
+        emptyText: () => t('dropdown.speedEmpty'),
+        getSelectedValue: () => selectedSpeedExactModelId || '',
+        onSelect: (opt) => {
+          const val = opt?.value || '';
+          if (!val) return;
+          selectedSpeedExactModelId = val;
+          renderSpeedComparisonTab();
+        },
+        getOptions: () => lastSpeedGroups.map(g => {
+          const effStr = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
+          return {
+            value: g.modelExactId,
+            label: `${g.productLabel}${effStr}`,
+            displayRight: t('speed.samples', { n: g.count })
+          };
+        })
+      });
+    } else if (speedModelDropdownCtrl && typeof speedModelDropdownCtrl.refresh === 'function') {
+      speedModelDropdownCtrl.refresh();
+    }
+
+    renderSpeedLineChart(chosenGroup);
+  }
+
+  const SPEED_RANGE_MAP = { 'speed-range-7d': '7', 'speed-range-30d': '30', 'speed-range-all': 'all' };
+  const SPEED_ORIGIN_MAP = { 'speed-origin-all': 'all', 'speed-origin-chat': 'chat' };
+  const SPEED_METRIC_MAP = { 'speed-metric-tps': 'tps', 'speed-metric-ttft': 'ttft', 'speed-metric-duration': 'duration' };
+
+  function bindSpeedFilterGroup(map, onPick) {
+    const ids = Object.keys(map);
+    ids.forEach(id => {
+      el(id)?.addEventListener('click', () => {
+        const val = map[id];
+        onPick(val);
+        ids.forEach(k => setPillActive(el(k), map[k] === val));
+        renderSpeedComparisonTab();
+      });
+    });
+  }
+
+  bindSpeedFilterGroup(SPEED_RANGE_MAP, v => { speedRangeDays = v; });
+  bindSpeedFilterGroup(SPEED_ORIGIN_MAP, v => { speedOriginFilter = v; });
+  bindSpeedFilterGroup(SPEED_METRIC_MAP, v => { speedMetric = v; });
+
+  applyContextViewVisibility();
 
   const UNLOCK_POST_URL = 'https://linux.do/t/topic/3117832';
   let unlockToastTimer = null;
@@ -1823,17 +6085,17 @@
         const res = await window.contextMeterAPI.openExternal(UNLOCK_POST_URL);
         if (res && res.ok) opened = true;
       }
-    } catch {}
+    } catch { }
 
     if (!opened) {
       try {
         const w = window.open(UNLOCK_POST_URL, '_blank');
         if (w) opened = true;
-      } catch {}
+      } catch { }
     }
 
     if (opened) {
-      showUnlockToast('已在系统默认浏览器中打开原作者帖子');
+      showUnlockToast(t('models.linkOpened'));
     } else {
       copyUnlockPostUrl(true);
     }
@@ -1846,7 +6108,7 @@
         navigator.clipboard.writeText(UNLOCK_POST_URL);
         copied = true;
       }
-    } catch {}
+    } catch { }
     if (!copied) {
       try {
         const ta = document.createElement('textarea');
@@ -1856,11 +6118,11 @@
         document.execCommand('copy');
         document.body.removeChild(ta);
         copied = true;
-      } catch {}
+      } catch { }
     }
     showUnlockToast(fromFailedOpen
-      ? '无法直接唤起外部浏览器，原作者帖子链接已复制到剪贴板，可直接在浏览器粘贴访问。'
-      : '原作者帖子链接已成功复制到剪贴板！');
+      ? t('models.linkCopyFallback')
+      : t('models.copyOk'));
   }
 
   linkUnlockAuthor?.addEventListener('click', (e) => {
@@ -1884,6 +6146,173 @@
   });
 
   // -------------------------------------------------------------
+  // -------------------------------------------------------------
+  // 模块 1.5: 插件面板语言 (Context Meter) 与客户端语言 (Antigravity)
+  // -------------------------------------------------------------
+  const panelLangBtns = {
+    'zh-CN': el('btn-panel-lang-zh-CN'),
+    'zh-TW': el('btn-panel-lang-zh-TW'),
+    en: el('btn-panel-lang-en')
+  };
+  const panelTopLangBtns = {
+    'zh-CN': el('btn-top-lang-zh-CN'),
+    'zh-TW': el('btn-top-lang-zh-TW'),
+    en: el('btn-top-lang-en')
+  };
+  const panelLangSaveBadge = el('panel-lang-save-badge');
+  const btnClientLangZhCn = el('btn-client-lang-zh-CN');
+  const btnClientLangEn = el('btn-client-lang-en');
+
+  function syncPanelLanguageButtons(lang) {
+    const normalized = normalizePanelLanguage(lang);
+    for (const [k, btn] of Object.entries(panelLangBtns)) {
+      if (!btn) continue;
+      const active = k === normalized;
+      if (active) addClass(btn, 'active');
+      else removeClass(btn, 'active');
+      btn.setAttribute?.('aria-pressed', String(active));
+    }
+    for (const [k, btn] of Object.entries(panelTopLangBtns)) {
+      if (!btn) continue;
+      const active = k === normalized;
+      if (active) addClass(btn, 'active');
+      else removeClass(btn, 'active');
+      btn.setAttribute?.('aria-pressed', String(active));
+      btn.setAttribute?.('aria-selected', String(active));
+    }
+  }
+
+  function syncClientLanguageButtons() {
+    if (btnClientLangZhCn) {
+      if (currentChineseEnabled) addClass(btnClientLangZhCn, 'active');
+      else removeClass(btnClientLangZhCn, 'active');
+      btnClientLangZhCn.setAttribute?.('aria-pressed', String(currentChineseEnabled));
+    }
+    if (btnClientLangEn) {
+      if (!currentChineseEnabled) addClass(btnClientLangEn, 'active');
+      else removeClass(btnClientLangEn, 'active');
+      btnClientLangEn.setAttribute?.('aria-pressed', String(!currentChineseEnabled));
+    }
+  }
+
+  async function applyPanelLanguage(lang, opts = {}) {
+    const nextLang = normalizePanelLanguage(lang);
+    const persist = opts.persist !== false;
+    setPanelLanguageInternal(nextLang);
+    syncPanelLanguageButtons(nextLang);
+    applyStaticPanelTranslations(shadow);
+
+    try {
+      if (colorDrawerArrow && colorDrawerBody) {
+        const open = colorDrawerBody.style.display === 'block';
+        colorDrawerArrow.textContent = open ? t('drawer.colors.collapse') : t('drawer.colors.expand');
+      }
+      if (drawerArrow && drawerBody) {
+        const open = drawerBody.style.display === 'block';
+        drawerArrow.textContent = open ? t('session.techDrawer.collapse') : t('session.techDrawer.expand');
+      }
+      if (tokenColorDrawerArrow && tokenColorDrawerBody) {
+        const open = tokenColorDrawerBody.style.display === 'block';
+        tokenColorDrawerArrow.textContent = open ? t('drawer.colors.collapse') : t('drawer.colors.expand');
+      }
+      if (cardDrawerArrow && cardDrawerBody) {
+        const open = cardDrawerBody.style.display === 'block';
+        cardDrawerArrow.textContent = open ? t('session.techDrawer.collapse') : t('session.techDrawer.expand');
+      }
+      if (unlockDrawerArrow && unlockDrawerBody) {
+        const open = unlockDrawerBody.style.display === 'block';
+        unlockDrawerArrow.textContent = open ? t('drawer.collapse') : t('drawer.expand');
+      }
+      if (proxyDrawerArrow && proxyDrawerBody) {
+        const open = proxyDrawerBody.style.display === 'block';
+        proxyDrawerArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+      }
+      if (chineseDrawerArrow && chineseDrawerBody) {
+        const open = chineseDrawerBody.style.display === 'block';
+        chineseDrawerArrow.textContent = open ? t('drawer.collapse') : t('drawer.expand');
+      }
+      const btnCostDet = el('btn-cost-details-toggle');
+      const costDetBody = el('cost-details-pane');
+      if (btnCostDet && costDetBody) {
+        const open = costDetBody.style.display === 'block';
+        btnCostDet.textContent = open ? t('cost.btnCollapse') : t('cost.btnExpand');
+      }
+      const btnPlanDet = el('btn-plan-detail-toggle');
+      if (btnPlanDet) {
+        btnPlanDet.textContent = planDetailExpanded ? t('plan.detail.toggleClose') : t('plan.detail.toggleOpen');
+      }
+    } catch { }
+    try { if (typeof applyTheme === 'function') applyTheme(); } catch { }
+    try { render(); } catch { }
+    try { renderSessionCost(); } catch { }
+    try { if (typeof renderQuotaBoard === 'function') renderQuotaBoard(); } catch { }
+    try { renderHeaderModelDropdown(); } catch { }
+    try { renderModelSettingsTab(); } catch { }
+    try { renderSpeedComparisonTab(); } catch { }
+    try { if (currentUnlockStatus) { renderClientStatusBar(); renderCompactSessionCard(); } } catch { }
+    try {
+      if (typeof renderPlanDetail === 'function' && ANTIGRAVITY_TOKEN_DATA?.planStatus) {
+        renderPlanDetail(ANTIGRAVITY_TOKEN_DATA.planStatus);
+      } else {
+        const pv = el('plan-summary-price-val');
+        if (pv && /^\$19\.99\/(月|mo)$/.test(String(pv.textContent || '').trim())) {
+          pv.textContent = `$19.99${t('plan.summary.perMonth')}`;
+        }
+      }
+      if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
+      if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
+      if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
+      if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
+    } catch { }
+    try {
+      if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
+      if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
+    } catch { }
+    try {
+      if (isChineseExpanded || isProxyExpanded || isContextSettingsView) {
+        void refreshModulesDisplay();
+      }
+      if (isContextSettingsView && typeof refreshEnhanceStatus === 'function') {
+        void refreshEnhanceStatus(false);
+      }
+    } catch { }
+    try {
+      if (typeof applyTokenHistoryPayload === 'function' && ANTIGRAVITY_TOKEN_DATA) {
+        applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA);
+      }
+    } catch { }
+
+    if (persist) {
+      userActionSeq++;
+      try { localStorage?.setItem('ag_panel_language', nextLang); } catch { }
+      const res = await saveSettingsPayloadBridge({
+        panelLanguage: nextLang,
+        uiPreferences: { panelLanguage: nextLang }
+      });
+      if (panelLangSaveBadge) {
+        panelLangSaveBadge.textContent = res?.ok ? t('settings.panelLang.saved') : t('settings.panelLang.saveLocal');
+        panelLangSaveBadge.className = `key-pill ${res?.ok ? 'pill-ok' : 'pill-warn'}`;
+        panelLangSaveBadge.hidden = false;
+      }
+    }
+  }
+
+  function setPanelLanguageInternal(lang) {
+    currentPanelLanguage = normalizePanelLanguage(lang);
+  }
+
+  for (const [langCode, btn] of Object.entries(panelLangBtns)) {
+    btn?.addEventListener('click', () => {
+      void applyPanelLanguage(langCode, { persist: true });
+    });
+  }
+
+  for (const [langCode, btn] of Object.entries(panelTopLangBtns)) {
+    btn?.addEventListener('click', () => {
+      void applyPanelLanguage(langCode, { persist: true });
+    });
+  }
+
   // 模块 2: 客户端界面汉化 (AntigravityChinese)
   // -------------------------------------------------------------
   const btnToggleChinese = el('btn-toggle-chinese');
@@ -1899,8 +6328,8 @@
 
   function syncChineseCheckboxes(enabled) {
     const val = enabled !== false;
-    const chk1 = el('check-sidecar-chinese');
-    const chk2 = el('check-sidecar-chinese-tokens');
+    const chk1 = el('check-live-chinese');
+    const chk2 = el('check-live-chinese-tokens');
     if (chk1) chk1.checked = val;
     if (chk2) chk2.checked = val;
   }
@@ -1922,7 +6351,7 @@
   btnToggleChinese?.addEventListener('click', () => {
     isChineseExpanded = !isChineseExpanded;
     if (chineseDrawerBody) chineseDrawerBody.style.display = isChineseExpanded ? 'block' : 'none';
-    if (chineseDrawerArrow) chineseDrawerArrow.textContent = isChineseExpanded ? '▲ 收起' : '▼ 展开';
+    if (chineseDrawerArrow) chineseDrawerArrow.textContent = isChineseExpanded ? t('drawer.collapse') : t('drawer.expand');
     btnToggleChinese?.setAttribute('aria-expanded', String(isChineseExpanded));
     if (isChineseExpanded) {
       void refreshModulesDisplay();
@@ -1940,59 +6369,1142 @@
   const inputProxyUrl = el('input-proxy-url');
   const inputProxyBypass = el('input-proxy-bypass');
   const btnTestProxy = el('btn-test-proxy');
+  const btnSaveProxyConfig = el('btn-save-proxy-config');
   const btnToggleProxyModule = el('btn-toggle-proxy-module');
   const proxyTestResult = el('proxy-test-result');
 
   let isProxyExpanded = false;
   let currentProxyEnabled = false;
+  let proxyInputDirty = false;
+  let savedProxyUrl = '';
+  let savedProxyBypass = '';
+  let isProxyBusy = false;
+  let modulesStatusReqSeq = 0;
+
+  function proxyInputsDifferFromSaved() {
+    const curUrl = String(inputProxyUrl?.value ?? '').trim();
+    const curBypass = String(inputProxyBypass?.value ?? '').trim();
+    return Boolean(
+      (curUrl && curUrl !== savedProxyUrl) ||
+      (curBypass !== savedProxyBypass)
+    );
+  }
+
+  function syncProxySaveButtonState() {
+    if (!btnSaveProxyConfig) return;
+    const show = Boolean(currentProxyEnabled && (proxyInputDirty || proxyInputsDifferFromSaved()));
+    btnSaveProxyConfig.hidden = !show;
+    btnSaveProxyConfig.disabled = Boolean(isProxyBusy);
+    btnSaveProxyConfig.textContent = isProxyBusy ? t('mod.proxy.btnSaving') : t('mod.proxy.btnSave');
+  }
+
+  inputProxyUrl?.addEventListener('input', () => {
+    proxyInputDirty = true;
+    syncProxySaveButtonState();
+  });
+  inputProxyBypass?.addEventListener('input', () => {
+    proxyInputDirty = true;
+    syncProxySaveButtonState();
+  });
+
+  async function invokeTestProxyApi(proxyUrl) {
+    if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.testProxy === 'function') {
+      return await window.contextMeterAPI.testProxy(proxyUrl);
+    }
+    if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+      const live = window.__AGContextMeterLive;
+      const r = await fetch(`http://127.0.0.1:${live.port}/test-proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+        body: JSON.stringify({ proxyUrl })
+      });
+      return await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    }
+    return { ok: false, error: t('msg.noHostBridge'), unavailable: true };
+  }
 
   btnToggleProxy?.addEventListener('click', () => {
     isProxyExpanded = !isProxyExpanded;
     if (proxyDrawerBody) proxyDrawerBody.style.display = isProxyExpanded ? 'block' : 'none';
-    if (proxyDrawerArrow) proxyDrawerArrow.textContent = isProxyExpanded ? '▲ 收起' : '▼ 展开';
+    if (proxyDrawerArrow) proxyDrawerArrow.textContent = isProxyExpanded ? t('drawer.shortCollapse') : t('drawer.shortExpand');
     btnToggleProxy?.setAttribute('aria-expanded', String(isProxyExpanded));
+    if (isProxyExpanded) {
+      void refreshModulesDisplay();
+    }
   });
 
-  // 判定宿主界面是否已翻译：定向检查系统导航、活动栏、菜单及操作按钮等固有系统壳层（排除用户消息内容区域）
-  function detectHostDomTranslated() {
-    if (typeof window.__AGY_I18N_DATA__ !== 'undefined' || typeof window.__AGY_TRANSLATE_EL__ !== 'undefined') {
+  // -------------------------------------------------------------
+  // 模块 3.5: 系统增强、提示词档位、品牌与推荐配置控制器 (PR #3 / PR #4 融合)
+  // -------------------------------------------------------------
+  const btnEnhancePresetApply = el('btn-enhance-preset-apply');
+  const btnEnhanceRestoreAll = el('btn-enhance-restore-all');
+  const enhanceGlobalBadge = el('enhance-global-badge');
+  const enhancePresetConfirm = el('enhance-preset-confirm');
+  const enhanceConfirmTitle = el('enhance-preset-confirm-text');
+  const btnEnhanceConfirmCancel = el('btn-enhance-confirm-cancel');
+  const btnEnhanceConfirmGo = el('btn-enhance-confirm-go');
+  const enhanceGlobalResult = el('enhance-global-result');
+  const enhanceResultText = el('enhance-global-result-text');
+  const enhanceResultActions = el('enhance-global-result-actions');
+  const enhanceManualNote = el('enhance-global-manual-note');
+  const btnEnhanceRestartHost = el('btn-enhance-restart-host');
+  const btnEnhanceRestartLs = el('btn-enhance-restart-ls');
+
+  const chkPresetPrompt = el('chk-rec-prompt');
+  const chkPresetTitle = el('chk-rec-title');
+  const chkPresetLang = el('chk-rec-lang');
+  const chkPresetCtx = el('chk-rec-ctx');
+
+  const brandTitleBtns = {
+    english: el('btn-brand-english'),
+    hidden: el('btn-brand-hidden'),
+    translated: el('btn-brand-translated')
+  };
+
+  const enhancePromptBadge = el('enhance-prompt-badge');
+  const enhanceStatPrompt = el('enhance-stat-prompt');
+  const enhanceStatTitle = el('enhance-stat-title');
+  const enhanceStatSlots = el('enhance-stat-slots');
+  const enhanceStatBackup = el('enhance-stat-backup');
+  const enhanceTierGrid = el('enhance-tier-grid');
+  const enhanceTierBtns = [0, 1, 2, 3, 4].map(n =>
+    el(`enhance-tier-${n}`) || enhanceTierGrid?.querySelector?.(`[data-enhance-tier="${n}"]`) || null
+  );
+  const enhanceTierSummary = el('enhance-tier-matrix-title');
+  const enhanceTierCurrentDesc = el('enhance-tier-current-desc');
+  const enhanceTierKeeps = el('enhance-tier-keeps');
+  const enhanceTierClears = el('enhance-tier-clears');
+  const enhanceTierReplaces = el('enhance-tier-replaces');
+  const enhanceTierMeaning = el('enhance-tier-meaning');
+  const btnApplyBrandTitle = el('btn-apply-brand-title');
+  const brandApplyFeedback = el('brand-apply-feedback');
+  const enhanceChineseTitleCheck = el('chk-enhance-chinese-title');
+  const btnApplyEnhancePrompt = el('btn-enhance-apply-prompt');
+  const btnRefreshEnhance = el('btn-enhance-refresh');
+  const enhancePromptResult = el('enhance-prompt-result');
+  const enhancePromptResultText = el('enhance-prompt-result-text');
+  const btnToggleEnhanceDetails = el('btn-toggle-enhance-details');
+  const enhanceDetailsBody = el('enhance-details-body');
+  const enhanceDetailsArrow = el('enhance-details-arrow');
+  const enhanceBinaryList = el('enhance-binary-list');
+
+  let currentBrandTitle = 'english';
+  let currentEnhanceStatus = null;
+  let selectedEnhanceTier = 0;
+  let enhanceTitleDraft = false;
+  let enhanceTierDirty = false;
+  let enhanceTitleDirty = false;
+  let enhanceStatusReqSeq = 0;
+  let pendingEnhanceConfirmMode = null; // 'preset' | 'restore' | null
+  let isEnhanceBusy = false;
+  let isLsRestartBusy = false;
+  let hasPendingLsReload = false;
+  let enhanceGlobalResultState = null; // { ok, resolveMessage, opts }
+  let enhancePromptResultState = null; // { ok, resolveMessage }
+  let brandFeedbackState = null;       // { mode, isSuccess, resolveMessage, isApplied }
+  let lastProxyTestState = null;       // { pending, thrownErr, res }
+
+  function syncBrandTitleButtons(mode = currentBrandTitle) {
+    for (const [k, btn] of Object.entries(brandTitleBtns)) {
+      if (!btn) continue;
+      const active = k === mode;
+      if (active) addClass(btn, 'active');
+      else removeClass(btn, 'active');
+      btn.setAttribute?.('aria-pressed', String(active));
+    }
+  }
+
+  function renderEnhancePromptMatrix(tier = selectedEnhanceTier) {
+    const idx = [0, 1, 2, 3, 4].includes(Number(tier)) ? Number(tier) : 0;
+    const allTierBtns = enhanceTierGrid?.querySelectorAll?.('[data-enhance-tier]') || enhanceTierBtns.filter(Boolean);
+    allTierBtns.forEach?.((btn) => {
+      const bIdx = Number(btn.getAttribute?.('data-enhance-tier'));
+      const active = bIdx === idx;
+      if (active) addClass(btn, 'active');
+      else removeClass(btn, 'active');
+      btn.setAttribute?.('aria-pressed', String(active));
+    });
+    if (enhanceTierSummary) enhanceTierSummary.textContent = t(`enhance.tier.${idx}.desc`);
+    if (enhanceTierCurrentDesc) enhanceTierCurrentDesc.textContent = t(`enhance.tier.${idx}.desc`);
+    if (enhanceTierKeeps) enhanceTierKeeps.textContent = t(`enhance.tier.${idx}.keeps`);
+    if (enhanceTierClears) enhanceTierClears.textContent = t(`enhance.tier.${idx}.clears`);
+    if (enhanceTierReplaces) enhanceTierReplaces.textContent = t(`enhance.tier.${idx}.replaces`);
+    if (enhanceTierMeaning) enhanceTierMeaning.textContent = t(`enhance.tier.${idx}.meaning`);
+  }
+
+  function syncEnhanceInteractiveDisabledState() {
+    const unsupported = Boolean(currentEnhanceStatus && currentEnhanceStatus.supported === false);
+    const lockPromptControls = Boolean(isEnhanceBusy || unsupported);
+    const allTierBtns = enhanceTierGrid?.querySelectorAll?.('[data-enhance-tier]') || enhanceTierBtns.filter(Boolean);
+    allTierBtns.forEach?.((btn) => {
+      btn.disabled = lockPromptControls;
+    });
+    if (enhanceChineseTitleCheck) enhanceChineseTitleCheck.disabled = lockPromptControls;
+    if (btnApplyEnhancePrompt) btnApplyEnhancePrompt.disabled = lockPromptControls;
+    if (btnRefreshEnhance) btnRefreshEnhance.disabled = Boolean(isEnhanceBusy);
+    if (btnEnhancePresetApply) btnEnhancePresetApply.disabled = Boolean(isEnhanceBusy);
+    if (btnEnhanceRestoreAll) btnEnhanceRestoreAll.disabled = Boolean(isEnhanceBusy);
+    if (btnEnhanceConfirmGo) btnEnhanceConfirmGo.disabled = Boolean(isEnhanceBusy);
+
+    if (currentEnhanceStatus) {
+      if (chkPresetPrompt) {
+        if (unsupported) chkPresetPrompt.checked = false;
+        chkPresetPrompt.disabled = lockPromptControls;
+      }
+      if (chkPresetTitle) {
+        if (unsupported) chkPresetTitle.checked = false;
+        chkPresetTitle.disabled = lockPromptControls;
+      }
+    }
+    const ctxUnsupported = Boolean(
+      currentUnlockStatus &&
+      currentUnlockStatus.isPlatformSupported === false &&
+      currentUnlockStatus.status === 'unsupported'
+    );
+    if (chkPresetCtx && currentUnlockStatus) {
+      if (ctxUnsupported) chkPresetCtx.checked = false;
+      chkPresetCtx.disabled = Boolean(isEnhanceBusy || ctxUnsupported);
+    }
+  }
+
+  function renderEnhanceSectionUI() {
+    syncBrandTitleButtons(currentBrandTitle);
+    renderEnhancePromptMatrix(selectedEnhanceTier);
+    syncEnhanceInteractiveDisabledState();
+
+    const data = currentEnhanceStatus;
+    const s = data?.summary || data;
+    const isUnsupported = Boolean(data && data.supported === false);
+    const tierNum = s?.promptTier ?? s?.detectedTier;
+    const hasTitle = Boolean(s?.chineseTitleEnabled);
+    const titleMode = s?.chineseTitleMode || (hasTitle ? 'zh' : 'en');
+    const slotCount = Number(s?.slotCount || 0);
+    const totalCap = Number(s?.totalCapacityBytes || 0);
+    const activeBytes = Number(s?.activeSlotBytes || 0);
+    const allBak = Boolean(s?.allBackedUp ?? s?.hasBackup);
+    const syncState = s?.syncState || null;
+    const targetsList = Array.isArray(data?.binaries) ? data.binaries : (Array.isArray(data?.targets) ? data.targets : []);
+    const hasUnsavedDraft = Boolean(
+      data &&
+      data.supported &&
+      !isUnsupported &&
+      ((enhanceTierDirty && Number(selectedEnhanceTier) !== Number(tierNum)) ||
+        (enhanceTitleDirty && Boolean(enhanceChineseTitleCheck ? enhanceChineseTitleCheck.checked : enhanceTitleDraft) !== hasTitle))
+    );
+
+    if (enhanceGlobalBadge) {
+      if (!data) {
+        enhanceGlobalBadge.textContent = t('enhance.status.unread');
+        enhanceGlobalBadge.className = 'key-pill pill-muted';
+      } else if (isUnsupported) {
+        enhanceGlobalBadge.textContent = t('enhance.status.unsupportedPlatform');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'client_updated_mismatch') {
+        enhanceGlobalBadge.textContent = t('enhance.status.clientUpdated');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'saved_disk_mismatch' || syncState === 'partial_mismatch') {
+        enhanceGlobalBadge.textContent = t('enhance.status.diskMismatch');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'pending_ls_restart' || hasPendingLsReload) {
+        enhanceGlobalBadge.textContent = t('enhance.status.pendingRestartLs');
+        enhanceGlobalBadge.className = 'key-pill pill-warn';
+      } else if (syncState === 'runtime_confirmed' && (Number(tierNum) > 0 || hasTitle)) {
+        enhanceGlobalBadge.textContent = t('enhance.status.runtimeConfirmed');
+        enhanceGlobalBadge.className = 'key-pill pill-ok';
+      } else if (Number(tierNum) > 0 || hasTitle) {
+        enhanceGlobalBadge.textContent = t('enhance.status.patchedActive');
+        enhanceGlobalBadge.className = 'key-pill pill-ok';
+      } else {
+        enhanceGlobalBadge.textContent = t('enhance.status.stock');
+        enhanceGlobalBadge.className = 'key-pill pill-muted';
+      }
+    }
+    if (enhancePromptBadge) {
+      if (!data) {
+        enhancePromptBadge.textContent = t('enhance.status.unread');
+        enhancePromptBadge.className = 'key-pill pill-muted';
+      } else if (isUnsupported) {
+        enhancePromptBadge.textContent = t('enhance.status.unsupportedPlatform');
+        enhancePromptBadge.className = 'key-pill pill-warn';
+      } else {
+        const baseText = [0, 1, 2, 3, 4].includes(Number(tierNum))
+          ? t(`enhance.tier.${tierNum}.short`)
+          : t('enhance.status.patchedActive');
+        enhancePromptBadge.textContent = hasUnsavedDraft ? `${baseText}${t('enhance.status.draftUnsaved')}` : baseText;
+        enhancePromptBadge.className = hasUnsavedDraft
+          ? 'key-pill pill-warn'
+          : (Number(tierNum) > 0 ? 'key-pill pill-ok' : 'key-pill pill-muted');
+      }
+    }
+    if (enhanceStatPrompt) {
+      if (!data) {
+        enhanceStatPrompt.textContent = t('enhance.status.unread');
+      } else if (isUnsupported) {
+        enhanceStatPrompt.textContent = t('enhance.status.unsupportedPlatform');
+      } else {
+        enhanceStatPrompt.textContent = [0, 1, 2, 3, 4].includes(Number(tierNum))
+          ? t(`enhance.tier.${tierNum}.short`)
+          : t('enhance.status.patchedActive');
+      }
+    }
+    if (enhanceStatTitle) {
+      if (!data) enhanceStatTitle.textContent = t('enhance.status.unread');
+      else if (isUnsupported) enhanceStatTitle.textContent = t('enhance.status.unsupportedPlatform');
+      else if (titleMode === 'zh' || hasTitle) {
+        enhanceStatTitle.textContent = (hasPendingLsReload || s?.pendingLsRestart)
+          ? t('enhance.titleState.onWritten')
+          : (syncState === 'runtime_confirmed' ? t('enhance.titleState.onConfirmed') : t('enhance.titleState.on'));
+      } else if (titleMode === 'mixed') enhanceStatTitle.textContent = t('enhance.titleState.conflict');
+      else enhanceStatTitle.textContent = t('enhance.titleState.off');
+    }
+    if (enhanceStatSlots) {
+      if (!data) {
+        enhanceStatSlots.textContent = t('enhance.status.unread');
+      } else if (isUnsupported) {
+        enhanceStatSlots.textContent = t('enhance.status.unsupportedPlatform');
+      } else if (totalCap <= 0) {
+        enhanceStatSlots.textContent = t('enhance.status.unread');
+      } else {
+        enhanceStatSlots.textContent = `${activeBytes} / ${totalCap} B (${slotCount})`;
+      }
+    }
+    if (enhanceStatBackup) {
+      if (!data) enhanceStatBackup.textContent = t('enhance.status.unread');
+      else if (isUnsupported) enhanceStatBackup.textContent = t('enhance.status.unsupportedPlatform');
+      else enhanceStatBackup.textContent = allBak ? t('enhance.status.backupYes') : t('enhance.status.backupNo');
+    }
+    if (enhanceBinaryList && targetsList.length) {
+      enhanceBinaryList.textContent = targetsList.map(tgt => `${tgt.label || tgt.id || ''}: ${tgt.path || tgt}${tgt.exists === false ? ' (missing)' : ''}`).join(' | ');
+    }
+    if (enhanceDetailsArrow && enhanceDetailsBody) {
+      const open = enhanceDetailsBody.style.display === 'block';
+      enhanceDetailsArrow.textContent = open ? t('drawer.shortCollapse') : t('drawer.shortExpand');
+    }
+  }
+
+  /** 获取用于操作反馈插值的品牌名称展示值 */
+  function getBrandDisplayValue(modeKey) {
+    if (modeKey === 'translated') return '反重力';
+    if (modeKey === 'hidden') return t('enhance.brand.hiddenValue');
+    return 'Antigravity';
+  }
+
+  /** 解析后端或增强桥接返回错误，兼容 errorKey 与后端原文翻译 */
+  function resolveSettingsErrorText(rawOrRes, fallbackKey = 'msg.unknownErr') {
+    if (rawOrRes && typeof rawOrRes === 'object') {
+      if (rawOrRes.errorKey) return t(rawOrRes.errorKey);
+      return translateBackendText(rawOrRes.error ?? rawOrRes.message) || t(fallbackKey);
+    }
+    return translateBackendText(rawOrRes) || t(fallbackKey);
+  }
+
+  function showEnhanceResultBox(ok, messageOrResolver, opts = {}) {
+    if (!enhanceGlobalResult || !enhanceResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    enhanceGlobalResultState = { ok, resolveMessage, opts };
+    enhanceGlobalResult.style.display = 'block';
+    enhanceGlobalResult.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
+    enhanceResultText.textContent = resolveMessage();
+    const needLs = Boolean(opts.needsLsRestart);
+    const needHost = Boolean(opts.needsHostRestart);
+    const canRestartHost = Boolean(hostSupportsRestart);
+    if (btnEnhanceRestartLs) btnEnhanceRestartLs.hidden = !needLs;
+    if (btnEnhanceRestartHost) btnEnhanceRestartHost.hidden = !(needHost && canRestartHost);
+    if (enhanceManualNote) enhanceManualNote.hidden = !(needHost && !canRestartHost);
+    if (enhanceResultActions) enhanceResultActions.hidden = !(needLs || (needHost && canRestartHost));
+  }
+
+  function showEnhancePromptResult(ok, messageOrResolver) {
+    if (!enhancePromptResult || !enhancePromptResultText) return;
+    const resolveMessage = typeof messageOrResolver === 'function'
+      ? messageOrResolver
+      : () => String(messageOrResolver ?? '');
+    enhancePromptResultState = { ok, resolveMessage };
+    enhancePromptResult.style.display = 'block';
+    enhancePromptResult.className = `unlock-result-box ${ok ? 'result-success' : 'result-error'}`;
+    enhancePromptResultText.textContent = resolveMessage();
+  }
+
+  function getSelectedPresetLabelResolvers() {
+    const resolvers = [];
+    if (chkPresetPrompt?.checked) resolvers.push(() => t('enhance.preset.itemPrompt'));
+    if (chkPresetTitle?.checked) resolvers.push(() => t('enhance.preset.itemTitle'));
+    if (chkPresetLang?.checked) resolvers.push(() => t('enhance.preset.itemLang'));
+    if (chkPresetCtx?.checked) resolvers.push(() => t('enhance.preset.itemCtx'));
+    return resolvers;
+  }
+
+  function renderEnhancePresetConfirmText() {
+    if (!enhancePresetConfirm || enhancePresetConfirm.hidden || !enhanceConfirmTitle || !pendingEnhanceConfirmMode) return;
+    if (pendingEnhanceConfirmMode === 'preset') {
+      const items = getSelectedPresetLabelResolvers().map(fn => fn()).join(t('list.sep'));
+      enhanceConfirmTitle.textContent = t('enhance.confirm.presetSummary', { items });
+    } else if (pendingEnhanceConfirmMode === 'restore') {
+      enhanceConfirmTitle.textContent = t('enhance.confirm.restoreSummary');
+    }
+  }
+
+  function renderProxyTestResultView() {
+    if (!proxyTestResult || !lastProxyTestState) return;
+    if (lastProxyTestState.pending) {
+      proxyTestResult.textContent = t('settings.proxy.testingDetail');
+      return;
+    }
+    if (lastProxyTestState.thrownErr) {
+      proxyTestResult.textContent = t('settings.proxy.testErr', { err: translateBackendText(lastProxyTestState.thrownErr) || t('msg.unknownErr') });
+      return;
+    }
+    const res = lastProxyTestState.res;
+    if (!res || !res.ok) {
+      proxyTestResult.textContent = t('settings.proxy.testFail', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
+      return;
+    }
+    const d = res.data;
+    proxyTestResult.innerHTML = `
+      ${t('settings.proxy.resFmt')}: ${d.configValid ? t('settings.proxy.resValid') : t('settings.proxy.resInvalid')}<br>
+      ${t('settings.proxy.resPort')}: ${d.proxyReachable ? t('settings.proxy.resReachable') : t('settings.proxy.resUnreachable')}<br>
+      ${t('settings.proxy.resNet')}: ${d.internetReachable ? t('settings.proxy.resOnline') : t('settings.proxy.resOffline')}<br>
+      ${t('settings.proxy.resModel')}: ${t('settings.proxy.resPending')}
+      ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${translateBackendText(d.error)}</span>` : ''}
+    `;
+  }
+
+  /** 面板语言切换后，同步更新设置页当前仍可见的动态操作反馈与确认提示 */
+  function rerenderSettingsFeedbacks() {
+    renderEnhancePresetConfirmText();
+    if (enhanceGlobalResultState && enhanceGlobalResult && enhanceGlobalResult.style.display && enhanceGlobalResult.style.display !== 'none') {
+      showEnhanceResultBox(enhanceGlobalResultState.ok, enhanceGlobalResultState.resolveMessage, enhanceGlobalResultState.opts);
+    }
+    if (enhancePromptResultState && enhancePromptResult && enhancePromptResult.style.display && enhancePromptResult.style.display !== 'none') {
+      showEnhancePromptResult(enhancePromptResultState.ok, enhancePromptResultState.resolveMessage);
+    }
+    if (brandFeedbackState && brandApplyFeedback && !brandApplyFeedback.hidden && brandApplyFeedback.style.display && brandApplyFeedback.style.display !== 'none') {
+      showBrandFeedback(brandFeedbackState.mode, brandFeedbackState.isSuccess, brandFeedbackState.resolveMessage, brandFeedbackState.isApplied);
+    }
+    if (lastProxyTestState && proxyTestResult && proxyTestResult.style.display && proxyTestResult.style.display !== 'none') {
+      renderProxyTestResultView();
+    }
+  }
+
+  function applyEnhanceStatusPayload(statusData, { syncDrafts = true, forceSyncDrafts = false } = {}) {
+    currentEnhanceStatus = statusData;
+    const s = statusData?.summary || statusData;
+    if (s && s.pendingLsRestart !== undefined) {
+      hasPendingLsReload = Boolean(s.pendingLsRestart);
+    }
+    const useSavedAfterUpdate = Boolean(s?.clientUpdatedSinceSave && [0, 1, 2, 3, 4].includes(Number(s?.savedPromptTier)));
+    if (syncDrafts && s && statusData?.supported !== false) {
+      if (forceSyncDrafts || !enhanceTierDirty) {
+        const tierVal = useSavedAfterUpdate ? s.savedPromptTier : (s.promptTier ?? s.detectedTier);
+        if ([0, 1, 2, 3, 4].includes(Number(tierVal))) {
+          selectedEnhanceTier = Number(tierVal);
+        }
+        if (forceSyncDrafts) enhanceTierDirty = false;
+      }
+      if (forceSyncDrafts || !enhanceTitleDirty) {
+        enhanceTitleDraft = useSavedAfterUpdate ? Boolean(s.savedChineseTitle) : Boolean(s.chineseTitleEnabled);
+        if (enhanceChineseTitleCheck) enhanceChineseTitleCheck.checked = enhanceTitleDraft;
+        if (forceSyncDrafts) enhanceTitleDirty = false;
+      }
+      if (useSavedAfterUpdate && (!enhancePromptResult || enhancePromptResult.style.display === 'none')) {
+        const savedTierSnap = Number(s.savedPromptTier);
+        const savedTitleSnap = Boolean(s.savedChineseTitle);
+        showEnhancePromptResult(false, () => t('enhance.result.clientUpdatedNotice', {
+          tier: t(`enhance.tier.${savedTierSnap}.short`),
+          title: savedTitleSnap ? t('enhance.titleState.on') : t('enhance.titleState.off')
+        }));
+      }
+    }
+    renderEnhanceSectionUI();
+  }
+
+  async function refreshEnhanceStatus(syncDrafts = true, { forceSyncDrafts = false, forceRefresh = false } = {}) {
+    const seq = ++enhanceStatusReqSeq;
+    try {
+      const res = await invokeEnhanceApi('status', forceRefresh ? { forceRefresh: true } : {});
+      if (seq !== enhanceStatusReqSeq) return;
+      if (res && res.ok && res.data) {
+        applyEnhanceStatusPayload(res.data, { syncDrafts, forceSyncDrafts });
+      } else if (res && res.unavailable) {
+        currentEnhanceStatus = { supported: false };
+        renderEnhanceSectionUI();
+      } else {
+        renderEnhanceSectionUI();
+      }
+    } catch {
+      if (seq !== enhanceStatusReqSeq) return;
+      currentEnhanceStatus = null;
+      renderEnhanceSectionUI();
+    }
+  }
+
+  for (let i = 0; i < enhanceTierBtns.length; i++) {
+    const btn = enhanceTierBtns[i];
+    btn?.addEventListener('click', () => {
+      if (isEnhanceBusy) return;
+      selectedEnhanceTier = i;
+      enhanceTierDirty = true;
+      renderEnhancePromptMatrix(i);
+      renderEnhanceSectionUI();
+    });
+  }
+
+  enhanceTierGrid?.addEventListener('click', (e) => {
+    if (isEnhanceBusy) return;
+    const btn = e?.target?.closest?.('[data-enhance-tier]');
+    if (!btn || btn.disabled) return;
+    const idx = Number(btn.getAttribute('data-enhance-tier'));
+    if (![0, 1, 2, 3, 4].includes(idx)) return;
+    selectedEnhanceTier = idx;
+    enhanceTierDirty = true;
+    renderEnhancePromptMatrix(idx);
+    renderEnhanceSectionUI();
+  });
+
+  enhanceChineseTitleCheck?.addEventListener('change', (e) => {
+    if (isEnhanceBusy) return;
+    enhanceTitleDraft = Boolean(e?.target?.checked);
+    enhanceTitleDirty = true;
+    renderEnhanceSectionUI();
+  });
+
+  btnToggleEnhanceDetails?.addEventListener('click', () => {
+    if (!enhanceDetailsBody) return;
+    const isHidden = enhanceDetailsBody.style.display === 'none' || !enhanceDetailsBody.style.display;
+    enhanceDetailsBody.style.display = isHidden ? 'block' : 'none';
+    btnToggleEnhanceDetails.setAttribute('aria-expanded', String(isHidden));
+    renderEnhanceSectionUI();
+  });
+
+  btnRefreshEnhance?.addEventListener('click', () => {
+    if (isEnhanceBusy) return;
+    void refreshEnhanceStatus(true, { forceSyncDrafts: true, forceRefresh: true });
+  });
+
+  btnApplyEnhancePrompt?.addEventListener('click', async () => {
+    if (isEnhanceBusy) return;
+    if (currentEnhanceStatus && currentEnhanceStatus.supported === false) {
+      showEnhancePromptResult(false, () => t('enhance.status.unsupportedPlatform'));
+      return;
+    }
+    const submittedTier = Number(selectedEnhanceTier);
+    const submittedTitle = enhanceChineseTitleCheck ? Boolean(enhanceChineseTitleCheck.checked) : Boolean(enhanceTitleDraft);
+    isEnhanceBusy = true;
+    syncEnhanceInteractiveDisabledState();
+    if (btnApplyEnhancePrompt) {
+      btnApplyEnhancePrompt.disabled = true;
+      btnApplyEnhancePrompt.textContent = t('enhance.btn.applyPromptBusy');
+    }
+    showEnhancePromptResult(true, () => t('enhance.btn.applyPromptBusy'));
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeEnhanceApi('apply', {
+        promptTier: submittedTier,
+        chineseTitle: submittedTitle,
+        restartLanguageServer: false
+      });
+      if (!res || !res.ok) {
+        const errPayload = res;
+        const resolveErr = () => t('enhance.result.fail', { err: resolveSettingsErrorText(errPayload, 'msg.unknownErr') });
+        showEnhancePromptResult(false, resolveErr);
+        showEnhanceResultBox(false, resolveErr);
+        await refreshEnhanceStatus(false);
+      } else {
+        const actualTier = [0, 1, 2, 3, 4].includes(Number(res.appliedPromptTier))
+          ? Number(res.appliedPromptTier)
+          : ([0, 1, 2, 3, 4].includes(Number(res.status?.summary?.promptTier)) ? Number(res.status.summary.promptTier) : submittedTier);
+        const actualTitle = res.appliedChineseTitleEnabled !== undefined
+          ? Boolean(res.appliedChineseTitleEnabled)
+          : (res.status?.summary?.chineseTitleEnabled !== undefined ? Boolean(res.status.summary.chineseTitleEnabled) : submittedTitle);
+        const changedAny = res.changed !== false;
+        const needLsRestart = res.needsRestart !== undefined ? Boolean(res.needsRestart) : changedAny;
+        hasPendingLsReload = needLsRestart;
+        enhanceTierDirty = false;
+        enhanceTitleDirty = false;
+
+        const resolveSuccess = (!changedAny && !needLsRestart)
+          ? () => t('enhance.result.alreadyApplied', {
+              tier: t(`enhance.tier.${actualTier}.short`),
+              title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
+            })
+          : () => t('enhance.result.appliedNeedRestartLs', {
+              tier: t(`enhance.tier.${actualTier}.short`),
+              title: actualTitle ? t('enhance.titleState.on') : t('enhance.titleState.off')
+            });
+        showEnhancePromptResult(true, resolveSuccess);
+        showEnhanceResultBox(true, resolveSuccess, { needsLsRestart: needLsRestart, needsHostRestart: false });
+        if (res.status) {
+          applyEnhanceStatusPayload(res.status, { syncDrafts: true, forceSyncDrafts: true });
+        } else {
+          await refreshEnhanceStatus(true, { forceSyncDrafts: true });
+        }
+      }
+    } catch (e) {
+      const rawErr = e?.message;
+      const resolveErr = () => t('enhance.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') });
+      showEnhancePromptResult(false, resolveErr);
+      showEnhanceResultBox(false, resolveErr);
+    } finally {
+      isEnhanceBusy = false;
+      if (btnApplyEnhancePrompt) {
+        btnApplyEnhancePrompt.textContent = t('enhance.btn.applyPrompt');
+      }
+      syncEnhanceInteractiveDisabledState();
+    }
+  });
+
+  btnEnhancePresetApply?.addEventListener('click', () => {
+    if (isEnhanceBusy) return;
+    const selectedResolvers = getSelectedPresetLabelResolvers();
+    if (!selectedResolvers.length) {
+      showEnhanceResultBox(false, () => t('enhance.confirm.noneSelected'));
+      return;
+    }
+    pendingEnhanceConfirmMode = 'preset';
+    if (enhancePresetConfirm) enhancePresetConfirm.hidden = false;
+    renderEnhancePresetConfirmText();
+  });
+
+  btnEnhanceRestoreAll?.addEventListener('click', () => {
+    if (isEnhanceBusy) return;
+    pendingEnhanceConfirmMode = 'restore';
+    if (enhancePresetConfirm) enhancePresetConfirm.hidden = false;
+    renderEnhancePresetConfirmText();
+  });
+
+  btnEnhanceConfirmCancel?.addEventListener('click', () => {
+    pendingEnhanceConfirmMode = null;
+    if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
+  });
+
+  btnEnhanceConfirmGo?.addEventListener('click', async () => {
+    const mode = pendingEnhanceConfirmMode;
+    pendingEnhanceConfirmMode = null;
+    if (enhancePresetConfirm) enhancePresetConfirm.hidden = true;
+    if (!mode || isEnhanceBusy) return;
+
+    const wantPrompt = Boolean(chkPresetPrompt?.checked);
+    const wantTitle = Boolean(chkPresetTitle?.checked);
+    const wantLang = Boolean(chkPresetLang?.checked);
+    const wantCtx = Boolean(chkPresetCtx?.checked);
+
+    isEnhanceBusy = true;
+    syncEnhanceInteractiveDisabledState();
+    showEnhanceResultBox(true, () => t(mode === 'restore' ? 'enhance.result.restoreWorking' : 'enhance.result.presetWorking'));
+
+    try {
+      await yieldForSettingsPaint();
+      const doneResolvers = [];
+      const failedResolvers = [];
+      let needsLsRestart = false;
+      let needsHostRestart = false;
+      let anyChanged = false;
+      let latestEnhanceStatus = null;
+
+      if (mode === 'preset') {
+        if (wantPrompt || wantTitle) {
+          const resolveItemLabel = () => [wantPrompt ? t('enhance.preset.itemPrompt') : '', wantTitle ? t('enhance.preset.itemTitle') : ''].filter(Boolean).join(t('list.sep'));
+          try {
+            const payload = {};
+            if (wantPrompt) payload.promptTier = 4;
+            if (wantTitle) payload.chineseTitle = true;
+            const eRes = await invokeEnhanceApi('apply', payload);
+            if (!eRes || !eRes.ok) {
+              const errPayload = eRes;
+              failedResolvers.push(() => `${resolveItemLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.unknownErr')}`);
+            } else {
+              if (wantPrompt) doneResolvers.push(() => t('enhance.preset.itemPrompt'));
+              if (wantTitle) doneResolvers.push(() => t('enhance.preset.itemTitle'));
+              if (eRes.changed !== false) anyChanged = true;
+              if (eRes.needsRestart !== false) needsLsRestart = true;
+              if (eRes.status) latestEnhanceStatus = eRes.status;
+              enhanceTierDirty = false;
+              enhanceTitleDirty = false;
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${resolveItemLabel()}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+          }
+        }
+
+        if (wantLang) {
+          try {
+            const lRes = await invokeModulesApi('toggle', 'chinese', true, {
+              language: 'zh-CN',
+              brandTitle: currentBrandTitle
+            });
+            if (!lRes || !lRes.ok) {
+              const errPayload = lRes;
+              failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemLang'));
+              anyChanged = true;
+              if (lRes.restartRequired !== false) needsHostRestart = true;
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${translateBackendText(rawErr) || t('mod.zh.toggleFail')}`);
+          }
+        }
+
+        if (wantCtx) {
+          try {
+            const cRes = await invokeUnlockApi('apply', { mode: 'dynamic', limitTokens: null });
+            if (!cRes || !cRes.ok) {
+              const rawErr = cRes?.error;
+              failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
+            } else {
+              doneResolvers.push(() => t('enhance.preset.itemCtx'));
+              if (!cRes.alreadyMatched) anyChanged = true;
+              if (cRes.needsRestart) needsHostRestart = true;
+            }
+          } catch (stepErr) {
+            const rawErr = stepErr?.message;
+            failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.unknownErr')}`);
+          }
+        }
+      } else if (mode === 'restore') {
+        const resolvePromptTitleLabel = () => `${t('enhance.preset.itemPrompt')} / ${t('enhance.preset.itemTitle')}`;
+        try {
+          const rRes = await invokeEnhanceApi('restore', {});
+          if (!rRes || !rRes.ok) {
+            const errPayload = rRes;
+            failedResolvers.push(() => `${resolvePromptTitleLabel()}: ${resolveSettingsErrorText(errPayload, 'msg.restoreFail')}`);
+          } else {
+            doneResolvers.push(resolvePromptTitleLabel);
+            if (rRes.needsRestart) needsLsRestart = true;
+            if (rRes.status) latestEnhanceStatus = rRes.status;
+            enhanceTierDirty = false;
+            enhanceTitleDirty = false;
+          }
+        } catch (stepErr) {
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${resolvePromptTitleLabel()}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
+        }
+
+        try {
+          const lRes = await invokeModulesApi('toggle', 'chinese', false, { language: 'en', brandTitle: 'english' });
+          if (!lRes || !lRes.ok) {
+            const errPayload = lRes;
+            failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail')}`);
+          } else {
+            currentBrandTitle = 'english';
+            doneResolvers.push(() => t('enhance.preset.itemLang'));
+            if (lRes.restartRequired !== false) needsHostRestart = true;
+          }
+        } catch (stepErr) {
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${t('enhance.preset.itemLang')}: ${translateBackendText(rawErr) || t('mod.zh.toggleFail')}`);
+        }
+
+        try {
+          const cRes = await invokeUnlockApi('restore', {});
+          if (!cRes || !cRes.ok) {
+            const rawErr = cRes?.error;
+            failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${buildFriendlyWriteError(rawErr)}`);
+          } else {
+            doneResolvers.push(() => t('enhance.preset.itemCtx'));
+            if (cRes.needsRestart) needsHostRestart = true;
+          }
+        } catch (stepErr) {
+          const rawErr = stepErr?.message;
+          failedResolvers.push(() => `${t('enhance.preset.itemCtx')}: ${translateBackendText(rawErr) || t('msg.restoreFail')}`);
+        }
+      }
+
+      if (needsHostRestart) needsRestartAfterApply = true;
+      if (needsLsRestart) hasPendingLsReload = true;
+
+      if (failedResolvers.length > 0) {
+        const resolveMsg = doneResolvers.length > 0
+          ? () => t('enhance.result.partialFail', {
+            done: doneResolvers.map(fn => fn()).join(t('list.sep')),
+            failed: failedResolvers.map(fn => fn()).join(t('list.semiSep'))
+          })
+          : () => t('enhance.result.fail', {
+            err: failedResolvers.map(fn => fn()).join(t('list.semiSep'))
+          });
+        showEnhanceResultBox(false, resolveMsg, { needsLsRestart, needsHostRestart });
+      } else if (mode === 'preset') {
+        const key = (!anyChanged && !needsLsRestart && !needsHostRestart)
+          ? 'enhance.result.presetAlreadyApplied'
+          : 'enhance.result.presetDone';
+        showEnhanceResultBox(
+          true,
+          () => t(key, { summary: doneResolvers.map(fn => fn()).join(t('list.sep')) }),
+          { needsLsRestart, needsHostRestart }
+        );
+      } else if (mode === 'restore') {
+        showEnhanceResultBox(true, () => t('enhance.result.restoredDone'), { needsLsRestart, needsHostRestart: true });
+      }
+
+      if (latestEnhanceStatus) {
+        applyEnhanceStatusPayload(latestEnhanceStatus, { syncDrafts: true, forceSyncDrafts: true });
+        await Promise.all([refreshModulesDisplay(), refreshUnlockStatus()]);
+      } else {
+        await Promise.all([refreshEnhanceStatus(true, { forceSyncDrafts: true }), refreshModulesDisplay(), refreshUnlockStatus()]);
+      }
+    } catch (e) {
+      const rawErr = e?.message;
+      showEnhanceResultBox(false, () => t('enhance.result.fail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
+    } finally {
+      isEnhanceBusy = false;
+      syncEnhanceInteractiveDisabledState();
+    }
+  });
+
+  btnEnhanceRestartLs?.addEventListener('click', async () => {
+    if (isLsRestartBusy) return;
+    isLsRestartBusy = true;
+    if (btnEnhanceRestartLs) {
+      btnEnhanceRestartLs.disabled = true;
+      btnEnhanceRestartLs.textContent = t('enhance.btn.restartLsBusy');
+    }
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeEnhanceApi('restart-ls', {});
+      if (!res || !res.ok) {
+        const errPayload = res;
+        showEnhanceResultBox(false, () => t('enhance.result.lsRestartFail', { err: resolveSettingsErrorText(errPayload, 'msg.unknownErr') }));
+        return;
+      }
+      const killedCount = Array.isArray(res.killed) ? res.killed.length : (Number(res.killed) || 0);
+      hasPendingLsReload = false;
+      const hostRestartFlag = needsRestartAfterApply;
+      showEnhanceResultBox(true, () => t('enhance.result.lsRestarted', { killed: killedCount }), { needsLsRestart: false, needsHostRestart: hostRestartFlag });
+      await refreshEnhanceStatus(false);
+    } catch (e) {
+      const rawErr = e?.message;
+      showEnhanceResultBox(false, () => t('enhance.result.lsRestartFail', { err: translateBackendText(rawErr) || t('msg.unknownErr') }));
+    } finally {
+      isLsRestartBusy = false;
+      if (btnEnhanceRestartLs) {
+        btnEnhanceRestartLs.disabled = false;
+        btnEnhanceRestartLs.textContent = t('enhance.btn.restartLs');
+      }
+    }
+  });
+
+  btnEnhanceRestartHost?.addEventListener('click', openClientRestartConfirmFlow);
+
+  let selectedBrandTitle = currentBrandTitle;
+
+  /**
+   * 定位品牌按钮内的目标文本节点，避免直接覆写 textContent 破坏 React 子元素结构
+   */
+  function findBrandTextNode(el) {
+    if (!el) return null;
+    const nodes = el.childNodes ? Array.from(el.childNodes) : (el.children || []);
+    for (const node of nodes) {
+      if (node && node.nodeType === 3) {
+        return node;
+      }
+    }
+    let cur = el;
+    let depth = 0;
+    while (cur && depth < 6) {
+      const children = cur.childNodes ? Array.from(cur.childNodes) : [];
+      if (children.length === 1) {
+        const only = children[0];
+        if (only && only.nodeType === 3) return only;
+        if (only && only.nodeType === 1) {
+          cur = only;
+          depth++;
+          continue;
+        }
+      }
+      break;
+    }
+    return null;
+  }
+
+  /**
+   * 仅更新品牌节点的纯文本内容，保持 DOM 结构与 i18n 运行时状态同步
+   */
+  function writeBrandButtonText(btn, expectedText) {
+    if (!btn) return;
+    const textNode = findBrandTextNode(btn);
+    if (textNode) {
+      if (textNode.nodeValue !== expectedText) {
+        textNode.nodeValue = expectedText;
+      }
+      textNode._agyOriginal = expectedText;
+      return;
+    }
+    if ((btn.textContent || '') !== expectedText) {
+      btn.textContent = expectedText;
+    }
+  }
+
+  /**
+   * 在修改品牌 DOM 之前先同步运行时配置，防止 i18n 扫描器与品牌设置互相冲突
+   */
+  function syncRuntimeBrandConfig(modeKey) {
+    try {
+      if (typeof window !== 'undefined' && window.__AGY_I18N_CONFIG__) {
+        window.__AGY_I18N_CONFIG__.brandTitle = modeKey;
+      }
+    } catch { }
+  }
+
+  function ensureBrandObserver(modeKey, targetBtn) {
+    disconnectBrandObserver();
+    try {
+      if (globalThis.__AGContextMeterBrandObserver && typeof globalThis.__AGContextMeterBrandObserver.disconnect === 'function') {
+        globalThis.__AGContextMeterBrandObserver.disconnect();
+        globalThis.__AGContextMeterBrandObserver = null;
+      }
+    } catch { }
+    if (state.disposed || !targetBtn || modeKey === 'english') return;
+    try {
+      const container = targetBtn.parentElement || targetBtn;
+      const expectedText = modeKey === 'hidden' ? '' : '反重力';
+      let burstWindowStart = 0;
+      let burstCount = 0;
+      const obs = new MutationObserver(() => {
+        if (state.disposed || brandObserver !== obs || globalThis.__AGContextMeterBrandObserver !== obs) {
+          try { obs.disconnect(); } catch { }
+          return;
+        }
+        const btn = document.querySelector('button[data-agy-brand-item="true"]') || targetBtn;
+        if (!btn) return;
+        const txt = btn.textContent?.trim() || '';
+        if (txt === expectedText) return;
+        const now = Date.now();
+        if (now - burstWindowStart > 250) {
+          burstWindowStart = now;
+          burstCount = 0;
+        }
+        burstCount++;
+        if (burstCount > 8) {
+          // 熔断保护：检测到高频互搏变更时主动停止监听，防止渲染进程主线程卡死
+          disconnectBrandObserver();
+          return;
+        }
+        try {
+          obs.disconnect();
+          writeBrandButtonText(btn, expectedText);
+        } finally {
+          if (!state.disposed && brandObserver === obs && globalThis.__AGContextMeterBrandObserver === obs) {
+            try { obs.observe(container, { childList: true, subtree: true, characterData: true }); } catch { }
+          }
+        }
+      });
+      brandObserver = obs;
+      globalThis.__AGContextMeterBrandObserver = obs;
+      obs.observe(container, { childList: true, subtree: true, characterData: true });
+    } catch { }
+  }
+
+  function applyBrandTitleToDom(modeKey) {
+    if (typeof document === 'undefined' || typeof document.querySelector !== 'function') {
+      return { found: false, applied: false, nodeText: null };
+    }
+    disconnectBrandObserver();
+    // 1. 优先通过持久化标记锁定曾确认过的品牌节点（确保隐藏清空文字后仍可精准识别与无损恢复）
+    let targetBtn = document.querySelector('button[data-agy-brand-item="true"]');
+
+    // 2. 若尚未标记，遍历所有 title-menu-bar-item 菜单按钮，精准仅匹配原文本为 Antigravity 的节点
+    if (!targetBtn && typeof document.querySelectorAll === 'function') {
+      const menuItems = document.querySelectorAll('button[data-testid="title-menu-bar-item"]');
+      for (const btn of menuItems) {
+        const txt = btn.textContent?.trim();
+        if (txt === 'Antigravity' || txt === '反重力' || btn._agyBrandManaged) {
+          targetBtn = btn;
+          break;
+        }
+      }
+    }
+
+    // 3. 备选：极左上角区域（top <= 70 && left <= 300）候选定位
+    if (!targetBtn && typeof document.querySelectorAll === 'function') {
+      const candidateBtns = document.querySelectorAll('button.agy-button, button[class*="agy-button"]');
+      for (const btn of candidateBtns) {
+        const rect = btn.getBoundingClientRect ? btn.getBoundingClientRect() : { top: 0, left: 0 };
+        if (rect.top <= 70 && rect.left <= 300) {
+          const txt = btn.textContent?.trim();
+          if (txt === 'Antigravity' || txt === '反重力' || btn._agyBrandManaged) {
+            targetBtn = btn;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!targetBtn) {
+      return { found: false, applied: false, nodeText: null };
+    }
+
+    // 永久保留节点引用与原始身份标记，不顺带修改 document.title 或任务栏标题
+    targetBtn.setAttribute('data-agy-brand-item', 'true');
+    targetBtn._agyBrandManaged = true;
+    if (!targetBtn._agyOriginalText) {
+      targetBtn._agyOriginalText = 'Antigravity';
+    }
+
+    const expectedText = modeKey === 'translated' ? '反重力' : (modeKey === 'hidden' ? '' : 'Antigravity');
+
+    // 保留菜单入口可用（不设置 display: none，隐藏模式仅清空文字），确保菜单功能随时可点击
+    targetBtn.style.display = '';
+    writeBrandButtonText(targetBtn, expectedText);
+    targetBtn.setAttribute('data-agy-brand-mode', modeKey);
+
+    ensureBrandObserver(modeKey, targetBtn);
+
+    const currentText = targetBtn.textContent?.trim() || '';
+    const isApplied = (modeKey === 'hidden' ? currentText === '' : currentText === expectedText);
+
+    return {
+      found: true,
+      applied: isApplied,
+      nodeText: currentText
+    };
+  }
+
+  function showBrandFeedback(mode, isSuccess = true, customMsgOrResolver = '', isApplied = false) {
+    if (!brandApplyFeedback) return;
+    const resolveMessage = typeof customMsgOrResolver === 'function'
+      ? customMsgOrResolver
+      : (customMsgOrResolver
+        ? () => String(customMsgOrResolver)
+        : () => {
+          if (!isSuccess) return t('msg.saveFail');
+          const brandVal = getBrandDisplayValue(mode);
+          if (!isApplied) return t('enhance.brand.savedNotFound', { mode: brandVal });
+          return mode === 'hidden'
+            ? t('enhance.brand.appliedHidden')
+            : t('enhance.brand.appliedName', { mode: brandVal });
+        });
+    brandFeedbackState = { mode, isSuccess, resolveMessage, isApplied };
+    brandApplyFeedback.style.display = 'block';
+    brandApplyFeedback.hidden = false;
+    if (!isSuccess) {
+      brandApplyFeedback.textContent = resolveMessage();
+      brandApplyFeedback.style.color = '#ef4444';
+      return;
+    }
+    brandApplyFeedback.textContent = resolveMessage();
+    if (!isApplied) {
+      const rBtn = document.createElement('button');
+      rBtn.type = 'button';
+      rBtn.className = 'unlock-btn unlock-btn-secondary';
+      rBtn.style.cssText = 'margin-left:8px;padding:2px 8px;font-size:11px;cursor:pointer;';
+      rBtn.textContent = t('models.btnRestartHost');
+      rBtn.addEventListener('click', () => openClientRestartConfirmFlow());
+      brandApplyFeedback.appendChild(rBtn);
+    }
+    brandApplyFeedback.style.color = isApplied ? '#10b981' : 'var(--ag-text-primary)';
+  }
+
+  async function applyBrandTitleSetting(modeKey) {
+    if (btnApplyBrandTitle) btnApplyBrandTitle.disabled = true;
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeModulesApi('toggle', 'chinese', currentChineseEnabled, {
+        language: currentChineseEnabled ? 'zh-CN' : 'en',
+        brandTitle: modeKey
+      });
+      if (!res || !res.ok) {
+        const errPayload = res;
+        const resolveErr = () => t('enhance.brand.saveFailErr', { err: resolveSettingsErrorText(errPayload, 'msg.saveFail') });
+        showBrandFeedback(modeKey, false, resolveErr, false);
+        showEnhanceResultBox(false, resolveErr);
+        return;
+      }
+      currentBrandTitle = modeKey;
+      selectedBrandTitle = modeKey;
+      syncBrandTitleButtons(modeKey);
+
+      // 实时真实 DOM 应用（先同步运行时配置再更新 DOM，防止 i18n 扫描器与品牌设置互相冲突）
+      syncRuntimeBrandConfig(modeKey);
+      const domResult = applyBrandTitleToDom(modeKey);
+
+      // 实时热同步（若已注入运行时环境）
+      try {
+        if (typeof window !== 'undefined' && typeof window.__AGY_RUN_FULL_SCAN__ === 'function') {
+          window.__AGY_RUN_FULL_SCAN__();
+        }
+      } catch { }
+
+      if (domResult.applied) {
+        const resolveApplied = modeKey === 'hidden'
+          ? () => t('enhance.brand.appliedHidden')
+          : () => t('enhance.brand.appliedName', { mode: getBrandDisplayValue(modeKey) });
+        showBrandFeedback(modeKey, true, resolveApplied, true);
+        showEnhanceResultBox(true, resolveApplied, { needsHostRestart: false });
+      } else {
+        const resolveNotApplied = !domResult.found
+          ? () => t('enhance.brand.savedNotFound', { mode: getBrandDisplayValue(modeKey) })
+          : () => t('enhance.brand.savedApplyFailed', { mode: getBrandDisplayValue(modeKey) });
+        showBrandFeedback(modeKey, true, resolveNotApplied, false);
+        showEnhanceResultBox(false, resolveNotApplied, { needsHostRestart: true });
+      }
+    } catch (e) {
+      const rawErr = e?.message;
+      const resolveErr = () => t('enhance.brand.saveFailErr', { err: translateBackendText(rawErr) || t('msg.saveFail') });
+      showBrandFeedback(modeKey, false, resolveErr, false);
+      showEnhanceResultBox(false, resolveErr);
+    } finally {
+      if (btnApplyBrandTitle) btnApplyBrandTitle.disabled = false;
+    }
+  }
+
+  for (const [modeKey, btn] of Object.entries(brandTitleBtns)) {
+    btn?.addEventListener('click', () => {
+      selectedBrandTitle = modeKey;
+      syncBrandTitleButtons(modeKey);
+      void applyBrandTitleSetting(modeKey);
+    });
+  }
+
+  btnApplyBrandTitle?.addEventListener('click', () => {
+    void applyBrandTitleSetting(selectedBrandTitle || currentBrandTitle);
+  });
+
+  function detectHostDomTranslated(runtimeMeta = null) {
+    const cfgSnap = typeof window !== 'undefined' && typeof window.__AGY_I18N_CONFIG__ === 'object' && window.__AGY_I18N_CONFIG__
+      ? window.__AGY_I18N_CONFIG__
+      : null;
+    if (cfgSnap) {
+      return Boolean(cfgSnap.enabled === true && cfgSnap.language !== 'en');
+    }
+    if (runtimeMeta && typeof runtimeMeta.chineseActive === 'boolean') {
+      return Boolean(runtimeMeta.chineseActive);
+    }
+    if (typeof window !== 'undefined' && (typeof window.__AGY_I18N_DATA__ !== 'undefined' || typeof window.__AGY_TRANSLATE_EL__ !== 'undefined')) {
       return true;
     }
     try {
-      const systemContainers = document.querySelectorAll(
-        "div[role='navigation'], nav, header, [role='banner'], aside, [data-testid*='sidebar'], [data-testid*='navigation'], [class*='@container/titlebar'], .monaco-workbench, .activitybar"
-      );
-      const systemKeywords = ['新建对话', '新建会话', '新建', '设置', '账户', '项目', '关于', '帮助', '工作区', '管理', '自定义扩展', '资源管理器', '活动栏'];
-      for (let i = 0; i < systemContainers.length; i++) {
-        const container = systemContainers[i];
-        if (container.closest && container.closest('.chat-session, .conversation-view, .monaco-list-row, .markdown, [data-testid*="chat"], [data-testid*="message"]')) {
-          continue; // 严格排除用户聊天内容区
+      const fixedSelectors = [
+        "[data-testid='new-conversation-button']",
+        "[data-testid='automations-button']",
+        "[data-testid='settings-button']",
+        "[data-testid='open-editor-single']",
+        "[data-testid='title-menu-bar-item']"
+      ];
+      const exactSystemLabels = new Set([
+        '新建对话', '新建会话', '自动化', '设置', '打开 IDE', '工作区', '视图', '窗口', '自定义扩展'
+      ]);
+      for (let i = 0; i < fixedSelectors.length; i++) {
+        const nodes = document.querySelectorAll ? document.querySelectorAll(fixedSelectors[i]) : [];
+        for (let j = 0; j < nodes.length; j++) {
+          const txt = (nodes[j].textContent || '').replace(/^\+\s*/, '').trim();
+          if (txt && exactSystemLabels.has(txt)) return true;
         }
-        const labeledNodes = container.querySelectorAll ? container.querySelectorAll('button, a, [role="button"], [aria-label], [title], span') : [];
-        for (let j = 0; j < Math.min(labeledNodes.length, 40); j++) {
-          const node = labeledNodes[j];
-          const label = (node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title'))) || '';
-          if (label && systemKeywords.some(kw => label.includes(kw))) return true;
-          const text = (node.textContent || '').trim();
-          if (text && systemKeywords.some(kw => text.includes(kw))) return true;
-        }
-        const txt = container.innerText || '';
-        if (systemKeywords.some(kw => txt.includes(kw))) return true;
       }
-      const nav = document.querySelector("div[role='navigation'], nav");
-      if (nav && nav.innerText && systemKeywords.some(kw => nav.innerText.includes(kw))) {
-        return true;
-      }
-    } catch {}
+    } catch { }
     return false;
   }
 
-  async function refreshModulesDisplay() {
+  async function refreshModulesDisplay({ forceProxySync = false } = {}) {
+    const seq = ++modulesStatusReqSeq;
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.getModulesStatus !== 'function') {
+      const hasIpcModulesApi = Boolean(typeof window !== 'undefined' && typeof window.contextMeterAPI?.getModulesStatus === 'function');
+      if (!hasIpcModulesApi) {
         currentChineseEnabled = sidecarChineseEnabled;
-        const isDomTranslated = detectHostDomTranslated();
+        const isDomTranslated = detectHostDomTranslated(null);
         if (chineseBadge) {
           if (currentChineseEnabled && isDomTranslated) {
             chineseBadge.textContent = '🟢 已翻译生效';
@@ -2024,6 +7536,7 @@
           btnToggleChineseModule.textContent = currentChineseEnabled ? '关闭客户端汉化' : '开启客户端汉化';
         }
         syncChineseCheckboxes(currentChineseEnabled);
+        syncClientLanguageButtons();
 
         if (proxyBadge) {
           proxyBadge.textContent = '⚪ 免改盘未启用';
@@ -2038,148 +7551,227 @@
         }
         return;
       }
-      const res = await api.getModulesStatus();
+      const res = await invokeModulesApi('status');
+      if (seq !== modulesStatusReqSeq) return;
       if (!res || !res.ok || !res.data) {
-        const errMsg = (res && res.error) ? res.error : '模块状态返回异常';
+        const errMsg = (res && res.error) ? translateBackendText(res.error) : t('msg.unknownErr');
         if (chineseBadge) {
-          chineseBadge.textContent = '⚠️ 读取失败';
+          chineseBadge.textContent = t('mod.readFail');
           chineseBadge.className = 'key-pill pill-danger';
         }
         if (chineseStatusDesc) {
-          chineseStatusDesc.textContent = `检测汉化状态失败: ${errMsg}`;
+          chineseStatusDesc.textContent = t('mod.zh.failDetect', { err: errMsg });
         }
         if (proxyBadge) {
-          proxyBadge.textContent = '⚠️ 读取失败';
+          proxyBadge.textContent = t('mod.readFail');
           proxyBadge.className = 'key-pill pill-danger';
         }
         if (proxyStatusDesc) {
-          proxyStatusDesc.textContent = `检测免 TUN 代理状态失败: ${errMsg}`;
+          proxyStatusDesc.textContent = t('mod.proxy.failDetect', { err: errMsg });
         }
         return;
       }
       const cfg = res.data;
+      if (res.configCorrupted && res.configError) {
+        showEnhanceResultBox(false, () => translateBackendText(res.configError));
+      }
 
       currentChineseEnabled = Boolean(cfg.modules?.chinese?.enabled);
-      const isDomTranslated = detectHostDomTranslated();
+      currentBrandTitle = cfg.modules?.chinese?.brandTitle || 'english';
+      syncBrandTitleButtons(currentBrandTitle);
+      syncRuntimeBrandConfig(currentBrandTitle);
+      applyBrandTitleToDom(currentBrandTitle);
+      const runtimeMeta = res.runtime && typeof res.runtime === 'object' ? res.runtime : null;
+      const isDomTranslated = detectHostDomTranslated(runtimeMeta);
       const disk = res.disk || {};
+      const isChineseDiskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
+      const isChinesePartial = Boolean(disk.chinese && disk.chineseReady === false);
+      const isProxyDiskReady = disk.proxyReady !== undefined ? Boolean(disk.proxyReady) : Boolean(disk.proxy);
+      const isProxyPartial = Boolean(disk.proxy && disk.proxyReady === false);
 
       if (chineseBadge) {
         if (!currentChineseEnabled) {
           if (isDomTranslated) {
-            chineseBadge.textContent = '⏳ 需重启恢复英文';
+            chineseBadge.textContent = t('mod.zh.badgeRestartEn');
             chineseBadge.className = 'key-pill pill-warn';
           } else {
-            chineseBadge.textContent = disk.chinese ? '⚪ 已关闭 (就绪)' : '⚪ 未安装';
+            chineseBadge.textContent = isChineseDiskReady ? t('mod.zh.badgeOffReady') : t('mod.zh.badgeNotInstalled');
             chineseBadge.className = 'key-pill pill-muted';
           }
         } else if (isDomTranslated) {
-          chineseBadge.textContent = '🟢 已翻译生效';
+          chineseBadge.textContent = t('mod.zh.badgeActive');
           chineseBadge.className = 'key-pill pill-ok';
-        } else if (!disk.chinese) {
-          chineseBadge.textContent = '⚠️ 磁盘未注入';
+        } else if (!isChineseDiskReady) {
+          chineseBadge.textContent = t('mod.zh.badgeNotInjected');
           chineseBadge.className = 'key-pill pill-danger';
         } else {
-          chineseBadge.textContent = '⏳ 待重启客户端生效';
+          chineseBadge.textContent = t('mod.zh.badgePendingRestart');
           chineseBadge.className = 'key-pill pill-warn';
         }
       }
       if (chineseStatusDesc) {
         if (!currentChineseEnabled) {
           if (isDomTranslated) {
-            chineseStatusDesc.textContent = '汉化模块已在配置中关闭；当前界面仍保留已加载的中文 DOM 缓存，需完全退出并重新打开 Antigravity 客户端以彻底恢复纯净官方原生英文。';
+            chineseStatusDesc.textContent = t('mod.zh.descRestartEn');
           } else {
-            chineseStatusDesc.textContent = disk.chinese
-              ? '客户端汉化已关闭（磁盘已具备汉化资源与配置门禁，开启后重启即可生效）。'
-              : '客户端汉化处于未安装状态，保持官方原生英文界面。';
+            chineseStatusDesc.textContent = isChineseDiskReady
+              ? t('mod.zh.descOffReady')
+              : t('mod.zh.descOffNotInstalled');
           }
         } else if (isDomTranslated) {
-          chineseStatusDesc.textContent = '汉化引擎运行中：DOM 监听器正常工作，左侧边栏与核心菜单已成功翻译。';
-        } else if (!disk.chinese) {
-          chineseStatusDesc.textContent = '配置已开启，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。';
+          chineseStatusDesc.textContent = t('mod.zh.descActive');
+        } else if (!isChineseDiskReady) {
+          chineseStatusDesc.textContent = isChinesePartial && disk.chineseReason
+            ? t('mod.zh.descPartialInject', { reason: translateBackendText(disk.chineseReason) })
+            : t('mod.zh.descNeedInject');
         } else {
-          chineseStatusDesc.textContent = '汉化代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。';
+          chineseStatusDesc.textContent = t('mod.zh.descPendingRestart');
         }
       }
       if (btnToggleChineseModule) {
-        btnToggleChineseModule.textContent = currentChineseEnabled ? '关闭客户端汉化' : '开启客户端汉化';
+        btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.btnDisable') : t('mod.zh.btnEnable');
       }
       syncChineseCheckboxes(currentChineseEnabled);
+      syncClientLanguageButtons();
 
       currentProxyEnabled = Boolean(cfg.modules?.proxy?.enabled);
+      const diskProxyUrl = String(cfg.modules?.proxy?.proxyUrl || '');
+      const diskProxyBypass = String(cfg.modules?.proxy?.bypassList || '');
+      savedProxyUrl = diskProxyUrl;
+      savedProxyBypass = diskProxyBypass;
+
+      if (inputProxyUrl && diskProxyUrl && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyUrl))) {
+        inputProxyUrl.value = diskProxyUrl;
+      }
+      if (inputProxyBypass && (forceProxySync || (!proxyInputDirty && document?.activeElement !== inputProxyBypass))) {
+        inputProxyBypass.value = diskProxyBypass;
+      }
+      if (runtimeMeta) {
+        if (typeof runtimeMeta.chineseNeedsRestart === 'boolean') {
+          needsRestartAfterApply = Boolean(runtimeMeta.proxyNeedsRestart || runtimeMeta.chineseNeedsRestart);
+        } else if (runtimeMeta.proxyNeedsRestart) {
+          needsRestartAfterApply = true;
+        }
+        renderClientStatusBar();
+      }
+
       if (proxyBadge) {
         if (currentProxyEnabled) {
-          proxyBadge.textContent = disk.proxy ? '🟢 直连已配置' : '⚠️ 磁盘未注入';
-          proxyBadge.className = disk.proxy ? 'key-pill pill-ok' : 'key-pill pill-warn';
+          if (!isProxyDiskReady) {
+            proxyBadge.textContent = t('mod.proxy.badgeNotInjected');
+            proxyBadge.className = 'key-pill pill-warn';
+          } else if (runtimeMeta?.proxyNeedsRestart) {
+            proxyBadge.textContent = t('mod.proxy.badgePendingRestart');
+            proxyBadge.className = 'key-pill pill-warn';
+          } else if (runtimeMeta?.proxyActive) {
+            proxyBadge.textContent = t('mod.proxy.badgeActive');
+            proxyBadge.className = 'key-pill pill-ok';
+          } else {
+            proxyBadge.textContent = t('mod.proxy.badgeOk');
+            proxyBadge.className = 'key-pill pill-ok';
+          }
+        } else if (runtimeMeta?.proxyNeedsRestart) {
+          proxyBadge.textContent = t('mod.proxy.badgePendingOff');
+          proxyBadge.className = 'key-pill pill-warn';
         } else {
-          proxyBadge.textContent = '⚪ 未启用';
+          proxyBadge.textContent = t('mod.proxy.badgeOff');
           proxyBadge.className = 'key-pill pill-muted';
         }
       }
-      if (inputProxyUrl && cfg.modules?.proxy?.proxyUrl) {
-        inputProxyUrl.value = cfg.modules.proxy.proxyUrl;
-      }
-      if (inputProxyBypass && cfg.modules?.proxy?.bypassList) {
-        inputProxyBypass.value = cfg.modules.proxy.bypassList;
-      }
       if (proxyStatusDesc) {
         if (currentProxyEnabled) {
-          proxyStatusDesc.textContent = disk.proxy
-            ? `已启用本地网络直连（代理: ${cfg.modules.proxy.proxyUrl}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。`
-            : `配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。`;
+          if (!isProxyDiskReady) {
+            proxyStatusDesc.textContent = isProxyPartial && disk.proxyReason
+              ? t('mod.proxy.descPartialInject', { reason: translateBackendText(disk.proxyReason) })
+              : t('mod.proxy.descNeedInject');
+          } else if (runtimeMeta?.proxyNeedsRestart) {
+            proxyStatusDesc.textContent = t('mod.proxy.descPendingRestart', { url: diskProxyUrl });
+          } else if (runtimeMeta?.proxyActive) {
+            proxyStatusDesc.textContent = t('mod.proxy.descActive', { url: runtimeMeta.runtimeProxyUrl || diskProxyUrl });
+          } else {
+            proxyStatusDesc.textContent = t('mod.proxy.descOn', { url: diskProxyUrl });
+          }
+        } else if (runtimeMeta?.proxyNeedsRestart) {
+          proxyStatusDesc.textContent = t('mod.proxy.descPendingOff', { url: runtimeMeta.runtimeProxyUrl || '' });
         } else {
-          proxyStatusDesc.textContent = '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。';
+          proxyStatusDesc.textContent = t('mod.proxy.descOff');
         }
       }
       if (btnToggleProxyModule) {
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
       }
+      syncProxySaveButtonState();
     } catch (err) {
+      if (seq !== modulesStatusReqSeq) return;
       const errMsg = err?.message || String(err);
       if (chineseBadge) {
-        chineseBadge.textContent = '⚠️ 读取异常';
+        chineseBadge.textContent = t('mod.readErr');
         chineseBadge.className = 'key-pill pill-danger';
       }
       if (chineseStatusDesc) {
-        chineseStatusDesc.textContent = `检测汉化状态异常: ${errMsg}`;
+        chineseStatusDesc.textContent = t('mod.zh.errDetect', { err: errMsg });
       }
       if (proxyBadge) {
-        proxyBadge.textContent = '⚠️ 读取异常';
+        proxyBadge.textContent = t('mod.readErr');
         proxyBadge.className = 'key-pill pill-danger';
       }
       if (proxyStatusDesc) {
-        proxyStatusDesc.textContent = `检测免 TUN 代理状态异常: ${errMsg}`;
+        proxyStatusDesc.textContent = t('mod.proxy.errDetect', { err: errMsg });
       }
     }
   }
 
-  async function applyChineseLocalizationToggle(targetEnable) {
-    const api = window.contextMeterAPI;
-    if (api && typeof api.toggleModule === 'function') {
+  async function setClientLanguageTarget(wantChinese) {
+    const hasIpcToggle = Boolean(typeof window !== 'undefined' && typeof window.contextMeterAPI?.toggleModule === 'function');
+    if (hasIpcToggle) {
+      if (Boolean(wantChinese) === Boolean(currentChineseEnabled)) return;
+      if (btnToggleChineseModule) {
+        btnToggleChineseModule.disabled = true;
+        btnToggleChineseModule.textContent = t('mod.processing');
+      }
       try {
-        if (btnToggleChineseModule) {
-          btnToggleChineseModule.disabled = true;
-          btnToggleChineseModule.textContent = '正在处理…';
-        }
-        const res = await api.toggleModule('chinese', Boolean(targetEnable));
+        await yieldForSettingsPaint();
+        const res = await invokeModulesApi('toggle', 'chinese', Boolean(wantChinese), {
+          language: wantChinese ? 'zh-CN' : 'en',
+          brandTitle: currentBrandTitle
+        });
         if (!res || !res.ok) {
-          alert(res?.error || '切换汉化模块失败');
+          const errPayload = res;
+          showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.zh.toggleFail'));
+        } else {
+          needsRestartAfterApply = Boolean(res.restartRequired);
+          renderClientStatusBar();
+          if (res.restartRequired) {
+            showEnhanceResultBox(
+              true,
+              () => t(wantChinese ? 'mod.zh.savedEnableRestart' : 'mod.zh.savedDisableRestart'),
+              { needsHostRestart: true }
+            );
+          } else {
+            showEnhanceResultBox(
+              true,
+              () => translateBackendText(res.message || '已同步回当前运行状态，无需重启'),
+              { needsHostRestart: false }
+            );
+          }
         }
         await refreshModulesDisplay();
       } catch (e) {
-        alert('切换汉化模块异常: ' + e.message);
+        showEnhanceResultBox(false, () => `${t('mod.zh.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
       } finally {
         if (btnToggleChineseModule) {
           btnToggleChineseModule.disabled = false;
-          btnToggleChineseModule.textContent = currentChineseEnabled ? '关闭客户端汉化' : '开启客户端汉化';
+          btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.btnDisable') : t('mod.zh.btnEnable');
         }
       }
       return;
     }
 
     ++userActionSeq;
-    sidecarChineseEnabled = Boolean(targetEnable);
+    sidecarChineseEnabled = Boolean(wantChinese);
     currentChineseEnabled = sidecarChineseEnabled;
     syncChineseCheckboxes(sidecarChineseEnabled);
+    syncClientLanguageButtons();
     try {
       localStorage?.setItem('ag_ui_sidecar_chinese', sidecarChineseEnabled ? '1' : '0');
     } catch {}
@@ -2223,79 +7815,117 @@
     }
   }
 
-  btnToggleChineseModule?.addEventListener('click', () => {
-    void applyChineseLocalizationToggle(!currentChineseEnabled);
+  btnClientLangZhCn?.addEventListener('click', () => {
+    void setClientLanguageTarget(true);
+  });
+  btnClientLangEn?.addEventListener('click', () => {
+    void setClientLanguageTarget(false);
   });
 
-  btnToggleProxyModule?.addEventListener('click', async () => {
-    try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.toggleModule !== 'function') return;
+  btnToggleChineseModule?.addEventListener('click', () => {
+    void setClientLanguageTarget(!currentChineseEnabled);
+  });
+
+  async function applyProxyModuleUpdate(enableTarget) {
+    if (isProxyBusy) return;
+    isProxyBusy = true;
+    const rawUrl = String(inputProxyUrl?.value ?? '').trim();
+    const rawBypass = String(inputProxyBypass?.value ?? '').trim();
+    if (btnToggleProxyModule) {
       btnToggleProxyModule.disabled = true;
-      btnToggleProxyModule.textContent = '正在处理…';
-      const res = await api.toggleModule('proxy', !currentProxyEnabled, {
-        proxyUrl: inputProxyUrl?.value?.trim(),
-        bypassList: inputProxyBypass?.value?.trim()
+      btnToggleProxyModule.textContent = t('mod.processing');
+    }
+    syncProxySaveButtonState();
+    try {
+      await yieldForSettingsPaint();
+      const res = await invokeModulesApi('toggle', 'proxy', Boolean(enableTarget), {
+        proxyUrl: rawUrl || undefined,
+        bypassList: rawBypass
       });
       if (!res || !res.ok) {
-        alert(res?.error || '切换代理模块失败');
+        const errPayload = res;
+        showEnhanceResultBox(false, () => resolveSettingsErrorText(errPayload, 'mod.proxy.toggleFail'));
+      } else {
+        proxyInputDirty = false;
+        const needRestart = Boolean(res.runtime?.proxyNeedsRestart ?? res.restartRequired);
+        if (needRestart) needsRestartAfterApply = true;
+        const appliedUrl = res.data?.modules?.proxy?.proxyUrl || rawUrl;
+        if (enableTarget) {
+          const msgKey = needRestart ? 'mod.proxy.savedPendingRestart' : 'mod.proxy.savedAlreadyActive';
+          showEnhanceResultBox(true, () => t(msgKey, { url: appliedUrl }), { needsHostRestart: needRestart });
+        } else {
+          const msgKey = needRestart ? 'mod.proxy.disabledPendingRestart' : 'mod.proxy.disabledSaved';
+          showEnhanceResultBox(true, () => t(msgKey), { needsHostRestart: needRestart });
+        }
       }
-      await refreshModulesDisplay();
+      await refreshModulesDisplay({ forceProxySync: true });
     } catch (e) {
-      alert('切换代理模块异常: ' + e.message);
+      showEnhanceResultBox(false, () => `${t('mod.proxy.toggleFail')}: ${resolveSettingsErrorText(e, 'msg.unknownErr')}`);
     } finally {
+      isProxyBusy = false;
       if (btnToggleProxyModule) {
         btnToggleProxyModule.disabled = false;
-        btnToggleProxyModule.textContent = currentProxyEnabled ? '关闭免 TUN 直连' : '开启免 TUN 直连';
+        btnToggleProxyModule.textContent = currentProxyEnabled ? t('mod.proxy.btnDisable') : t('mod.proxy.btnEnable');
       }
+      syncProxySaveButtonState();
     }
+  }
+
+  btnToggleProxyModule?.addEventListener('click', () => {
+    void applyProxyModuleUpdate(!currentProxyEnabled);
+  });
+
+  btnSaveProxyConfig?.addEventListener('click', () => {
+    void applyProxyModuleUpdate(true);
   });
 
   btnTestProxy?.addEventListener('click', async () => {
+    if (isProxyBusy) return;
     try {
-      const api = window.contextMeterAPI;
-      if (!api || typeof api.testProxy !== 'function') return;
-      btnTestProxy.disabled = true;
-      btnTestProxy.textContent = '正在测试…';
+      if (btnTestProxy) {
+        btnTestProxy.disabled = true;
+        btnTestProxy.textContent = t('settings.proxy.testing');
+      }
       if (proxyTestResult) {
         proxyTestResult.style.display = 'block';
-        proxyTestResult.textContent = '正在发起本地与网络连通性测试…';
+        lastProxyTestState = { pending: true };
+        renderProxyTestResultView();
       }
-      const res = await api.testProxy(inputProxyUrl?.value?.trim());
+      await yieldForSettingsPaint();
+      const res = await invokeTestProxyApi(inputProxyUrl?.value?.trim());
       if (proxyTestResult) {
-        if (!res || !res.ok) {
-          proxyTestResult.textContent = '❌ 测试失败: ' + (res?.error || '未知异常');
-        } else {
-          const d = res.data;
-          proxyTestResult.innerHTML = `
-            配置格式: ${d.configValid ? '✅ 合法' : '❌ 无效'}<br>
-            本地端口: ${d.proxyReachable ? '✅ 可连接' : '❌ 无法连接'}<br>
-            公网连通: ${d.internetReachable ? '✅ 可访问' : '⚠️ 无法访问公网 (可能无境外连通)'}<br>
-            模型请求: 待通过真实在线会话验证 (分层标定)
-            ${d.error ? `<br><span style="color:var(--ag-danger)">⚠️ ${d.error}</span>` : ''}
-          `;
-        }
+        lastProxyTestState = { pending: false, res };
+        renderProxyTestResultView();
       }
     } catch (e) {
-      if (proxyTestResult) proxyTestResult.textContent = '❌ 测试异常: ' + e.message;
+      if (proxyTestResult) {
+        lastProxyTestState = { pending: false, thrownErr: e?.message || String(e || '') };
+        renderProxyTestResultView();
+      }
     } finally {
       if (btnTestProxy) {
         btnTestProxy.disabled = false;
-        btnTestProxy.textContent = '🔍 测试代理连通性';
+        btnTestProxy.textContent = t('settings.proxy.testBtn');
       }
     }
   });
 
   // 静默初始化检测一次解锁状态与各模块状态
-  setTimeout(() => {
+  const initDetectTimer1 = setTimeout(() => {
+    if (state.disposed) return;
     void refreshUnlockStatus();
     void refreshModulesDisplay();
   }, 500);
-  setTimeout(() => {
+  const initDetectTimer2 = setTimeout(() => {
+    if (state.disposed) return;
     if (currentChineseEnabled) {
       void refreshModulesDisplay();
     }
   }, 2000);
+  earlyDisposeHooks.push(() => {
+    clearTimeout(initDetectTimer1);
+    clearTimeout(initDetectTimer2);
+  });
 
   // 二级抽屉 0（面板 B 内）: 顶栏功能与显示设置开关折叠展开
   const btnDisplaySettings = el('btn-toggle-display-settings');
@@ -2320,7 +7950,7 @@
     const isHidden = colorDrawerBody.style.display === 'none' || !colorDrawerBody.style.display;
     const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
     colorDrawerBody.style.display = nextOpen ? 'block' : 'none';
-    if (colorDrawerArrow) colorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
+    if (colorDrawerArrow) colorDrawerArrow.textContent = nextOpen ? t('drawer.colors.collapse') : t('drawer.colors.expand');
     btnColors?.setAttribute('aria-expanded', String(nextOpen));
     if (!nextOpen) {
       closeColorPicker();
@@ -2336,8 +7966,20 @@
     if (!drawerBody) return;
     const isHidden = drawerBody.style.display === 'none' || !drawerBody.style.display;
     drawerBody.style.display = isHidden ? 'block' : 'none';
-    if (drawerArrow) drawerArrow.textContent = isHidden ? '▲ 点击收起明细' : '▼ 点击展开明细';
+    if (drawerArrow) drawerArrow.textContent = isHidden ? t('session.techDrawer.collapse') : t('session.techDrawer.expand');
     btnDetails.setAttribute('aria-expanded', String(isHidden));
+  });
+
+  // 模型卡片下一层详情折叠展开（实测预算、速度与内部详情）
+  const btnCardDetails = el('btn-toggle-card-details');
+  const cardDrawerBody = el('ctx-card-drawer-body');
+  const cardDrawerArrow = el('ctx-card-drawer-arrow');
+  btnCardDetails?.addEventListener('click', () => {
+    if (!cardDrawerBody) return;
+    const isHidden = cardDrawerBody.style.display === 'none' || !cardDrawerBody.style.display;
+    cardDrawerBody.style.display = isHidden ? 'block' : 'none';
+    if (cardDrawerArrow) cardDrawerArrow.textContent = isHidden ? t('session.techDrawer.collapse') : t('session.techDrawer.expand');
+    btnCardDetails.setAttribute('aria-expanded', String(isHidden));
   });
 
   // 二级抽屉 3（面板 A 内就近设置）: 热力图色阶与面板外观自定义抽屉折叠展开
@@ -2350,7 +7992,7 @@
     const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     tokenColorDrawerBody.style.display = nextOpen ? 'block' : 'none';
     tokenColorDrawerBody.classList?.toggle?.('is-expanded', nextOpen);
-    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
+    if (tokenColorDrawerArrow) tokenColorDrawerArrow.textContent = nextOpen ? t('drawer.colors.collapse') : t('drawer.colors.expand');
     btnTokenColors?.setAttribute('aria-expanded', String(nextOpen));
     if (!nextOpen) {
       closeColorPicker(false);
@@ -2393,7 +8035,7 @@
     const curHidden = body.style.display === 'none' || !body.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     body.style.display = next ? 'block' : 'none';
-    if (btn) btn.textContent = next ? '收起详情 ▲' : '展开详情 ▼';
+    if (btn) btn.textContent = next ? t('cost.btnCollapse') : t('cost.btnExpand');
   }
   el('btn-toggle-ref-cost-drawer')?.addEventListener('click', () => toggleRefCostDrawer());
 
@@ -2429,10 +8071,10 @@
     const outVal = el('ref-cost-output-val');
     const outTok = el('ref-cost-output-tok');
 
-    if (titleEl) titleEl.textContent = isPeriod ? '💰 本期 API 参考金额' : '💰 全量 API 参考金额';
+    if (titleEl) titleEl.textContent = isPeriod ? t('cost.title') : t('cost.titleAll');
     if (periodTag) {
-      const pKey = ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || '本月自然月';
-      periodTag.textContent = isPeriod ? pKey : '全历史累计';
+      const pKey = ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag');
+      periodTag.textContent = isPeriod ? pKey : t('cost.allHistory');
     }
 
     // 1. 提取当前范围真实用量与折算数据
@@ -2463,7 +8105,7 @@
     const curIdentified = isPeriod ? cePeriod : ceAll;
 
     let apiCost = 0;
-    let pillText = '100% 折算覆盖';
+    let pillText = t('cost.covFull');
     let pillClass = 'key-pill pill-good';
 
     // 2. 估值模式计算
@@ -2487,59 +8129,67 @@
     // 更新小摘要来源与时间描述行及非实付常驻标识
     const scopeDescEl = el('cost-scope-desc');
     if (scopeDescEl) {
-      const srcName = activeTokenSource === 'desktop' ? '桌面端' : activeTokenSource === 'cli' ? 'CLI' : '全部来源';
-      const pLabel = isPeriod ? (ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || '本月自然月') : '全历史累计';
+      const srcName = activeTokenSource === 'desktop' ? t('tokens.srcDesktopLabel') : activeTokenSource === 'cli' ? 'CLI' : t('tokens.srcAllLabel');
+      const pLabel = isPeriod ? (ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag')) : t('cost.allHistory');
       scopeDescEl.textContent = `${srcName} · ${pLabel}`;
     }
     const nonPaidBadge = el('cost-non-paid-badge');
-    if (nonPaidBadge) nonPaidBadge.textContent = 'API折算 · 非实付';
+    if (nonPaidBadge) nonPaidBadge.textContent = t('cost.nonPaidBadge');
 
     if (costModelMode === 'ref') {
       apiCost = Number(effectiveRef.totalCostUSD || 0);
       if (grandVal) {
         if (apiCost > 0) {
-          grandVal.textContent = `约 $${apiCost.toFixed(2)}`;
-          grandVal.title = `参考费率折算值：$${apiCost.toFixed(4)}`;
+          grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
+          grandVal.title = `$${apiCost.toFixed(4)}`;
         } else if (curTotal > 0 && curIn === 0 && curCa === 0 && curOut === 0) {
-          grandVal.textContent = '数据未就绪';
-          grandVal.title = '缺少有效分类统计数据';
+          grandVal.textContent = t('cost.notReady');
+          grandVal.title = t('cost.notReady');
         } else {
           grandVal.textContent = '$0.00';
-          grandVal.title = '当前范围内暂无记录';
+          grandVal.title = t('cost.noRecords');
         }
       }
       if (grandSub) {
-        grandSub.textContent = `统一按 ${effectiveRef.modelDisplayName || 'Gemini 3.8 Flash'} 估算 (输入 $${rateIn.toFixed(2)} / 缓存 $${rateCa.toFixed(3)} / 输出 $${rateOut.toFixed(2)} 每百万 Token)`;
+        grandSub.textContent = t('cost.refSub', {
+          model: effectiveRef.modelDisplayName || 'Gemini 3.8 Flash',
+          in: rateIn.toFixed(2),
+          ca: rateCa.toFixed(3),
+          out: rateOut.toFixed(2)
+        });
       }
-      pillText = '参考模型估算';
+      pillText = t('cost.modeRef');
       pillClass = 'key-pill pill-muted';
 
       if (inVal) inVal.textContent = `$${Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6)).toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIn)} tok`;
       if (caVal) caVal.textContent = `$${Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6)).toFixed(2)}`;
-      if (caTok) caTok.textContent = `${fmtYi(curCa)} tok (优惠)`;
+      if (caTok) caTok.textContent = t('cost.tokCacheDiscount', { tok: fmtYi(curCa) });
       if (outVal) outVal.textContent = `$${Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6)).toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curOut)} tok`;
     } else if (costModelMode === 'hybrid') {
       const h = curHybrid.hybrid || {};
       apiCost = Number(h.combinedTotalUSD || effectiveRef.totalCostUSD || 0);
       if (grandVal) {
-        grandVal.textContent = `约 $${apiCost.toFixed(2)}`;
-        grandVal.title = `混合模式：已识别 $${h.knownCostUSD || 0} + 未知折算 $${h.unpricedResidualCostUSD || 0}`;
+        grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
+        grandVal.title = t('cost.hybridSub', { known: h.knownCostUSD || 0, res: h.unpricedResidualCostUSD || 0 });
       }
       if (grandSub) {
-        grandSub.textContent = `混合模式：已识别 $${Number(h.knownCostUSD || 0).toFixed(2)} + 未知折算 $${Number(h.unpricedResidualCostUSD || 0).toFixed(2)}`;
+        grandSub.textContent = t('cost.hybridSub', {
+          known: Number(h.knownCostUSD || 0).toFixed(2),
+          res: Number(h.unpricedResidualCostUSD || 0).toFixed(2)
+        });
       }
-      pillText = '混合模式折算';
+      pillText = t('cost.hybridBadge');
       pillClass = 'key-pill pill-muted';
 
       const rb = h.residualTokensBreakdown || {};
       if (inVal) inVal.textContent = `$${Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6)).toFixed(2)}`;
-      if (inTok) inTok.textContent = `剩余 ${fmtYi(rb.input || 0)} tok`;
+      if (inTok) inTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.input || 0) });
       if (caVal) caVal.textContent = `$${Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6)).toFixed(2)}`;
-      if (caTok) caTok.textContent = `剩余 ${fmtYi(rb.cache || 0)} tok`;
+      if (caTok) caTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.cache || 0) });
       if (outVal) outVal.textContent = `$${Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6)).toFixed(2)}`;
-      if (outTok) outTok.textContent = `剩余 ${fmtYi(rb.output || 0)} tok`;
+      if (outTok) outTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.output || 0) });
     } else {
       // 仅已识别真实模型
       const pricedCount = Number(curIdentified.pricedRequestsCount || 0);
@@ -2549,29 +8199,29 @@
 
       if (grandVal) {
         if (totalCount === 0) {
-          grandVal.textContent = '暂无记录';
+          grandVal.textContent = t('cost.noRecords');
         } else if (pricedCount === 0) {
-          grandVal.textContent = '暂无法估值';
-          grandVal.title = '当前范围内已扫描请求均缺少模型信息或费率未收录，未记为 $0';
+          grandVal.textContent = t('cost.unpriced');
+          grandVal.title = t('cost.identSubNone');
         } else if (apiCost < 0.01 && apiCost > 0) {
           grandVal.textContent = '<$0.01';
-          grandVal.title = `已识别模型价值：$${apiCost.toFixed(6)}`;
+          grandVal.title = `$${apiCost.toFixed(6)}`;
         } else {
           grandVal.textContent = `$${apiCost.toFixed(2)}`;
-          grandVal.title = `已识别模型价值：$${apiCost.toFixed(4)}`;
+          grandVal.title = `$${apiCost.toFixed(4)}`;
         }
       }
       if (grandSub) {
         grandSub.textContent = pricedCount > 0
-          ? `仅计入 ${pricedCount} 条已知真实模型调用`
-          : '当前范围内请求缺少模型型号（未按 $0 计入）';
+          ? t('cost.identSub', { n: pricedCount })
+          : t('cost.identSubNone');
       }
       if (pricedCount === 0) {
-        pillText = '0% 计价覆盖';
+        pillText = t('cost.covPct', { pct: 0 });
         pillClass = 'key-pill pill-warn';
       } else {
         const pct = curIdentified.coveragePercent != null ? curIdentified.coveragePercent : 0;
-        pillText = `${pct}% 计价覆盖`;
+        pillText = t('cost.covPct', { pct });
         pillClass = `key-pill ${pct >= 100 ? 'pill-good' : 'pill-warn'}`;
       }
 
@@ -2592,70 +8242,74 @@
     // 3. 用户实际支出渲染（首屏并列右栏）
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const curSymbol = ps.currencySymbol || '$';
-    if (subSpendLbl) subSpendLbl.textContent = '本人同期实际支出';
+    if (subSpendLbl) subSpendLbl.textContent = t('cost.subSpendLabel');
 
+    const extraNoCompare = isPeriod ? '' : t('cost.allNoCompare');
     if (subSpendVal && subNote) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         subSpendVal.textContent = `${curSymbol}0`;
-        subNote.textContent = `${ps.acquisitionSourceName || '免费活动'} · 用户确认 · 免费权益使用中${isPeriod ? '' : ' · 全量累计不直接对比单月支出'}`;
+        subNote.textContent = t('cost.freeActive', { src: ps.acquisitionSourceName || t('cost.freePromo'), extra: extraNoCompare });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         subSpendVal.textContent = `${curSymbol}${Number(ps.actualPricePaid).toFixed(2)}`;
-        subNote.textContent = `${ps.acquisitionSourceName || '订阅支出'} · 实付 (${ps.billingCycle || '月付'})${ps.isExpired ? ' · ⚠️ 权益已到期' : ''}${isPeriod ? '' : ' · 全量累计不直接对比单月支出'}`;
+        const expTag = ps.isExpired ? t('cost.expiredTag') : '';
+        subNote.textContent = `${ps.acquisitionSourceName || t('cost.subSpend')} · ${t('cost.paidLabel')} (${ps.billingCycle || t('plan.summary.perMonth')})${expTag}${extraNoCompare}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
-        subSpendVal.textContent = '实付未知';
-        subNote.textContent = `公开参考价 $${ps.officialPriceMonthly}/月（实付未确认）${isPeriod ? '' : ' · 全量累计不直接对比单月支出'}`;
+        subSpendVal.textContent = t('cost.paidUnknown');
+        subNote.textContent = `${t('cost.publicRefMonthly', { p: ps.officialPriceMonthly })}${extraNoCompare}`;
       } else {
-        subSpendVal.textContent = '未知';
-        subNote.textContent = '未获取到套餐与实付数据';
+        subSpendVal.textContent = t('cost.unknown');
+        subNote.textContent = t('cost.noPlanData');
       }
     }
 
     const subLine = el('cost-sub-line');
     if (subLine) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        subLine.textContent = `订阅额外实付：${curSymbol}0 (${ps.acquisitionSourceName || '免费活动'} · 用户确认)`;
+        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: ps.acquisitionSourceName || t('plan.tag.promo') });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         const cnyPart = (ps.currency !== 'CNY' && ps.cnyFormatted) ? ` (${ps.cnyFormatted})` : '';
-        subLine.textContent = `订阅实付：${curSymbol}${Number(ps.actualPricePaid).toFixed(2)}${cnyPart} (${ps.billingCycle || '月付'}${ps.isExpired ? ' · ⚠️ 权益已到期' : ''})`;
+        subLine.textContent = t('cost.subLinePaid', {
+          sym: curSymbol,
+          val: Number(ps.actualPricePaid).toFixed(2),
+          cny: cnyPart,
+          cycle: ps.billingCycle || t('plan.summary.perMonth'),
+          exp: ps.isExpired ? ' · ⚠️' : ''
+        });
       } else {
-        subLine.textContent = '订阅实付：未填写';
+        subLine.textContent = t('cost.subUnknown');
       }
     }
 
     // 4. 用量与参考差额指标条（注明累计处理 Token，含缓存读取）
     if (usageSummary) {
-      usageSummary.textContent = `累计处理 Token: ${fmtYi(curTotal)} (含 ${fmtYi(curCa)} 缓存读取)`;
+      usageSummary.textContent = t('cost.usageSummary', { total: fmtYi(curTotal), cache: fmtYi(curCa) });
     }
     if (diffSummary) {
       if (!isPeriod) {
-        diffSummary.textContent = '全量累计不直接与单月费用做差额比较 · 避免跨月虚高';
+        diffSummary.textContent = t('cost.diffAll');
       } else if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        diffSummary.textContent = `与此 API 方案参考差额 约 +$${apiCost.toFixed(2)} (免费权益使用中 · 不计算无限倍数)`;
+        diffSummary.textContent = t('cost.diffFree', { val: apiCost.toFixed(2) });
       } else if (ps.actualPricePaid !== null && ps.currency === 'USD') {
         const diff = apiCost - Number(ps.actualPricePaid);
-        diffSummary.textContent = `与此 API 方案参考差额 ${diff >= 0 ? '+' : ''}$${diff.toFixed(2)} (API折算 - 实际支出 · 仅供参考比较)`;
+        diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
       } else {
-        diffSummary.textContent = '跨币种或实付未知 · 并列展示不计算差额';
+        diffSummary.textContent = t('cost.diffUnknown');
       }
     }
 
     // 5. 详细未计价原因说明
     if (breakdown) {
       const modelKeys = Object.keys(curIdentified.byModel || {});
-      const modelDetails = modelKeys.map(k => `${k}: $${curIdentified.byModel[k].costUSD} (${fmt(curIdentified.byModel[k].tokens)} tok)`).join('； ');
-      const unpricedReasons = curIdentified.unpricedReasons || {};
-      const reasonParts = [];
-      if (unpricedReasons.missingModel) reasonParts.push(`${unpricedReasons.missingModel} 条日志缺少模型型号`);
-      if (unpricedReasons.unsupportedModel) reasonParts.push(`${unpricedReasons.unsupportedModel} 条模型未收录公开费率`);
-      if (unpricedReasons.missingUsage) reasonParts.push(`${unpricedReasons.missingUsage} 条缺少用量数据`);
-      const unpricedTokensStr = curIdentified.unpricedTokens > 0 ? `，涉及约 ${fmtYi(curIdentified.unpricedTokens)} 未估值 Token` : '';
-      const unpricedNote = reasonParts.length ? `；未识别部分：${reasonParts.join('，')}${unpricedTokensStr}（已按所选参考模型价表折算）` : '';
-      breakdown.textContent = `已识别真实模型明细：${modelDetails || '暂无已匹配真实模型'}${unpricedNote}。`;
+      const modelDetails = modelKeys.map(k => `${k}: $${curIdentified.byModel[k].costUSD} (${fmt(curIdentified.byModel[k].tokens)} tok)`).join('; ');
+      breakdown.textContent = t('cost.breakdownPrefix', {
+        details: modelDetails || t('cost.breakdownNone'),
+        note: ''
+      });
     }
 
     // 6. 兼容性辅助隐藏层同步
     const refGrand = el('ref-cost-grand-val');
-    if (refGrand) refGrand.textContent = `约 $${Number(curRef.totalCostUSD || 0).toFixed(2)}`;
+    if (refGrand) refGrand.textContent = t('cost.refApprox', { val: Number(curRef.totalCostUSD || 0).toFixed(2) });
   }
 
   const heatPop = el('heat-pop');
@@ -2846,21 +8500,54 @@
   // 模块 4: 数据渲染、完整本地 Token 历史读取与首次使用日起算时间轴
   // =========================================================================
   function renderFiles(session) {
-    const parent = el('files'); parent.replaceChildren();
-    if (!session) { const item = document.createElement('p'); item.textContent = '正在读取全量会话附件引用…'; parent.appendChild(item); return; }
-    if (!session.attachments.length) { const item = document.createElement('p'); item.textContent = '归档中没有上传附件引用。'; parent.appendChild(item); return; }
+    const parent = el('files');
+    if (!parent) return;
+    if (!session) {
+      const sig = `none|${currentPanelLanguage}`;
+      if (parent._lastRenderSig === sig) return;
+      parent._lastRenderSig = sig;
+      const item = document.createElement('p');
+      item.textContent = t('files.reading');
+      parent.replaceChildren(item);
+      return;
+    }
+    if (!Array.isArray(session.attachments) || !session.attachments.length) {
+      const sig = `empty|${currentPanelLanguage}`;
+      if (parent._lastRenderSig === sig) return;
+      parent._lastRenderSig = sig;
+      const item = document.createElement('p');
+      item.textContent = t('files.empty');
+      parent.replaceChildren(item);
+      return;
+    }
+    const filesSig = `${currentPanelLanguage}|` + session.attachments.map(file =>
+      `${file.name}|${file.references}|${file.width || 0}x${file.height || 0}|${file.chars || 0}|${file.sheets ?? ''}|${file.cells || 0}|${file.hiddenSheets || 0}|${file.source || ''}|${range(file) || ''}|${(file.unknownParts || []).join(',')}`
+    ).join(';');
+    if (parent._lastRenderSig === filesSig) return;
+    parent._lastRenderSig = filesSig;
+
+    const nodes = [];
     for (const file of session.attachments) {
       const item = document.createElement('div'); item.className = 'file';
-      const name = document.createElement('div'); name.className = 'file-name'; name.textContent = `${file.name} ${file.references > 1 ? `（引用 ${file.references} 次）` : ''}`;
+      const name = document.createElement('div'); name.className = 'file-name'; name.textContent = `${file.name} ${file.references > 1 ? t('files.refs', { n: file.references }) : ''}`;
       const detail = document.createElement('div'); detail.className = 'file-detail';
       const sizeInfo = file.width && file.height
-        ? `${file.width}×${file.height} 像素`
-        : (typeof file.chars === 'number' && file.chars > 0 ? `${fmt(file.chars)} 字符` : '');
-      const tokenInfo = range(file) ? `${range(file)} token` : '内容 token 未知';
-      detail.textContent = `${file.source === 'assistant' ? '模型输出附件 · ' : ''}${tokenInfo}${sizeInfo ? ` · ${sizeInfo}` : ''}${file.sheets != null ? ` · ${file.sheets} 个工作表，${fmt(file.cells)} 个单元格` : ''}${file.hiddenSheets ? `（含 ${file.hiddenSheets} 个隐藏表）` : ''}`;
+        ? t('files.px', { w: file.width, h: file.height })
+        : (typeof file.chars === 'number' && file.chars > 0 ? t('files.chars', { n: fmt(file.chars) }) : '');
+      const tokenInfo = range(file) ? `${range(file)} token` : t('files.tokUnknown');
+      const sheetsPart = file.sheets != null ? t('files.sheets', { sheets: file.sheets, cells: fmt(file.cells) }) : '';
+      const hiddenPart = file.hiddenSheets ? t('files.hiddenSheets', { n: file.hiddenSheets }) : '';
+      detail.textContent = `${file.source === 'assistant' ? t('files.assistantPrefix') : ''}${tokenInfo}${sizeInfo ? ` · ${sizeInfo}` : ''}${sheetsPart}${hiddenPart}`;
       item.appendChild(name); item.appendChild(detail);
-      if (file.unknownParts?.length) { const unknown = document.createElement('div'); unknown.className = 'file-unknown'; unknown.textContent = '未计全：' + file.unknownParts.join('；'); item.appendChild(unknown); }
-      parent.appendChild(item);
+      if (file.unknownParts?.length) { const unknown = document.createElement('div'); unknown.className = 'file-unknown'; unknown.textContent = t('files.unknownPrefix', { parts: file.unknownParts.join('；') }); item.appendChild(unknown); }
+      nodes.push(item);
+    }
+    const outerPanel = el('panel');
+    const prevPanelScrollTop = (outerPanel && typeof outerPanel.scrollTop === 'number') ? outerPanel.scrollTop : 0;
+    parent.replaceChildren();
+    for (const n of nodes) parent.appendChild(n);
+    if (outerPanel && prevPanelScrollTop > 0 && Math.abs((outerPanel.scrollTop || 0) - prevPanelScrollTop) > 1) {
+      outerPanel.scrollTop = prevPanelScrollTop;
     }
   }
 
@@ -2911,6 +8598,9 @@
   function formatZhYmd(ymd) {
     const d = parseLocalYmd(ymd);
     if (!d) return ymd || '—';
+    if (currentPanelLanguage === 'en') {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
     return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
   }
 
@@ -2968,7 +8658,7 @@
     }
 
     const firstBadge = el('first-use-badge');
-    if (firstBadge) firstBadge.textContent = `首次使用：${formatZhYmd(firstStr)}`;
+    if (firstBadge) firstBadge.textContent = t('tokens.firstUse', { date: formatZhYmd(firstStr) });
     const rangeEl = el('h-win-range');
     const prevBtn = el('h-page-prev');
     const nextBtn = el('h-page-next');
@@ -2983,7 +8673,7 @@
       const firstMonthKey = firstY * 12 + firstM;
       canPrev = targetMonthKey > firstMonthKey;
       canNext = heatMonthOffset < 0;
-      if (rangeEl) rangeEl.textContent = `${targetY}年${targetM + 1}月`;
+      if (rangeEl) rangeEl.textContent = t('tokens.range.month', { y: targetY, m: currentPanelLanguage === 'en' ? String(targetM + 1).padStart(2, '0') : (targetM + 1) });
     } else if (activeHeatView === 'yearly') {
       const thisY = today.getFullYear();
       const targetY = thisY + heatYearOffset;
@@ -2991,7 +8681,7 @@
       canPrev = targetY > firstY;
       canNext = heatYearOffset < 0;
       if (rangeEl) {
-        rangeEl.textContent = (targetY === thisY) ? `${targetY}年（1月1日–今天）` : `${targetY}年`;
+        rangeEl.textContent = (targetY === thisY) ? t('tokens.range.yearToToday', { y: targetY }) : t('tokens.range.year', { y: targetY });
       }
     } else {
       if (rangeEl) rangeEl.textContent = `${formatDotYmd(winStart)} – ${formatDotYmd(winEnd)}`;
@@ -3005,8 +8695,47 @@
 
   function applyTokenHistoryPayload(payload) {
     if (!payload || typeof payload !== 'object') return false;
+    const incomingScope = payload.accountScopeKey || (payload.planStatus?.email ? String(payload.planStatus.email).trim().toLowerCase() : null);
+    if (payload.isAccountSwitched || (incomingScope && typeof handleQuotaAccountSwitch === 'function' && handleQuotaAccountSwitch(incomingScope))) {
+      if (typeof handleQuotaAccountSwitch === 'function') handleQuotaAccountSwitch(incomingScope || null, { forceRefresh: true });
+    }
     if (payload.loading) {
       if (Number(ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) > 0) return false;
+    }
+
+    if (payload.isAccountSwitched) {
+      ANTIGRAVITY_TOKEN_DATA.recentModelUsage = [];
+      ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs = null;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'quotaUsageCoverageStartMs')) {
+      ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs = payload.quotaUsageCoverageStartMs ?? null;
+    }
+    if (Array.isArray(payload.recentModelUsage)) {
+      ANTIGRAVITY_TOKEN_DATA.recentModelUsage = payload.recentModelUsage;
+      if (typeof refreshQuotaTokenEstimates === 'function') {
+        refreshQuotaTokenEstimates();
+      }
+    }
+    if (Array.isArray(payload.speedRecords)) {
+      ANTIGRAVITY_TOKEN_DATA.speedRecords = payload.speedRecords;
+      if (!isContextSettingsView && activeContextTab === 'speed') {
+        renderSpeedComparisonTab();
+      } else if (!isContextSettingsView && activeContextTab === 'models') {
+        renderModelSettingsTab();
+      }
+    }
+    if (payload.modelCapabilitiesById && typeof payload.modelCapabilitiesById === 'object') {
+      mergeCapabilitiesMapClient(payload.modelCapabilitiesById);
+    }
+    if (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0) {
+      const hasExisting = Array.isArray(state.cascadeModelConfigs) && state.cascadeModelConfigs.length > 0;
+      const incomingHasCaps = payload.cascadeModelConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
+      const existingHasCaps = hasExisting && state.cascadeModelConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
+      if (!hasExisting || (incomingHasCaps && !existingHasCaps)) {
+        state.cascadeModelConfigs = payload.cascadeModelConfigs;
+        renderHeaderModelDropdown();
+        if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
+      }
     }
 
     const hasExistingData = Number(ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) > 0;
@@ -3115,12 +8844,12 @@
             const jsonStr = JSON.stringify(customObj);
             if (email && email !== 'default') localStorage?.setItem('ag_custom_plan_' + email.toLowerCase(), jsonStr);
             localStorage?.setItem('ag_custom_plan_default', jsonStr);
-          } catch {}
+          } catch { }
           if (core && core.resolveEffectivePlanStatus) {
             mergedPlan = core.resolveEffectivePlanStatus(payload.rawPlanStatus || payload.planStatus, customObj, { currentEmail: email });
           }
         }
-      } catch {}
+      } catch { }
       ANTIGRAVITY_TOKEN_DATA.planStatus = mergedPlan;
       ANTIGRAVITY_TOKEN_DATA.rawPlanStatus = payload.rawPlanStatus || payload.planStatus || mergedPlan;
       renderPlanDetail(mergedPlan);
@@ -3163,7 +8892,7 @@
     const badgeExtra = el('token-hover-extra');
     const overAmt = el('overflow-tokens-val');
     if (badgeAmt) badgeAmt.textContent = fmtCardM(totalTokens);
-    if (badgeExtra) badgeExtra.textContent = `· 今日 ${fmtCardM(shownToday)}`;
+    if (badgeExtra) badgeExtra.textContent = t('tokens.badge.today', { val: fmtCardM(shownToday) });
     if (overAmt) overAmt.textContent = fmtCardM(totalTokens);
 
     const tTotalVal = el('t-total-val');
@@ -3178,11 +8907,11 @@
     if (tTotalVal) tTotalVal.textContent = fmtCardM(totalTokens);
     if (tTotalSub) tTotalSub.textContent = `${totalTokens.toLocaleString('en-US')} Tokens`;
     if (tTodayVal) tTodayVal.textContent = fmtCardM(shownToday);
-    if (tTodaySub) tTodaySub.textContent = `${convCount} 会话实时累加`;
+    if (tTodaySub) tTodaySub.textContent = t('tokens.card.todaySub', { n: convCount });
     if (tMonthVal) tMonthVal.textContent = fmtCardM(monthTokens);
-    if (tMonthSub) tMonthSub.textContent = `日均约 ${fmtCardM(avgMonth)}`;
+    if (tMonthSub) tMonthSub.textContent = t('tokens.card.monthSub', { val: fmtCardM(avgMonth) });
     if (tYearVal) tYearVal.textContent = fmtCardM(yearTokens);
-    if (tYearSub) tYearSub.textContent = `${totalDays} 天活动记录`;
+    if (tYearSub) tYearSub.textContent = t('tokens.card.yearSub', { n: totalDays });
 
     // 聚合全周期各区间预估费用
     const allDateKeys = Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap || {});
@@ -3210,16 +8939,16 @@
     const tYearCost = el('t-year-cost');
 
     if (tTotalCost) {
-      tTotalCost.textContent = `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''} · 日均 $${totalCostAgg.dailyAverageUSD.toFixed(2)}`;
+      tTotalCost.textContent = `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
     if (tTodayCost) {
       tTodayCost.textContent = `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
     }
     if (tMonthCost) {
-      tMonthCost.textContent = `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''} · 日均 $${monthCostAgg.dailyAverageUSD.toFixed(2)}`;
+      tMonthCost.textContent = `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
     if (tYearCost) {
-      tYearCost.textContent = `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''} · 日均 $${yearCostAgg.dailyAverageUSD.toFixed(2)}`;
+      tYearCost.textContent = `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
     }
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
@@ -3232,17 +8961,14 @@
 
 
   async function recordModelCallsRemote(calls) {
-    if (!calls || !calls.length) return;
-    let changed = false;
-    const hasFinalCall = calls.some(c => c?.status === 'final');
+    if (!calls || !calls.length) return { ok: false, changed: false };
     try {
       if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function') {
         const res = await window.contextMeterAPI.recordCalls(calls);
         if (res && res.ok === false) {
           console.warn('Context Meter: 记录调用入账失败', res.error);
-        } else if (res?.changed) {
-          changed = true;
         }
+        return res || { ok: false, changed: false };
       } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
         const live = window.__AGContextMeterLive;
         const resp = await fetch(`http://127.0.0.1:${live.port}/record-calls`, {
@@ -3251,22 +8977,29 @@
           body: JSON.stringify({ calls })
         });
         if (!resp.ok) {
+          const errBody = typeof resp.json === 'function' ? await resp.json().catch(() => null) : null;
           console.warn(`Context Meter: 实时通道 record-calls 响应异常 HTTP ${resp.status}`);
+          return {
+            ok: false,
+            changed: false,
+            status: resp.status,
+            ...(errBody?.error ? { error: errBody.error } : {}),
+            ...(errBody?.phase ? { phase: errBody.phase } : {}),
+            ...(errBody?.code ? { code: errBody.code } : {})
+          };
         } else {
           const res = await resp.json().catch(() => null);
           if (res && res.ok === false) {
             console.warn('Context Meter: 实时通道 record-calls 失败', res.error);
-          } else if (res?.changed) {
-            changed = true;
           }
+          return res || { ok: false, changed: false, status: resp.status };
         }
-      }
-      if (changed || hasFinalCall) {
-        void syncTokenHistoryFromHost(false);
       }
     } catch (err) {
       console.warn('Context Meter: 调用入账发生异常', err);
+      return { ok: false, changed: false, error: err?.message || String(err || '') };
     }
+    return { ok: false, changed: false };
   }
 
   async function restoreSettingsFromHost() {
@@ -3298,6 +9031,30 @@
       }
 
       if (settingsRes?.ok) {
+        if (settingsRes.uiPreferences?.restartVerification && typeof settingsRes.uiPreferences.restartVerification === 'object') {
+          pendingRestartVerification = { ...settingsRes.uiPreferences.restartVerification };
+          void refreshUnlockStatus();
+        }
+        if (settingsRes.contextScopeMode) {
+          contextScopeMode = settingsRes.contextScopeMode === 'per_model' ? 'per_model' : 'unified';
+        } else {
+          const hasPerModelPrefs = settingsRes.contextPreferences && Object.values(settingsRes.contextPreferences).some(p => p && p.mode && p.mode !== 'default');
+          contextScopeMode = hasPerModelPrefs ? 'per_model' : 'unified';
+        }
+
+        if (settingsRes.contextUnifiedPreference && typeof settingsRes.contextUnifiedPreference === 'object') {
+          contextUnifiedPreference = { ...settingsRes.contextUnifiedPreference };
+        } else {
+          contextUnifiedPreference = { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
+        }
+
+        if (settingsRes.contextPreferences && typeof settingsRes.contextPreferences === 'object') {
+          contextPreferencesMap = { ...settingsRes.contextPreferences };
+        }
+        syncContextPreferencesCache(contextPreferencesMap);
+        renderHeaderModelDropdown();
+        if (!ctxDraftDirty) loadDraftFromSelectedModel(true);
+        else renderCompactSessionCard();
         const savedView = settingsRes.savedHeatView || settingsRes.uiPreferences?.savedHeatView;
         if (savedView && ['daily', 'weekly', 'monthly', 'yearly', 'cum'].includes(savedView)) {
           switchHeatView(savedView, false);
@@ -3310,10 +9067,15 @@
           const chk = el('check-auto-update');
           if (chk) chk.checked = autoCheckUpdate;
         }
+        const savedLang = settingsRes.panelLanguage || settingsRes.uiPreferences?.panelLanguage;
+        if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang) && savedLang !== currentPanelLanguage) {
+          await applyPanelLanguage(savedLang, { persist: false });
+        }
         const savedShowCli = settingsRes.showCliButton !== undefined
           ? settingsRes.showCliButton
           : settingsRes.uiPreferences?.showCliButton;
-        applyCliButtonVisibility(savedShowCli === true);
+        const nextShowCli = savedShowCli === true;
+        applyCliButtonVisibility(nextShowCli, nextShowCli !== showCliButton);
         try {
           localStorage?.setItem('ag_ui_show_cli', savedShowCli === true ? '1' : '0');
         } catch {}
@@ -3326,12 +9088,23 @@
           localStorage?.setItem('ag_ui_sidecar_chinese', sidecarChineseEnabled ? '1' : '0');
         } catch {}
         void refreshModulesDisplay();
+      } else {
+        try {
+          const localLang = localStorage?.getItem('ag_panel_language');
+          if (localLang && ['zh-CN', 'zh-TW', 'en'].includes(localLang) && localLang !== currentPanelLanguage) {
+            await applyPanelLanguage(localLang, { persist: false });
+          }
+        } catch { }
       }
 
       if (settingsRes?.ok && settingsRes.customPlan && typeof settingsRes.customPlan === 'object') {
         lastSavedCustomPlan = { ...settingsRes.customPlan };
         if (typeof window !== 'undefined') {
-          window.__AGContextMeterSettings = { ok: true, customPlan: { ...settingsRes.customPlan } };
+          window.__AGContextMeterSettings = {
+            ok: true,
+            customPlan: { ...settingsRes.customPlan },
+            contextPreferences: { ...contextPreferencesMap }
+          };
         }
 
         const email = ANTIGRAVITY_TOKEN_DATA.planStatus?.email || settingsRes.customPlan?.account || currentEmail || 'default';
@@ -3339,7 +9112,7 @@
           const jsonStr = JSON.stringify(settingsRes.customPlan);
           if (email && email !== 'default') localStorage?.setItem('ag_custom_plan_' + String(email).toLowerCase(), jsonStr);
           localStorage?.setItem('ag_custom_plan_default', jsonStr);
-        } catch {}
+        } catch { }
         applyCustomPlanObjectLocally(settingsRes.customPlan, email);
       } else {
         // 回退检查 localStorage
@@ -3354,57 +9127,85 @@
           }
         }
       }
-    } catch {}
+    } catch { }
   }
 
+  let lastHistorySync = 0;
   let historySyncBusy = false;
-  let pendingHistoryForce = false;
+  let historySyncPending = false;
+  let historySyncPendingForce = false;
+  const AUTOMATIC_HISTORY_SYNC_INTERVAL_MS = 5000;
+  let automaticHistorySyncPending = false;
+  let lastAutomaticHistorySync = null;
+  let hasScheduledInitialUpdateCheck = false;
+  let startupRestorePromise = null;
+
+  function syncPendingAutomaticHistory() {
+    if (!automaticHistorySyncPending || historySyncBusy || state.disposed) return;
+    const now = Date.now();
+    if (lastAutomaticHistorySync !== null && now - lastAutomaticHistorySync < AUTOMATIC_HISTORY_SYNC_INTERVAL_MS) return;
+    lastAutomaticHistorySync = now;
+    void syncTokenHistoryFromHost(true);
+  }
+
   async function syncTokenHistoryFromHost(force = false) {
     if (state.disposed) return;
     if (historySyncBusy) {
-      if (force) {
-        pendingHistoryForce = true;
-      }
+      historySyncPending = true;
+      if (force) historySyncPendingForce = true;
       return;
     }
+    const forceFlag = Boolean(force);
+    if (forceFlag) automaticHistorySyncPending = false;
     historySyncBusy = true;
+    lastHistorySync = Date.now();
     try {
-      await restoreSettingsFromHost();
+      const fetchHistoryAsync = async () => {
+        if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
+          return await window.contextMeterAPI.getTokenHistory(forceFlag);
+        }
+        if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+          const live = window.__AGContextMeterLive;
+          const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+            body: JSON.stringify({ force: forceFlag })
+          });
+          if (r.ok) {
+            return await r.json();
+          }
+        }
+        return null;
+      };
+      const restoreStep = startupRestorePromise
+        ? startupRestorePromise
+        : restoreSettingsFromHost();
+      const [, res] = await Promise.all([restoreStep, fetchHistoryAsync()]);
+      if (state.disposed) return;
       if (typeof window !== 'undefined' && window.__AGContextMeterHistory) {
         if (!ANTIGRAVITY_TOKEN_DATA.updatedAt && !ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) {
           applyTokenHistoryPayload(window.__AGContextMeterHistory);
         }
       }
-      if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getTokenHistory === 'function') {
-        const res = await window.contextMeterAPI.getTokenHistory(Boolean(force));
-        if (res?.ok && res.data) {
-          if (typeof window !== 'undefined') window.__AGContextMeterHistory = res.data;
-          applyTokenHistoryPayload(res.data);
-        }
-      } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
-        const live = window.__AGContextMeterLive;
-        const r = await fetch(`http://127.0.0.1:${live.port}/token-history`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
-          body: JSON.stringify({ force: Boolean(force) })
-        });
-        if (r.ok) {
-          const j = await r.json();
-          if (j?.ok && j.data) {
-            if (typeof window !== 'undefined') window.__AGContextMeterHistory = j.data;
-            applyTokenHistoryPayload(j.data);
-          }
-        }
+      if (res?.ok && res.data) {
+        if (typeof window !== 'undefined') window.__AGContextMeterHistory = res.data;
+        applyTokenHistoryPayload(res.data);
       }
-    } catch {}
+    } catch { }
     finally {
       historySyncBusy = false;
-      if (pendingHistoryForce) {
-        pendingHistoryForce = false;
-        void syncTokenHistoryFromHost(true);
+      lastHistorySync = Date.now();
+      if (!hasScheduledInitialUpdateCheck && autoCheckUpdate && !state.disposed) {
+        hasScheduledInitialUpdateCheck = true;
+        setTimeout(() => { if (!state.disposed) void checkAppUpdate(false); }, 4500);
       }
-      if (autoCheckUpdate) {
-        setTimeout(() => { void checkAppUpdate(false); }, 1200);
+      if (historySyncPending && !state.disposed) {
+        const nextForce = historySyncPendingForce;
+        historySyncPending = false;
+        historySyncPendingForce = false;
+        void syncTokenHistoryFromHost(nextForce);
+      } else {
+        syncPendingAutomaticHistory();
       }
     }
   }
@@ -3472,15 +9273,15 @@
     const applyBtn = el('btn-apply-update');
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-1';
     const hasBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     if (!hasBridge) {
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
-      if (titleEl) titleEl.textContent = 'ℹ️ 更新不可用';
-      if (verEl) verEl.textContent = `v${currentVer} (更新不可用)`;
-      if (bodyEl) bodyEl.textContent = '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。';
+      if (titleEl) titleEl.textContent = t('update.unavailableTitle');
+      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentVer });
+      if (bodyEl) bodyEl.textContent = t('update.unavailableBody');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       if (manual) showUpdatePopover(trigger);
@@ -3490,9 +9291,9 @@
     if (manual) {
       cachedLatestRelease = null;
       showUpdatePopover(trigger);
-      if (titleEl) titleEl.textContent = '🔄 检查更新中';
-      if (verEl) verEl.textContent = `v${currentVer} (正在检查…)`;
-      if (bodyEl) bodyEl.textContent = '正在连接 GitHub 检测最新版本…';
+      if (titleEl) titleEl.textContent = t('update.checkingTitle');
+      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentVer });
+      if (bodyEl) bodyEl.textContent = t('update.connecting');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
     }
@@ -3505,10 +9306,10 @@
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (titleEl) titleEl.textContent = '⚠️ 检查更新失败';
-        if (verEl) verEl.textContent = `v${currentVer} (检查失败)`;
-        const errMsg = res?.error || '未能获取有效的版本数据';
-        if (bodyEl) bodyEl.textContent = `检查更新失败: ${errMsg}。请检查网络代理设置或前往 GitHub 查看。`;
+        if (titleEl) titleEl.textContent = t('update.failedTitle');
+        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+        const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
+        if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         if (manual) showUpdatePopover(trigger);
         return;
@@ -3518,14 +9319,14 @@
         cachedLatestRelease = res;
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
-        if (titleEl) titleEl.textContent = '🚀 发现新版本';
+        if (titleEl) titleEl.textContent = t('update.foundTitle');
         if (verEl) verEl.textContent = `v${res.currentVersion || currentVer} → v${res.latestVersion}`;
         if (bodyEl) {
-          bodyEl.textContent = `发现新版本 v${res.latestVersion}！\n\n更新说明：\n${res.releaseNotes || '性能优化与体验改进'}`;
+          bodyEl.textContent = t('update.foundBody', { ver: res.latestVersion, notes: res.releaseNotes || t('update.defaultNotes') });
         }
         if (applyBtn) {
           applyBtn.disabled = false;
-          applyBtn.textContent = '立即更新';
+          applyBtn.textContent = t('update.applyNow');
           applyBtn.style.display = 'inline-block';
         }
         if (manual) showUpdatePopover(trigger);
@@ -3533,12 +9334,12 @@
         cachedLatestRelease = null;
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
-        if (titleEl) titleEl.textContent = '✅ 已是最新版本';
+        if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
-        if (verEl) verEl.textContent = `v${effectiveCurrent} (已是最新)`;
+        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveCurrent });
         const updateStatusText = res.diskPendingRestart
-          ? `已完成磁盘安装至最新版本 (v${effectiveCurrent})，待重启客户端后主进程完整生效。`
-          : `当前已是最新版本 (v${effectiveCurrent})。已通过 GitHub Releases 确认。`;
+          ? t('update.diskPending', { ver: effectiveCurrent })
+          : t('update.latestBody', { ver: effectiveCurrent });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         if (manual) showUpdatePopover(trigger);
@@ -3547,9 +9348,9 @@
       cachedLatestRelease = null;
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
-      if (titleEl) titleEl.textContent = '⚠️ 检查更新失败';
-      if (verEl) verEl.textContent = `v${currentVer} (检查失败)`;
-      if (bodyEl) bodyEl.textContent = `检查更新失败: ${err.message}。请检查网络连接或稍后重试。`;
+      if (titleEl) titleEl.textContent = t('update.failedTitle');
+      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+      if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       if (manual) showUpdatePopover(trigger);
     }
@@ -3568,11 +9369,11 @@
 
     if (applyBtn) {
       applyBtn.disabled = true;
-      applyBtn.textContent = '正在更新...';
+      applyBtn.textContent = t('update.updatingBtn');
     }
     if (statusEl) {
       statusEl.style.display = 'block';
-      statusEl.textContent = '正在下载安装包并校验 SHA-256...';
+      statusEl.textContent = t('update.downloading');
     }
 
     try {
@@ -3580,47 +9381,46 @@
       if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.applyUpdate === 'function') {
         res = await window.contextMeterAPI.applyUpdate({ version: cachedLatestRelease.latestVersion });
       } else {
-        throw new Error('更新接口不可用');
+        throw new Error(t('update.noApi'));
       }
       if (res && res.ok) {
-        const targetVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || currentVer;
-        currentVer = targetVer;
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-1';
+        const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
-        if (vEl) vEl.textContent = `v${currentVer}`;
+        if (vEl) vEl.textContent = `v${nextVer}`;
 
         const dot = el('update-badge-dot');
         const dotCtx = el('update-badge-dot-ctx');
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
 
-        if (titleEl) titleEl.textContent = '🎉 更新已完成';
-        if (verEl) verEl.textContent = `v${currentVer} (已是最新)`;
+        if (titleEl) titleEl.textContent = t('update.doneTitle');
+        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
         if (bodyEl) {
           bodyEl.textContent = res.liveInjected
-            ? `已成功在线更新至 v${currentVer}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。`
-            : `已成功完成 v${currentVer} 磁盘更新，需完全重启 Antigravity 后生效。`;
+            ? t('update.doneHot', { ver: nextVer })
+            : t('update.doneDisk', { ver: nextVer });
         }
         if (applyBtn) {
-          applyBtn.textContent = '已更新';
+          applyBtn.textContent = t('update.btnUpdated');
           applyBtn.disabled = false;
         }
 
         if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = `🎉 磁盘更新成功 (v${currentVer})！已完成热注入即时生效（界面已刷新，主进程待重启完整生效）。`;
+          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
         } else {
-          const detail = res.diskInstalled ? '已完成磁盘安装' : '更新已完成';
-          if (statusEl) statusEl.textContent = `✅ ${detail} (v${currentVer})，需完全重启 Antigravity 后生效。`;
+          if (statusEl) statusEl.textContent = t('update.doneDisk', { ver: nextVer });
         }
         setTimeout(() => {
           if (pop) pop.style.display = 'none';
         }, 3500);
       } else {
-        if (statusEl) statusEl.textContent = `✖ 更新失败: ${res?.error || '未知错误'}`;
-        if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = '重试更新'; }
+        if (statusEl) statusEl.textContent = t('update.failStatus', { err: translateBackendText(res?.error) || t('models.meta.archUnknown') });
+        if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
       }
     } catch (err) {
-      if (statusEl) statusEl.textContent = `✖ 更新异常: ${err.message}`;
-      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = '重试更新'; }
+      if (statusEl) statusEl.textContent = t('update.errStatus', { err: translateBackendText(err.message) });
+      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = t('update.btnRetry'); }
     }
   }
 
@@ -3656,10 +9456,10 @@
   el('btn-apply-update')?.addEventListener('click', () => void applyAppUpdate());
 
   function handleSidecarChineseCheckboxChange(e) {
-    void applyChineseLocalizationToggle(Boolean(e?.target?.checked));
+    void setClientLanguageTarget(Boolean(e?.target?.checked));
   }
-  el('check-sidecar-chinese')?.addEventListener('change', handleSidecarChineseCheckboxChange);
-  el('check-sidecar-chinese-tokens')?.addEventListener('change', handleSidecarChineseCheckboxChange);
+  el('check-live-chinese')?.addEventListener('change', handleSidecarChineseCheckboxChange);
+  el('check-live-chinese-tokens')?.addEventListener('change', handleSidecarChineseCheckboxChange);
 
   function handleShowCliCheckboxChange(e) {
     ++userActionSeq;
@@ -3730,46 +9530,51 @@
     } else if (stale && d?.actual != null && d?.budget) {
       const usedRound = Math.min(100, Math.max(0, Math.round((d.actual / d.budget) * 100)));
       const remRound = Math.max(0, 100 - usedRound);
-      tipTitle.textContent = '上下文窗口（数据过期）：';
-      tipPct.textContent = `${usedRound}% 已用（剩余 ${remRound}% · 统计延迟）`;
-      tipDetail.textContent = `已用 ${fmtBubbleToken(d.actual)} token，共 ${fmtBubbleToken(d.budget)}`;
+      tipTitle.textContent = t('tip.title.stale');
+      tipPct.textContent = t('tip.pct.staleVal', { used: usedRound, rem: remRound });
+      tipDetail.textContent = t('tip.detail.usedOfBudget', { used: fmtBubbleToken(d.actual), budget: fmtBubbleToken(d.budget), inc: '' });
     } else if (stale) {
-      tipTitle.textContent = '上下文窗口（数据过期）：';
-      tipPct.textContent = '统计读取延迟（剩余未知）';
-      tipDetail.textContent = session
-        ? `会话估算 ≈ ${fmtBubbleToken(session.total.low)}–${fmtBubbleToken(session.total.high)} token`
-        : '正在等待后台更新统计数据';
+      tipTitle.textContent = t('tip.title.stale');
+      tipPct.textContent = t('tip.pct.staleUnknown');
+      tipDetail.textContent = session?.total
+        ? t('tip.detail.sessionEst', { low: fmtBubbleToken(session.total.low), high: fmtBubbleToken(session.total.high) })
+        : t('tip.detail.waitBg');
     } else if (d?.actual != null && d?.budget) {
       const rawPct = pct != null ? pct : (d.actual / d.budget) * 100;
       const usedRound = rawPct > 0 && rawPct < 1 ? 1 : Math.min(100, Math.max(0, Math.round(rawPct)));
       const remRound = Math.max(0, 100 - usedRound);
       if (rawPct >= 90) {
-        tipTitle.textContent = '上下文窗口（高占用告警）：';
-        tipPct.textContent = `${usedRound}% 已用（剩余 ${remRound}% · 接近上限）`;
+        tipTitle.textContent = t('tip.title.high90');
+        tipPct.textContent = t('tip.pct.high90', { used: usedRound, rem: remRound });
       } else if (rawPct >= 75) {
-        tipTitle.textContent = '上下文窗口（占用偏高）：';
-        tipPct.textContent = `${usedRound}% 已用（剩余 ${remRound}% · 占用偏高）`;
+        tipTitle.textContent = t('tip.title.high75');
+        tipPct.textContent = t('tip.pct.high75', { used: usedRound, rem: remRound });
       } else {
-        tipTitle.textContent = '上下文窗口：';
-        tipPct.textContent = `${usedRound}% 已用（剩余 ${remRound}%）`;
+        tipTitle.textContent = t('tip.title.normal');
+        tipPct.textContent = t('tip.pct.normal', { used: usedRound, rem: remRound });
       }
-      tipDetail.textContent = `已用 ${fmtBubbleToken(d.actual)} token，共 ${fmtBubbleToken(d.budget)}${incomplete ? '（含未知附件）' : ''}`;
+      tipDetail.textContent = t('tip.detail.usedOfBudget', {
+        used: fmtBubbleToken(d.actual),
+        budget: fmtBubbleToken(d.budget),
+        inc: incomplete ? t('tip.detail.incSuffix') : ''
+      });
     } else if (d?.actual != null && !d?.budget) {
-      tipTitle.textContent = '上下文窗口：';
-      tipPct.textContent = '容量未知（未返回上限）';
-      tipDetail.textContent = `已用 ${fmtBubbleToken(d.actual)} token，总容量未知`;
+      tipTitle.textContent = t('tip.title.normal');
+      tipPct.textContent = t('tip.pct.noBudget');
+      tipDetail.textContent = t('tip.detail.usedNoBudget', { used: fmtBubbleToken(d.actual) });
     } else if (d?.estimated || d?.estimate != null) {
-      tipTitle.textContent = '上下文窗口（本地估算）：';
-      tipPct.textContent = '真实占比未知（仅估算）';
-      tipDetail.textContent = `已用 ≈ ${fmtBubbleToken(d.estimate)} token${d.budget ? `，共 ${fmtBubbleToken(d.budget)}` : '，总容量未知'}`;
-    } else if (session) {
-      tipTitle.textContent = '上下文窗口（本地估算）：';
-      tipPct.textContent = '等待请求统计（仅归档估算）';
-      tipDetail.textContent = `会话累计 ≈ ${fmtBubbleToken(session.total.low)}–${fmtBubbleToken(session.total.high)} token`;
+      tipTitle.textContent = t('tip.title.est');
+      tipPct.textContent = t('tip.pct.estOnly');
+      const budgetPart = d.budget ? t('tip.detail.estBudgetPart', { budget: fmtBubbleToken(d.budget) }) : t('tip.detail.estNoBudgetPart');
+      tipDetail.textContent = t('tip.detail.estUsed', { used: fmtBubbleToken(d.estimate), budget: budgetPart });
+    } else if (session?.total) {
+      tipTitle.textContent = t('tip.title.est');
+      tipPct.textContent = t('tip.pct.waitStats');
+      tipDetail.textContent = t('tip.detail.sessionCum', { low: fmtBubbleToken(session.total.low), high: fmtBubbleToken(session.total.high) });
     } else {
-      tipTitle.textContent = '上下文窗口：';
-      tipPct.textContent = '数据尚未就绪';
-      tipDetail.textContent = '正在读取当前会话上下文用量…';
+      tipTitle.textContent = t('tip.title.normal');
+      tipPct.textContent = t('tip.pct.notReady');
+      tipDetail.textContent = t('tip.detail.readingSession');
     }
 
     if (state.tooltipOpen) positionContextTooltip();
@@ -3785,8 +9590,9 @@
       speedAmount.textContent = isCompact ? `${sp.tps}` : `${sp.tps} tok/s`;
       if (overflowSpeedVal) overflowSpeedVal.textContent = `${sp.tps} tok/s`;
     } else if (state.requestBusy) {
-      speedAmount.textContent = isCompact ? '…' : '计算中…';
-      if (overflowSpeedVal) overflowSpeedVal.textContent = '计算中…';
+      const calcText = t('badge.speedCalc');
+      speedAmount.textContent = isCompact ? '…' : calcText;
+      if (overflowSpeedVal) overflowSpeedVal.textContent = calcText;
     } else {
       speedAmount.textContent = isCompact ? '--' : '-- tok/s';
       if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
@@ -3803,10 +9609,11 @@
       const barFill = el('bar-fill');
       if (barFill) barFill.style.width = '0%';
       setContextBadgeDisplay('--%', '');
-      el('amount').textContent = '未打开会话';
-      setHoverExtra(showCliButton ? ' · 点击查看或启动 CLI' : ' · 点击查看统计明细');
+      el('amount').textContent = t('badge.noSession');
+      setHoverExtra(showCliButton ? t('badge.clickOpenCli') : ' · 点击查看统计明细');
       syncSpeedBadgeText();
-      el('badge-tokens').title = 'Token 用量一览（点击展开详情）';
+      el('badge-tokens').title = t('badge.tokensTitle');
+      syncContextModelSelectionFromState();
       return;
     }
     renderSessionCost();
@@ -3836,28 +9643,35 @@
 
     updateRingAndBubble(d, session, pct, danger, stale, incomplete);
 
-    // 上下文预算与解锁状态自动联动：若观测到预算突破 256,000，且解锁抽屉中记录仍为待重启或未确认，则自动触发刷新同步
-    if (d?.budget && d.budget > 256000 && currentUnlockStatus && currentUnlockStatus.status !== 'verified_active') {
-      void refreshUnlockStatus();
+    syncContextModelSelectionFromState();
+
+    // 若观测到的上下文预算变化且抽屉已展开或尚未读取状态，触发一次轻量同步（不再据此判定真实请求已验证）
+    if (d?.budget && d.budget !== lastAutoObservedBudget && d.budget > 256000) {
+      lastAutoObservedBudget = d.budget;
+      if (currentUnlockStatus || (unlockDrawerBody && unlockDrawerBody.style.display === 'block')) {
+        void refreshUnlockStatus();
+      }
     }
 
     const status = disp.isError
       ? disp.statusText
-      : stale ? '最近请求统计读取异常或延迟，不能判断剩余空间。'
-      : state.scanError ? '全会话扫描未完成：' + state.scanError
-      : incomplete ? `存在 ${session.unknownFiles} 个附件含未知内容；会话总量仍未计全，不能据此保证不会超限。`
-      : d?.estimated ? '只有客户端估算，附件等内容可能未计全；当前请求真实占用未知。'
-      : '请求用量与会话累计分别统计；会话 token 数始终为本地估算。';
+      : stale ? t('badge.status.stale')
+        : state.scanError ? t('badge.status.scanErr', { err: translateBackendText(state.scanError) })
+          : incomplete ? t('badge.status.incomplete', { count: session.unknownFiles })
+            : d?.estimated ? t('badge.status.estimated')
+              : t('badge.status.normal');
     el('status').textContent = status;
 
-    const corpus = session ? `会话${range(session.total)}${incomplete ? '＋未知' : ''}` : state.scanBusy ? '会话扫描中…' : '会话待扫描';
+    const corpus = session?.total
+      ? t('badge.corpus.range', { range: range(session.total), inc: incomplete ? t('badge.corpus.incPlus') : '' })
+      : state.scanBusy ? t('badge.corpus.scanning') : t('badge.corpus.pending');
 
     if (disp.isError || disp.kind === 'canceled') {
       el('amount').textContent = disp.amountText;
       setContextBadgeDisplay(disp.badgeText, '');
       setHoverExtra(disp.hoverExtra);
     } else if (stale) {
-      el('amount').textContent = '统计延迟';
+      el('amount').textContent = t('badge.delayed');
       if (d?.actual != null || pct != null) {
         const parts = formatContextBadgeParts(d?.actual, pct);
         setContextBadgeDisplay(parts.mainText, parts.subText);
@@ -3873,12 +9687,12 @@
       const budgetStr = d?.budget ? ` / ${short(d.budget)}` : '';
       setHoverExtra(`${budgetStr} · ${corpus}`);
     } else {
-      el('amount').textContent = '真实量未知';
+      el('amount').textContent = t('badge.actualUnknown');
       setContextBadgeDisplay('--%', '');
       setHoverExtra(` · ${corpus}`);
     }
 
-    el('badge-tokens').title = 'Token 用量一览（点击展开详情）';
+    el('badge-tokens').title = t('badge.tokensTitle');
 
     // 渲染输出速度 (统一使用 tok/s)
     const sp = d?.speed;
@@ -3890,13 +9704,20 @@
         if (speedHoverExtra) {
           speedHoverExtra.textContent = `${sp.duration ? ` · ${sp.duration}s` : ''}${sp.outputTokens ? ` · ${short(sp.outputTokens)} tok` : ''}`;
         }
-        speedBadge.title = `最新模型输出速度：${sp.tps} tok/s${sp.streamingTps ? ` (流式 ${sp.streamingTps} tok/s)` : ''}\n总耗时：${sp.duration || '—'}s (首字 ${sp.ttft || '—'}s + 流式 ${sp.streamingSec || '—'}s)\n本次产出：${fmt(sp.outputTokens)} tokens`;
+        speedBadge.title = t('badge.speedTitleDetail', {
+          tps: sp.tps,
+          streaming: sp.streamingTps ? t('badge.speedStreamingPart', { tps: sp.streamingTps }) : '',
+          duration: sp.duration || '—',
+          ttft: sp.ttft || '—',
+          streamSec: sp.streamingSec || '—',
+          output: fmt(sp.outputTokens)
+        });
       } else if (state.requestBusy) {
         if (speedHoverExtra) speedHoverExtra.textContent = '';
-        speedBadge.title = '正在等待模型返回或计算生成指标…';
+        speedBadge.title = t('badge.speedTitleWait');
       } else {
-        if (speedHoverExtra) speedHoverExtra.textContent = ' · 待生成';
-        speedBadge.title = '模型输出速度与耗时 (tok/s)';
+        if (speedHoverExtra) speedHoverExtra.textContent = t('badge.speedHoverIdle');
+        speedBadge.title = t('badge.speedTitleIdle');
       }
     }
 
@@ -3920,13 +9741,13 @@
         const budgetTokenCount = d?.budget || (d?.serviceLimit ? d.serviceLimit : 983040);
 
         if (disp.isOverflow) {
-          if (keyUsed) keyUsed.textContent = d.serviceLimit ? `>${short(d.serviceLimit)}` : '超限';
+          if (keyUsed) keyUsed.textContent = d.serviceLimit ? `>${short(d.serviceLimit)}` : t('key.overflowUsed');
           if (keyLimit) keyLimit.textContent = d.serviceLimit ? short(d.serviceLimit) : short(budgetTokenCount);
-          if (keyRemaining) keyRemaining.textContent = '0 (已溢出)';
+          if (keyRemaining) keyRemaining.textContent = t('key.overflowRem');
         } else {
           // 非超限错误：保留已有上下文用量，标明其状态，不归零、不清空
           if (keyUsed) {
-            keyUsed.textContent = usedTokenCount != null ? (d?.actual != null ? `${short(usedTokenCount)}${pct != null ? ` (${pct.toFixed(1)}%)` : ''}` : `约 ${short(usedTokenCount)} (估算)`) : '—';
+            keyUsed.textContent = usedTokenCount != null ? (d?.actual != null ? `${short(usedTokenCount)}${pct != null ? ` (${pct.toFixed(1)}%)` : ''}` : t('key.estShort', { val: short(usedTokenCount) })) : '—';
           }
           if (keyLimit) keyLimit.textContent = budgetTokenCount ? short(budgetTokenCount) : '—';
           if (keyRemaining) {
@@ -3935,7 +9756,7 @@
               const remP = Math.max(0, 100 - (pct || ((usedTokenCount / budgetTokenCount) * 100)));
               keyRemaining.textContent = `${short(rem)} (${remP.toFixed(1)}%)`;
             } else {
-              keyRemaining.textContent = '待确认';
+              keyRemaining.textContent = t('key.pending');
             }
           }
         }
@@ -3946,28 +9767,28 @@
         const remainPct = Math.max(0, 100 - pct);
 
         if (keyBadge) {
-          if (pct >= 90) { keyBadge.textContent = '紧张'; keyBadge.className = 'key-pill pill-danger'; }
-          else if (pct >= 75) { keyBadge.textContent = '偏高'; keyBadge.className = 'key-pill pill-warn'; }
-          else { keyBadge.textContent = '正常'; keyBadge.className = 'key-pill pill-good'; }
+          if (pct >= 90) { keyBadge.textContent = t('key.pill.tight'); keyBadge.className = 'key-pill pill-danger'; }
+          else if (pct >= 75) { keyBadge.textContent = t('key.pill.elevated'); keyBadge.className = 'key-pill pill-warn'; }
+          else { keyBadge.textContent = t('key.pill.normal'); keyBadge.className = 'key-pill pill-good'; }
         }
         if (keyUsed) keyUsed.textContent = `${short(d.actual)} (${pct.toFixed(1)}%)`;
         if (keyLimit) keyLimit.textContent = short(limitVal);
         if (keyRemaining) keyRemaining.textContent = `${short(remainVal)} (${remainPct.toFixed(1)}%)`;
         if (keyTakeaway) {
           if (pct >= 90) {
-            keyTakeaway.textContent = `⚠ 上下文已消耗 ${pct.toFixed(1)}%，仅剩约 ${short(remainVal)} tokens，接近预算上限！建议清理冗余上下文。`;
+            keyTakeaway.textContent = t('key.takeaway.90', { pct: pct.toFixed(1), rem: short(remainVal) });
           } else if (pct >= 75) {
-            keyTakeaway.textContent = `⚡ 已使用 ${pct.toFixed(1)}%，剩余可用空间约 ${short(remainVal)} tokens，注意大文件或长输出。`;
+            keyTakeaway.textContent = t('key.takeaway.75', { pct: pct.toFixed(1), rem: short(remainVal) });
           } else {
-            keyTakeaway.textContent = `✔ 当前用量健康（${pct.toFixed(1)}%），剩余可用空间充足（约 ${short(remainVal)} tokens），可正常继续对话。`;
+            keyTakeaway.textContent = t('key.takeaway.ok', { pct: pct.toFixed(1), rem: short(remainVal) });
           }
         }
       } else {
-        if (keyBadge) { keyBadge.textContent = d?.estimated ? '估算' : '读取中'; keyBadge.className = 'key-pill pill-muted'; }
-        if (keyUsed) keyUsed.textContent = d?.estimate ? `约 ${short(d.estimate)}` : (session ? short(session.total.low) : '—');
+        if (keyBadge) { keyBadge.textContent = d?.estimated ? t('key.pill.est') : t('key.pill.reading'); keyBadge.className = 'key-pill pill-muted'; }
+        if (keyUsed) keyUsed.textContent = d?.estimate ? t('key.estPrefix', { val: short(d.estimate) }) : (session?.total ? short(session.total.low) : '—');
         if (keyLimit) keyLimit.textContent = d?.budget ? short(d.budget) : '—';
-        if (keyRemaining) keyRemaining.textContent = '待确认';
-        if (keyTakeaway) keyTakeaway.textContent = 'ℹ 当前主要依赖本地估算或待服务端返回实际统计，暂不计算精确剩余空间。';
+        if (keyRemaining) keyRemaining.textContent = t('key.pending');
+        if (keyTakeaway) keyTakeaway.textContent = t('key.takeaway.est');
       }
     }
 
@@ -3981,10 +9802,10 @@
 
       if (sp?.tps != null) {
         if (spBadge) {
-          if (sp.tps >= 80) { spBadge.textContent = '极速'; spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 35) { spBadge.textContent = '流畅'; spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 15) { spBadge.textContent = '良好'; spBadge.className = 'key-pill pill-warn'; }
-          else { spBadge.textContent = '偏慢'; spBadge.className = 'key-pill pill-danger'; }
+          if (sp.tps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
+          else if (sp.tps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
+          else if (sp.tps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
+          else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
         }
         if (spVal) spVal.textContent = `${sp.tps} tok/s`;
         if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
@@ -3992,36 +9813,446 @@
         if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
         if (spTakeaway) {
           const modelStr = d?.model ? `（${d.model}）` : '';
-          const streamInfo = sp.streamingTps ? `，纯流式传输达 ${sp.streamingTps} tok/s` : '';
-          spTakeaway.textContent = `✔ 输出${sp.tps >= 35 ? '流畅' : '平稳'}（${sp.tps} tok/s${streamInfo}），总耗时 ${sp.duration}s 内生成 ${fmt(sp.outputTokens)} tokens${modelStr}。`;
+          const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
+          spTakeaway.textContent = t('speed.takeaway.ok', {
+            tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
+            tps: sp.tps,
+            stream: streamInfo,
+            dur: sp.duration,
+            tok: fmt(sp.outputTokens),
+            model: modelStr
+          });
         }
       } else {
-        if (spBadge) { spBadge.textContent = state.requestBusy ? '计算中' : '待生成'; spBadge.className = 'key-pill pill-muted'; }
+        if (spBadge) { spBadge.textContent = state.requestBusy ? t('speed.pill.calc') : t('speed.pill.idle'); spBadge.className = 'key-pill pill-muted'; }
         if (spVal) spVal.textContent = '—';
         if (spDur) spDur.textContent = '—';
         if (spTtft) spTtft.textContent = '—';
         if (spTokens) spTokens.textContent = '—';
-        if (spTakeaway) spTakeaway.textContent = 'ℹ 等待当前或下一次模型输出完成，将自动计算精确输出速度 (tok/s)、首字延迟与总耗时。';
+        if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.idle');
       }
     }
 
-    el('model').textContent = d?.model?.startsWith('MODEL_PLACEHOLDER') ? '模型标识：' + d.model : d?.model || '未返回模型信息';
-    el('request-status').textContent = d?.exceeded ? '输入超限（已失败）' : d?.network ? '网络故障（非超限）' : d?.error ? '已失败' : d?.status === 'reported' ? '已返回实际统计' : d?.status === 'estimated' ? '只有本地估算' : '等待统计，未确认执行状态';
-    el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? `>${fmt(d.serviceLimit || 0)}（实际总数未返回）` : '真实用量未知';
-    if (d?.exceeded && !d.serviceLimit) el('actual').textContent = '已超限；实际数值未知';
-    el('estimate').textContent = d?.estimate ? `约 ${fmt(d.estimate)} · ${d.exceeded ? '已证实低估' : '仅供参考'}` : '未提供';
+    el('model').textContent = d?.model?.startsWith('MODEL_PLACEHOLDER') ? t('tech.modelPlaceholder', { id: d.model }) : d?.model || t('tech.modelMissing');
+    el('request-status').textContent = d?.exceeded ? t('tech.req.exceeded') : d?.network ? t('tech.req.network') : d?.error ? t('tech.req.failed') : d?.status === 'reported' ? t('tech.req.reported') : d?.status === 'estimated' ? t('tech.req.estimated') : t('tech.req.waiting');
+    el('actual').textContent = d?.actual != null ? token(d.actual) : d?.exceeded ? t('tech.actual.exceeded', { val: fmt(d.serviceLimit || 0) }) : t('tech.actual.unknown');
+    if (d?.exceeded && !d.serviceLimit) el('actual').textContent = t('tech.actual.exceededNoLim');
+    el('estimate').textContent = d?.estimate ? t('tech.est.val', { val: fmt(d.estimate), note: d.exceeded ? t('tech.est.under') : t('tech.est.ref') }) : t('tech.est.none');
     el('budget').textContent = token(d?.budget);
-    el('service-limit').textContent = d?.serviceLimit ? `${fmt(d.serviceLimit)}（仅该次错误证据）` : '本次没有服务端限制证据';
-    el('percent').textContent = d?.percent != null && !danger && !stale ? `${d.percent.toFixed(1)}%（非 1M 总容量）` : '不提供安全余量百分比';
-    el('session-total').textContent = session ? range(session.total) + (incomplete ? ' ＋ 未知内容' : '') : state.scanError ? '扫描未完成' : '扫描中…';
-    el('characters').textContent = session ? fmt(session.total.chars) : '—';
-    for (const name of ['user', 'assistant', 'thinking', 'tools', 'summaries']) el(name).textContent = session ? range(session.groups[name]) : '—';
-    el('system').textContent = session ? range({ low: (session.groups.system?.low || 0) + (session.groups.definitions?.low || 0), high: (session.groups.system?.high || 0) + (session.groups.definitions?.high || 0) }) : '—';
-    el('attachment-total').textContent = session ? range(session.attachmentTotal) + (incomplete ? ' ＋ 未知' : '') : '—';
-    el('steps').textContent = session ? `${fmt(session.steps)} 条；${session.userMessages} 条用户消息／${session.assistantMessages} 条回复` : '尚未完成全量读取';
-    el('coverage').textContent = session ? `${session.attachments.length} 个附件条目（${session.attachments.filter(f => f.source === 'user').length} 个上传、${session.attachments.filter(f => f.source === 'assistant').length} 个模型/工具输出）；${session.attachments.filter(f => f.chars > 0).length} 个已读到文本，${session.unknownFiles} 个含未计内容。${state.scanBusy ? ' 正在重新扫描…' : ''}${state.scanError ? ' 最近重扫失败，当前为旧结果：' + state.scanError : ''}` : state.scanError || '正在扫描整段归档，不依赖页面已加载的聊天条数。';
-    el('updated').textContent = `请求统计 ${state.requestAt ? new Date(state.requestAt).toLocaleTimeString() : '未读取'} · 全量扫描 ${state.scan ? new Date(state.scan.scannedAt).toLocaleTimeString() : '未完成'}`;
+    el('service-limit').textContent = d?.serviceLimit ? t('tech.svcLim.val', { val: fmt(d.serviceLimit) }) : t('tech.svcLim.none');
+    el('percent').textContent = d?.percent != null && !danger && !stale ? t('tech.pct.val', { pct: d.percent.toFixed(1) }) : t('tech.pct.none');
+    el('session-total').textContent = session?.total ? range(session.total) + (incomplete ? t('tech.plusUnknown') : '') : state.scanError ? t('tech.scanIncomplete') : t('tech.scanning');
+    el('characters').textContent = session?.total ? fmt(session.total.chars) : '—';
+    for (const name of ['user', 'assistant', 'thinking', 'tools', 'summaries']) el(name).textContent = session?.groups ? range(session.groups[name]) : '—';
+    el('system').textContent = session?.groups ? range({ low: (session.groups.system?.low || 0) + (session.groups.definitions?.low || 0), high: (session.groups.system?.high || 0) + (session.groups.definitions?.high || 0) }) : '—';
+    el('attachment-total').textContent = session?.attachmentTotal ? range(session.attachmentTotal) + (incomplete ? t('tech.plusUnknownShort') : '') : '—';
+    el('steps').textContent = session?.steps != null ? t('tech.stepsVal', { steps: fmt(session.steps), user: session.userMessages, assistant: session.assistantMessages }) : t('tech.stepsNone');
+    el('coverage').textContent = Array.isArray(session?.attachments)
+      ? t('tech.coverageVal', {
+        total: session.attachments.length,
+        user: session.attachments.filter(f => f.source === 'user').length,
+        assistant: session.attachments.filter(f => f.source === 'assistant').length,
+        read: session.attachments.filter(f => f.chars > 0).length,
+        unknown: session.unknownFiles,
+        rescan: state.scanBusy ? t('tech.coverageRescan') : '',
+        err: state.scanError ? t('tech.coverageErr', { err: translateBackendText(state.scanError) }) : ''
+      })
+      : (state.scanError ? translateBackendText(state.scanError) : t('tech.coverageScanning'));
+    el('updated').textContent = t('tech.updatedVal', {
+      req: state.requestAt ? new Date(state.requestAt).toLocaleTimeString() : t('tech.unread'),
+      scan: state.scan ? new Date(state.scan.scannedAt).toLocaleTimeString() : t('tech.unfinished')
+    });
     el('refresh').disabled = state.scanBusy;
+  }
+
+  const MAX_FLUSH_BATCH_CALLS = 500;
+  const MAX_FLUSH_BATCH_BYTES = 900 * 1024;
+  const MAX_LIVE_RECORD_BODY_BYTES = 1024 * 1024;
+  const utf8Encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+  function getUtf8ByteLength(str) {
+    const s = String(str ?? '');
+    if (utf8Encoder) return utf8Encoder.encode(s).length;
+    if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') return Buffer.byteLength(s, 'utf8');
+    let bytes = 0;
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      if (code < 0x80) bytes += 1;
+      else if (code < 0x800) bytes += 2;
+      else if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+        const next = s.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; }
+        else bytes += 3;
+      } else bytes += 3;
+    }
+    return bytes;
+  }
+
+  const getSingleCallBodyBytes = call => 12 + getUtf8ByteLength(JSON.stringify(call));
+
+  const getModelRank = (model, modelKey) => {
+    const s = String(model || '').trim();
+    if (!s) return 0;
+    if (/^model_placeholder_/i.test(s)) return modelKey ? 2 : 1;
+    return modelKey ? 3 : 2;
+  };
+
+  const getDateRank = call => {
+    if (!call) return 0;
+    const hasDate = Boolean(call.date && /^\d{4}-\d{2}-\d{2}/.test(String(call.date)));
+    const isProv = call.dateIsProvisional === true || call.dateSource === 'provisional';
+    if (isProv) return hasDate ? 1 : 0;
+    let hasValidCreatedAt = false;
+    if (call.created_at) {
+      const dt = new Date(call.created_at);
+      hasValidCreatedAt = !Number.isNaN(dt.getTime());
+    }
+    if (call.dateSource === 'transcript' && (hasDate || hasValidCreatedAt)) return 4;
+    if (hasValidCreatedAt) return 3;
+    if (hasDate) return 2;
+    return 0;
+  };
+
+  const resolveWatermarkDate = call => {
+    if (!call) return '';
+    const isProv = call.dateIsProvisional === true || call.dateSource === 'provisional';
+    if (!isProv && call.created_at) {
+      const dt = new Date(call.created_at);
+      if (!Number.isNaN(dt.getTime())) return formatLocalYmd(dt);
+    }
+    return (call.date && /^\d{4}-\d{2}-\d{2}/.test(String(call.date))) ? String(call.date).slice(0, 10) : '';
+  };
+
+  function rawRevIsPresent(val) {
+    return val !== null && val !== '';
+  }
+
+  const extractSourceRevision = row => {
+    if (!row || typeof row !== 'object') return null;
+    const raw = row.sourceRevision ?? row.revision ?? row.metadataRevision;
+    if (raw !== undefined && rawRevIsPresent(raw)) {
+      const num = Number(raw);
+      if (Number.isFinite(num)) return num;
+    }
+    const rawUpdated = row.updated_at ?? row.sourceUpdatedAt;
+    if (rawUpdated !== undefined && rawRevIsPresent(rawUpdated)) {
+      const ts = typeof rawUpdated === 'number' ? rawUpdated : Date.parse(String(rawUpdated));
+      if (Number.isFinite(ts)) return ts;
+    }
+    return null;
+  };
+
+  const compareSourceRevision = (incRev, baseRev) => {
+    const a = typeof incRev === 'number' && Number.isFinite(incRev) ? incRev : null;
+    const b = typeof baseRev === 'number' && Number.isFinite(baseRev) ? baseRev : null;
+    if (a === null && b === null) return 0;
+    if (a !== null && b === null) return 1;
+    if (a === null && b !== null) return -1;
+    if (a === b) return 0;
+    return a > b ? 1 : -1;
+  };
+
+  const compareWatermarkUsage = (a, b) => {
+    const totDiff = (a?.tot || 0) - (b?.tot || 0);
+    if (totDiff !== 0) return totDiff;
+    return (a?.out || 0) - (b?.out || 0);
+  };
+
+  const canAdoptNextDate = (nextWm, prevWm) => {
+    if (!prevWm) return Boolean(nextWm?.date);
+    const nextDateRank = nextWm?.dateRank || 0;
+    const prevDateRank = prevWm?.dateRank || 0;
+    if (nextDateRank > prevDateRank) return Boolean(nextWm?.date);
+    if (nextDateRank < prevDateRank) return false;
+    if (!nextWm?.date) return false;
+    if (!prevWm?.date) return true;
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    if (nextDateRank >= 2) {
+      if (revCmp > 0 && usageCmp >= 0) return true;
+      if (usageCmp > 0 && revCmp >= 0) return true;
+      return nextWm.date === prevWm.date && (nextWm.createdAt || '') === (prevWm.createdAt || '') && revCmp >= 0 && usageCmp >= 0;
+    }
+    return nextWm.date < prevWm.date;
+  };
+
+  const getFinalCallWatermark = call => ({
+    inp: call?.inputTokens || 0,
+    cap: call?.cacheTokens || 0,
+    tot: (call?.inputTokens || 0) + (call?.cacheTokens || 0) + (call?.outputTokens || 0),
+    out: call?.outputTokens || 0,
+    model: String(call?.model || '').trim(),
+    modelKey: String(call?.modelKey || '').trim(),
+    isPriced: Boolean(call?.isPriced),
+    costUSD: Number(call?.costUSD || 0),
+    date: resolveWatermarkDate(call),
+    createdAt: call?.created_at ? String(call.created_at) : '',
+    dateSource: call?.dateSource ? String(call.dateSource) : '',
+    dateRank: getDateRank(call),
+    sourceRevision: extractSourceRevision(call)
+  });
+
+  function hasWatermarkProgressed(nextWm, prevWm) {
+    if (!prevWm) return true;
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    if (usageCmp > 0) return true;
+    if (getModelRank(nextWm.model, nextWm.modelKey) > getModelRank(prevWm.model, prevWm.modelKey)) return true;
+    if (!prevWm.modelKey && Boolean(nextWm.modelKey)) return true;
+    if (!prevWm.isPriced && Boolean(nextWm.isPriced)) return true;
+    const nextDateRank = nextWm.dateRank || 0;
+    const prevDateRank = prevWm.dateRank || 0;
+    if (nextDateRank > prevDateRank) return true;
+    const usageRegressed = usageCmp < 0;
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    if (!usageRegressed && revCmp > 0) return true;
+    const takeNextDate = canAdoptNextDate(nextWm, prevWm);
+    if (
+      takeNextDate &&
+      nextDateRank >= 2 &&
+      nextDateRank === prevDateRank &&
+      Boolean(nextWm.date) &&
+      (
+        nextWm.date !== prevWm.date ||
+        (nextDateRank >= 3 && Boolean(nextWm.createdAt) && nextWm.createdAt !== (prevWm.createdAt || ''))
+      )
+    ) {
+      return true;
+    }
+    const hasUnacceptedDate = Boolean(prevWm.date) && Boolean(nextWm.date) && nextWm.date !== prevWm.date && !takeNextDate;
+    if (!usageRegressed && revCmp >= 0 && !hasUnacceptedDate && nextWm.isPriced && !(prevWm.costUSD > 0) && nextWm.costUSD > 0) return true;
+    return false;
+  }
+
+  function mergeWatermarks(prevWm, nextWm) {
+    if (!prevWm) return { ...nextWm };
+    const nextRank = getModelRank(nextWm.model, nextWm.modelKey);
+    const prevRank = getModelRank(prevWm.model, prevWm.modelKey);
+    const nextDateRank = nextWm.dateRank || 0;
+    const prevDateRank = prevWm.dateRank || 0;
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    const usageRegressed = usageCmp < 0;
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    const takeNextUsage = usageCmp > 0 || (usageCmp === 0 && revCmp >= 0);
+    const takeNextDate = canAdoptNextDate(nextWm, prevWm);
+    const mergedSourceRevision = revCmp >= 0
+      ? (nextWm.sourceRevision ?? prevWm.sourceRevision ?? null)
+      : (prevWm.sourceRevision ?? null);
+    let mergedCost = Math.max(prevWm.isPriced ? (prevWm.costUSD || 0) : 0, nextWm.isPriced ? (nextWm.costUSD || 0) : 0);
+    if (!usageRegressed && revCmp >= 0 && nextWm.isPriced && (takeNextDate || nextWm.date === prevWm.date || !prevWm.date)) {
+      mergedCost = nextWm.costUSD || 0;
+    }
+    return {
+      inp: takeNextUsage ? (nextWm.inp ?? 0) : (prevWm.inp ?? 0),
+      cap: takeNextUsage ? (nextWm.cap ?? 0) : (prevWm.cap ?? 0),
+      tot: takeNextUsage ? nextWm.tot : prevWm.tot,
+      out: takeNextUsage ? nextWm.out : prevWm.out,
+      model: nextRank >= prevRank && nextWm.model ? nextWm.model : prevWm.model,
+      modelKey: nextWm.modelKey || prevWm.modelKey || '',
+      isPriced: Boolean(prevWm.isPriced || nextWm.isPriced),
+      costUSD: mergedCost,
+      date: takeNextDate ? nextWm.date : (prevWm.date || nextWm.date || ''),
+      createdAt: takeNextDate ? (nextWm.createdAt || '') : (prevWm.createdAt || ''),
+      dateSource: takeNextDate ? (nextWm.dateSource || '') : (prevWm.dateSource || ''),
+      dateRank: Math.max(prevDateRank, nextDateRank),
+      sourceRevision: mergedSourceRevision
+    };
+  }
+
+  function mergePendingCallData(prevCall, nextCall) {
+    if (!prevCall) return nextCall;
+    const prevWm = getFinalCallWatermark(prevCall);
+    const nextWm = getFinalCallWatermark(nextCall);
+    const merged = { ...nextCall };
+    const usageCmp = compareWatermarkUsage(nextWm, prevWm);
+    const revCmp = compareSourceRevision(nextWm.sourceRevision, prevWm.sourceRevision);
+    const takePrevUsage = usageCmp < 0 || (usageCmp === 0 && revCmp < 0);
+    if (takePrevUsage) {
+      merged.inputTokens = prevCall.inputTokens;
+      merged.cacheTokens = prevCall.cacheTokens;
+      merged.cacheReadTokens = prevCall.cacheReadTokens;
+      merged.outputTokens = prevCall.outputTokens;
+      merged.thinkingTokens = prevCall.thinkingTokens;
+      merged.responseTokens = prevCall.responseTokens;
+      merged.totalTokens = prevCall.totalTokens;
+    }
+    const takeNextDate = canAdoptNextDate(nextWm, prevWm);
+    const takePrevDate = !takeNextDate && Boolean(prevWm.date || (prevWm.dateRank || 0) > (nextWm.dateRank || 0));
+    if (takePrevDate) {
+      merged.date = prevCall.date;
+      merged.created_at = prevCall.created_at;
+      if (prevCall.dateSource !== undefined) merged.dateSource = prevCall.dateSource;
+      else delete merged.dateSource;
+      merged.dateIsProvisional = prevCall.dateIsProvisional;
+      if (prevCall.timestamp !== undefined) merged.timestamp = prevCall.timestamp;
+    }
+    if (revCmp < 0 && prevWm.sourceRevision !== null) {
+      merged.sourceRevision = prevWm.sourceRevision;
+    } else if (nextWm.sourceRevision !== null) {
+      merged.sourceRevision = nextWm.sourceRevision;
+    } else {
+      delete merged.sourceRevision;
+    }
+    if (getModelRank(prevWm.model, prevWm.modelKey) > getModelRank(nextWm.model, nextWm.modelKey)) {
+      merged.model = prevCall.model;
+    }
+    if (!nextWm.modelKey && prevWm.modelKey) {
+      merged.modelKey = prevCall.modelKey;
+    }
+    if (typeof calculateRequestApiCost === 'function' && (merged.model || merged.modelKey)) {
+      const recalc = calculateRequestApiCost(merged);
+      if (recalc.isPriced) {
+        merged.modelKey = recalc.modelKey;
+        merged.isPriced = true;
+        merged.costUSD = recalc.costUSD ?? 0;
+      }
+    } else if (!nextWm.isPriced && prevWm.isPriced) {
+      merged.isPriced = prevCall.isPriced;
+      merged.costUSD = prevCall.costUSD;
+    } else if (nextWm.isPriced && prevWm.isPriced && (takePrevUsage || takePrevDate) && (prevWm.costUSD || 0) > (nextWm.costUSD || 0)) {
+      merged.costUSD = prevCall.costUSD;
+    }
+    return merged;
+  }
+
+  function takeNextPendingBatch(pendingMap) {
+    const chunk = [];
+    const snap = [];
+    let totalBytes = 12; // '{"calls":[]}'
+    for (const call of pendingMap.values()) {
+      if (chunk.length >= MAX_FLUSH_BATCH_CALLS) break;
+      const itemBytes = getUtf8ByteLength(JSON.stringify(call));
+      if (12 + itemBytes > MAX_FLUSH_BATCH_BYTES) continue;
+      const addedBytes = (chunk.length > 0 ? 1 : 0) + itemBytes;
+      if (chunk.length > 0 && totalBytes + addedBytes > MAX_FLUSH_BATCH_BYTES) break;
+      chunk.push(call);
+      snap.push({ callId: call.callId, wm: getFinalCallWatermark(call) });
+      totalBytes += addedBytes;
+    }
+    return { chunk, snap };
+  }
+
+  function commitConfirmedEntries(entries) {
+    for (const entry of entries) {
+      state.quarantinedOversizeMap?.delete(entry.callId);
+      const curSynced = state.syncedFinalMap.get(entry.callId);
+      const nextSynced = mergeWatermarks(curSynced, entry.wm);
+      state.syncedFinalMap.set(entry.callId, nextSynced);
+      const curPending = state.pendingFinalCalls.get(entry.callId);
+      if (curPending && !hasWatermarkProgressed(getFinalCallWatermark(curPending), nextSynced)) {
+        state.pendingFinalCalls.delete(entry.callId);
+      }
+    }
+  }
+
+  const EXPLICIT_OVERSIZE_RE = /\b413\b|payload\s+too\s+large|entity\s+too\s+large|body\s+too\s+large|(?:payload|body|size|record|message|batch|bytes?)\b.*(?:exceeds?|exceeded|over)\b|(?:exceeds?|exceeded|over)\b.*(?:\d+\s*(?:kib|mib|kb|mb|bytes?)|(?:size|payload|body)\s*(?:limit|max))|传输体积超限|体积超限|超出上限|超过.*上限/i;
+
+  function isExplicitOversizeError(recRes) {
+    if (!recRes || typeof recRes !== 'object') return false;
+    if (recRes.status === 413) return true;
+    if (recRes.code === 'PAYLOAD_TOO_LARGE' || recRes.code === 'OVERSIZE' || recRes.phase === 'oversize_guard') return true;
+    return EXPLICIT_OVERSIZE_RE.test(String(recRes.error || ''));
+  }
+
+  function quarantineOversizedEntry(callId, wm) {
+    if (!state.quarantinedOversizeMap) state.quarantinedOversizeMap = new Map();
+    const prevQuarantined = state.quarantinedOversizeMap.get(callId);
+    state.quarantinedOversizeMap.set(callId, mergeWatermarks(prevQuarantined, wm));
+    const curPending = state.pendingFinalCalls.get(callId);
+    if (curPending && !hasWatermarkProgressed(getFinalCallWatermark(curPending), wm) && getSingleCallBodyBytes(curPending) > MAX_FLUSH_BATCH_BYTES) {
+      state.pendingFinalCalls.delete(callId);
+    }
+  }
+
+  async function flushPendingFinalCalls(triggerSyncEvenIfUnchanged) {
+    if (triggerSyncEvenIfUnchanged && state.flushFinalsBusy) {
+      state.pendingFlushForceSync = true;
+    }
+    if (state.flushFinalsBusy || state.disposed || !state.pendingFinalCalls?.size) return;
+    if (Date.now() < (state.nextFlushRetryAt || 0)) return;
+    state.flushFinalsBusy = true;
+    let anySucceeded = false;
+    let anyChanged = false;
+    let failedDuringLoop = false;
+    try {
+      while (!state.disposed && state.pendingFinalCalls.size > 0) {
+        if (Date.now() < (state.nextFlushRetryAt || 0)) break;
+        const { chunk, snap } = takeNextPendingBatch(state.pendingFinalCalls);
+        if (!chunk.length) break;
+        const recRes = await recordModelCallsRemote(chunk);
+        if (state.disposed) break;
+        if (recRes?.ok === true) {
+          anySucceeded = true;
+          if (recRes.changed) anyChanged = true;
+          commitConfirmedEntries(snap);
+        } else {
+          failedDuringLoop = true;
+          state.nextFlushRetryAt = Date.now() + (document.hidden ? 15000 : 3000);
+          break;
+        }
+      }
+      if (!state.disposed && !failedDuringLoop && state.pendingFinalCalls.size > 0 && Date.now() >= (state.nextOversizeRetryAt || 0)) {
+        const oversizedItems = [];
+        for (const call of state.pendingFinalCalls.values()) {
+          const singleBytes = getSingleCallBodyBytes(call);
+          if (singleBytes > MAX_FLUSH_BATCH_BYTES) {
+            oversizedItems.push({ call, singleBytes, wm: getFinalCallWatermark(call) });
+          }
+        }
+        for (const item of oversizedItems) {
+          if (state.disposed) break;
+          if (!state.pendingFinalCalls.has(item.call.callId)) continue;
+          const isLiveHttpMode = !(typeof window !== 'undefined' && typeof window.contextMeterAPI?.recordCalls === 'function')
+            && Boolean(typeof window !== 'undefined' && window.__AGContextMeterLive?.port);
+          if (isLiveHttpMode && item.singleBytes > MAX_LIVE_RECORD_BODY_BYTES) {
+            quarantineOversizedEntry(item.call.callId, item.wm);
+            console.warn(`Context Meter: 单条调用记录超过实时通道 1MiB 上限 (${item.singleBytes} bytes)，已隔离跳过: ${item.call.callId}`);
+            continue;
+          }
+          const recRes = await recordModelCallsRemote([item.call]);
+          if (state.disposed) break;
+          if (recRes?.ok === true) {
+            anySucceeded = true;
+            if (recRes.changed) anyChanged = true;
+            state.nextOversizeRetryAt = 0;
+            commitConfirmedEntries([{ callId: item.call.callId, wm: item.wm }]);
+          } else if ((isLiveHttpMode && (item.singleBytes > MAX_LIVE_RECORD_BODY_BYTES || recRes?.status === 413)) || isExplicitOversizeError(recRes)) {
+            quarantineOversizedEntry(item.call.callId, item.wm);
+            console.warn(`Context Meter: 超大调用记录入账被拒绝，已隔离跳过: ${item.call.callId}`);
+          } else {
+            failedDuringLoop = true;
+            const retryAt = Date.now() + (document.hidden ? 15000 : 3000);
+            state.nextOversizeRetryAt = retryAt;
+            state.nextFlushRetryAt = retryAt;
+            break;
+          }
+        }
+      }
+      if (!state.disposed && !failedDuringLoop && state.pendingFinalCalls.size > 0 && (state.nextOversizeRetryAt || 0) > Date.now()) {
+        const { chunk: remainingNormal } = takeNextPendingBatch(state.pendingFinalCalls);
+        if (!remainingNormal.length) {
+          state.nextFlushRetryAt = state.nextOversizeRetryAt;
+        }
+      }
+      if (!state.disposed && anySucceeded) {
+        if (!failedDuringLoop && state.pendingFinalCalls.size === 0) {
+          state.nextFlushRetryAt = 0;
+          state.nextOversizeRetryAt = 0;
+        }
+        if (triggerSyncEvenIfUnchanged || state.pendingFlushForceSync || anyChanged) {
+          state.pendingFlushForceSync = false;
+          automaticHistorySyncPending = true;
+          syncPendingAutomaticHistory();
+        }
+        if (typeof scheduleQuotaPostTurnRefresh === 'function') {
+          scheduleQuotaPostTurnRefresh();
+        }
+      }
+    } finally {
+      state.flushFinalsBusy = false;
+      if (anySucceeded && !state.disposed && state.pendingFinalCalls.size > 0 && Date.now() >= (state.nextFlushRetryAt || 0)) {
+        void flushPendingFinalCalls(true);
+      }
+    }
   }
 
   async function requestPoll(generation, id) {
@@ -4037,38 +10268,138 @@
       const rows = data.generatorMetadata || [];
       state.count = rows.length ? offset + rows.length : 0;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
-      const parsedCalls = [];
+      if (!state.syncedFinalMap) state.syncedFinalMap = new Map();
+      if (!state.pendingFinalCalls) state.pendingFinalCalls = new Map();
+      if (!state.quarantinedOversizeMap) state.quarantinedOversizeMap = new Map();
+      const wasHydrated = Boolean(state.callsHydrated);
+      let hasNewOrProgressedPending = false;
+      const modelConfigsList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
       for (let i = 0; i < rows.length; i++) {
-        const call = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop') : null;
+        const call = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
         if (call && call.callId) {
-          state.sessionCallsMap.set(call.callId, call);
-          parsedCalls.push(call);
-        }
-      }
-      state.sessionCalls = Array.from(state.sessionCallsMap.values());
-      state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
-      if (parsedCalls.length) {
-        if (!state.reportedFinalCallIds) state.reportedFinalCallIds = new Set();
-        if (!state.reportedFinalCallOutputs) state.reportedFinalCallOutputs = new Map();
-        const callsToReport = [];
-        for (const call of parsedCalls) {
-          if (call && call.status === 'final' && call.callId) {
-            const lastOutput = state.reportedFinalCallOutputs.get(call.callId);
-            const currentOutput = call.outputTokens || 0;
-            if (!state.reportedFinalCallIds.has(call.callId) || (lastOutput != null && currentOutput > lastOutput)) {
-              callsToReport.push(call);
+          const prevSessionCall = state.sessionCallsMap.get(call.callId);
+          const prevSynced = state.syncedFinalMap.get(call.callId);
+          const prevPending = state.pendingFinalCalls.get(call.callId);
+          const prevQuarantined = state.quarantinedOversizeMap.get(call.callId);
+          let effectiveCall = (prevSessionCall && call.status === 'final' && prevSessionCall.status === 'final')
+            ? mergePendingCallData(prevSessionCall, call)
+            : call;
+          if (prevPending && effectiveCall.status === 'final' && prevPending.status === 'final') {
+            effectiveCall = mergePendingCallData(prevPending, effectiveCall);
+          }
+          if (effectiveCall.status === 'final') {
+            if (prevSynced) {
+              const effWm0 = getFinalCallWatermark(effectiveCall);
+              const uCmp0 = compareWatermarkUsage(effWm0, prevSynced);
+              const rCmp0 = compareSourceRevision(effWm0.sourceRevision, prevSynced.sourceRevision);
+              const restoreSyncedUsage = (uCmp0 < 0 || (uCmp0 === 0 && rCmp0 < 0)) && prevSynced.inp !== undefined;
+              const restoreSyncedDate = (prevSynced.dateRank || 0) >= 2 && Boolean(prevSynced.date) && !canAdoptNextDate(effWm0, prevSynced);
+              const restoreSyncedRev = rCmp0 < 0 && prevSynced.sourceRevision !== null && prevSynced.sourceRevision !== undefined;
+              if (restoreSyncedUsage || restoreSyncedDate || restoreSyncedRev) {
+                effectiveCall = {
+                  ...effectiveCall,
+                  ...(restoreSyncedUsage ? {
+                    inputTokens: prevSynced.inp,
+                    cacheTokens: prevSynced.cap,
+                    cacheReadTokens: prevSynced.cap,
+                    outputTokens: prevSynced.out,
+                    totalTokens: prevSynced.tot
+                  } : {}),
+                  ...(restoreSyncedDate ? {
+                    date: prevSynced.date,
+                    created_at: prevSynced.createdAt || null,
+                    ...(prevSynced.dateSource ? { dateSource: prevSynced.dateSource } : {}),
+                    dateIsProvisional: false
+                  } : {}),
+                  ...(restoreSyncedRev ? { sourceRevision: prevSynced.sourceRevision } : {})
+                };
+                if (restoreSyncedDate && !prevSynced.dateSource) delete effectiveCall.dateSource;
+                if (typeof calculateRequestApiCost === 'function' && (effectiveCall.model || effectiveCall.modelKey)) {
+                  const recalc = calculateRequestApiCost(effectiveCall);
+                  if (recalc.isPriced) {
+                    effectiveCall.modelKey = recalc.modelKey;
+                    effectiveCall.isPriced = true;
+                    effectiveCall.costUSD = recalc.costUSD ?? 0;
+                  }
+                }
+              }
+            }
+            if (getDateRank(effectiveCall) === 1) {
+              let earliestProvDate = effectiveCall.date ? String(effectiveCall.date).slice(0, 10) : '';
+              for (const ref of [prevPending, prevSynced, prevQuarantined]) {
+                const refRank = ref ? (ref.dateRank !== undefined ? ref.dateRank : getDateRank(ref)) : 0;
+                const refDate = ref?.date ? String(ref.date).slice(0, 10) : '';
+                if (refRank === 1 && refDate && (!earliestProvDate || refDate < earliestProvDate)) {
+                  earliestProvDate = refDate;
+                }
+              }
+              if (earliestProvDate && earliestProvDate !== String(effectiveCall.date || '').slice(0, 10)) {
+                effectiveCall = { ...effectiveCall, date: earliestProvDate, created_at: null, dateSource: 'provisional', dateIsProvisional: true };
+                if (typeof calculateRequestApiCost === 'function' && (effectiveCall.model || effectiveCall.modelKey)) {
+                  const recalc = calculateRequestApiCost(effectiveCall);
+                  if (recalc.isPriced) {
+                    effectiveCall.modelKey = recalc.modelKey;
+                    effectiveCall.isPriced = true;
+                    effectiveCall.costUSD = recalc.costUSD ?? 0;
+                  }
+                }
+              }
+            }
+          }
+          state.sessionCallsMap.set(call.callId, effectiveCall);
+          if (effectiveCall.status === 'final') {
+            const wm = getFinalCallWatermark(effectiveCall);
+            if (hasWatermarkProgressed(wm, prevSynced)) {
+              if (prevQuarantined && !hasWatermarkProgressed(wm, prevQuarantined) && getSingleCallBodyBytes(effectiveCall) > MAX_FLUSH_BATCH_BYTES) {
+                continue;
+              }
+              const prevPendingWm = prevPending ? getFinalCallWatermark(prevPending) : null;
+              const progressedVsPending = hasWatermarkProgressed(wm, prevPendingWm);
+              if (progressedVsPending) {
+                hasNewOrProgressedPending = true;
+                if (getSingleCallBodyBytes(effectiveCall) > MAX_FLUSH_BATCH_BYTES) {
+                  state.nextOversizeRetryAt = 0;
+                }
+              }
+              const notRegressedVsPending = !prevPendingWm || (
+                compareWatermarkUsage(wm, prevPendingWm) >= 0 &&
+                compareSourceRevision(wm.sourceRevision, prevPendingWm.sourceRevision) >= 0 &&
+                canAdoptNextDate(wm, prevPendingWm) &&
+                getModelRank(wm.model, wm.modelKey) >= getModelRank(prevPendingWm.model, prevPendingWm.modelKey) &&
+                (wm.dateRank || 0) >= (prevPendingWm.dateRank || 0) &&
+                (!prevPendingWm.modelKey || Boolean(wm.modelKey)) &&
+                (!prevPendingWm.isPriced || Boolean(wm.isPriced))
+              );
+              if (progressedVsPending || notRegressedVsPending) {
+                const nextPendingCall = prevPending ? mergePendingCallData(prevPending, effectiveCall) : effectiveCall;
+                state.pendingFinalCalls.set(call.callId, nextPendingCall);
+              }
             }
           }
         }
-        if (callsToReport.length) {
-          for (const call of callsToReport) {
-            state.reportedFinalCallIds.add(call.callId);
-            state.reportedFinalCallOutputs.set(call.callId, call.outputTokens || 0);
-          }
-          void recordModelCallsRemote(callsToReport);
+      }
+      state.callsHydrated = true;
+      state.sessionCalls = Array.from(state.sessionCallsMap.values());
+      state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
+      if (hasNewOrProgressedPending) {
+        state.nextFlushRetryAt = 0;
+      }
+      if (state.pendingFinalCalls.size > 0) {
+        void flushPendingFinalCalls(wasHydrated);
+      }
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const value = summarize(rows[i], { cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [] });
+        if (value) {
+          state.latest = withStepError(value, rows[i]);
+          const callInfo = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
+          recordObservationFromSummary(state.latest, id, {
+            callId: callInfo?.callId || null,
+            stepCount: state.count,
+            ts: Date.now()
+          });
+          break;
         }
       }
-      for (let i = rows.length - 1; i >= 0; i--) { const value = summarize(rows[i]); if (value) { state.latest = withStepError(value, rows[i]); break; } }
       state.requestAt = Date.now(); state.requestError = '';
     } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
     finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; state.requestNext = Date.now() + (document.hidden ? 15000 : 3000); render(); } }
@@ -4082,53 +10413,1773 @@
       else if (window.__AGContextMeterLive) {
         const live = window.__AGContextMeterLive, controller = new AbortController(); state.controllers.add(controller);
         const timeout = setTimeout(() => controller.abort(), 180000);
-        try { const response = await fetch(`http://127.0.0.1:${live.port}/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token }, body: JSON.stringify({ id, force }), signal: controller.signal }); if (!response.ok) throw new Error(`扫描接口 HTTP ${response.status}`); result = await response.json(); }
+        try { const response = await fetch(`http://127.0.0.1:${live.port}/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token }, body: JSON.stringify({ id, force }), signal: controller.signal }); if (!response.ok) throw new Error(`HTTP ${response.status}`); result = await response.json(); }
         finally { clearTimeout(timeout); state.controllers.delete(controller); }
       } else throw new Error('完整重启 Antigravity 后启用附件扫描');
       if (generation !== state.generation || state.disposed) return;
+      if (result?.data?.abortedStale) return;
       if (!result?.ok) throw new Error(result?.error || '扫描未返回有效结果');
       state.scan = result.data; state.scanError = '';
-      if (result.data.scannedAt >= state.requestAt && result.data.latest) { state.latest = result.data.latest; state.requestAt = result.data.scannedAt; }
+      if (result.data.modelCapabilitiesById && typeof result.data.modelCapabilitiesById === 'object') {
+        mergeCapabilitiesMapClient(result.data.modelCapabilitiesById);
+      }
+      if (Array.isArray(result.data.cascadeModelConfigs) && result.data.cascadeModelConfigs.length) {
+        state.cascadeModelConfigs = result.data.cascadeModelConfigs;
+      }
+      if (result.data.scannedAt >= state.requestAt && result.data.latest) {
+        state.latest = result.data.latest;
+        state.requestAt = result.data.scannedAt;
+        const genSteps = Number(result.data.generatorCount);
+        const msgSteps = Number(result.data.session?.userMessages || 0) + Number(result.data.session?.assistantMessages || 0);
+        const resolvedStepCount = Number.isFinite(genSteps) && genSteps >= 0 ? genSteps : (msgSteps > 0 ? msgSteps : state.count);
+        recordObservationFromSummary(state.latest, id, {
+          callId: result.data.latestCallId || null,
+          stepCount: resolvedStepCount,
+          ts: Number(result.data.scannedAt || Date.now())
+        });
+      }
       state.latest = withStepError(state.latest);
       renderFiles(result.data.session);
     } catch (e) { if (generation === state.generation && !state.disposed) state.scanError = e.message; }
     finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
   }
 
-  let lastHistorySync = 0;
+  let lastAvailableModelsSync = 0;
+  let availableModelsFetchInFlight = false;
+  async function fetchAvailableModelsIfNeeded() {
+    if (availableModelsFetchInFlight) return;
+    if (typeof fetch !== 'function') return;
+    const csrf = typeof window !== 'undefined' ? window.__APP_CONFIG__?.csrfToken : null;
+    if (!csrf) return;
+    if (Date.now() - lastAvailableModelsSync < 300000 && state.modelCapabilitiesById && Object.keys(state.modelCapabilitiesById).length > 0) {
+      return;
+    }
+    availableModelsFetchInFlight = true;
+    try {
+      const response = await fetch('/exa.language_server_pb.LanguageServerService/GetAvailableModels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'x-codeium-csrf-token': csrf },
+        body: JSON.stringify({ forceRefresh: false })
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const modelsObj = data?.response?.models || data?.models;
+      if (!modelsObj || typeof modelsObj !== 'object') return;
+      const entries = Array.isArray(modelsObj)
+        ? modelsObj.map(item => [item?.model || item?.modelId || '', item])
+        : Object.entries(modelsObj);
+      const nextCaps = {};
+      for (const [entryKey, d] of entries) {
+        if (!d || typeof d !== 'object') continue;
+        const rawId = String(d.model || d.modelId || entryKey || '').trim();
+        if (!rawId) continue;
+        const normKey = rawId.toLowerCase().replace(/^model_/, '');
+        const maxTokens = Number.isSafeInteger(Number(d.maxTokens)) && Number(d.maxTokens) > 0 ? Number(d.maxTokens) : null;
+        const maxOutputTokens = d.maxOutputTokens != null && Number.isSafeInteger(Number(d.maxOutputTokens)) && Number(d.maxOutputTokens) >= 0
+          ? Number(d.maxOutputTokens)
+          : null;
+        const rec = {
+          modelId: rawId,
+          displayName: d.displayName || null,
+          maxTokens,
+          maxOutputTokens,
+          thinkingBudget: d.thinkingBudget ?? null,
+          minThinkingBudget: d.minThinkingBudget ?? null,
+          thinkingLevel: d.thinkingLevel || null,
+          supportsModelInfoOverride: typeof d.supportsModelInfoOverride === 'boolean' ? d.supportsModelInfoOverride : null,
+          capabilitySource: 'get_available_models'
+        };
+        if (normKey) nextCaps[normKey] = rec;
+        if (entryKey) nextCaps[String(entryKey).trim().toLowerCase().replace(/^model_/, '')] = rec;
+      }
+      if (Object.keys(nextCaps).length > 0) {
+        mergeCapabilitiesMapClient(nextCaps);
+        lastAvailableModelsSync = Date.now();
+        if (!isContextSettingsView && activeContextTab === 'models') {
+          renderModelSettingsTab();
+          renderPresetSelectionUI();
+        }
+      }
+    } catch { }
+    finally {
+      availableModelsFetchInFlight = false;
+    }
+  }
+
+  // =========================================================================
+  // 模块 5: 模型额度看板（ELV-34）—— 顶栏圆环入口、共享池归组、多状态机与定时刷新
+  // =========================================================================
+  const QUOTA_REFRESH_FG_MS = 60000;
+  const QUOTA_REFRESH_BG_MS = 180000;
+  const QUOTA_STALE_MS = 180000;
+  const QUOTA_ANIM_DURATION_MS = 220;
+  const QUOTA_CAL_STORAGE_PREFIX = 'ag_quota_token_cal_v2_';
+  const quotaState = {
+    accountScopeKey: null,
+    snapshot: null,
+    rawInput: null,
+    browsePoolKey: null,
+    busy: false,
+    lastFetchedAtMs: null,
+    lastSuccessAtMs: null,
+    nextRefreshAtMs: null,
+    error: null,
+    errorKind: null,
+    consecutiveErrors: 0,
+    lastResetRequeryKey: null,
+    autoPaused: false
+  };
+  quotaStateInitialized = true;
+  let quotaAutoTimer = null;
+  let quotaResetTimer = null;
+  let quotaPostTurnTimer = null;
+  let quotaFeedbackTimer = null;
+  let quotaInFlightPromise = null;
+  let quotaAbortController = null;
+  const QUOTA_BAR_CHARGE_DURATION_MS = 720;
+  let quotaRefreshSpinAnim = null;
+  let quotaBarChargeTimer = null;
+  let quotaBarChargePlaying = false;
+  const quotaAnimRafs = new Set();
+  const quotaActiveChargeRefs = new Set();
+  const quotaNumAnimState = new WeakMap();
+  const quotaNodeRefsMap = new WeakMap();
+  let quotaCalibrationScope = null;
+  let quotaCalibrationMap = {};
+  let quotaLastEstComputeSig = '';
+  let quotaCachedEstByKey = null;
+  let quotaLastSnapshotSig = null;
+  let quotaPendingSmoothAnim = false;
+  let quotaBadgeLastHasFraction = false;
+
+  function isQuotaReducedMotion() {
+    try {
+      return Boolean(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch {
+      return false;
+    }
+  }
+
+  function clearQuotaBarChargeAnimations() {
+    if (quotaBarChargeTimer) {
+      clearTimeout(quotaBarChargeTimer);
+      quotaBarChargeTimer = null;
+    }
+    quotaBarChargePlaying = false;
+    for (const ref of quotaActiveChargeRefs) {
+      if (ref?.track) removeQuotaAttrIfPresent(ref.track, 'data-charging');
+      if (ref?.chargeStage) setQuotaHiddenIfChanged(ref.chargeStage, true);
+    }
+    quotaActiveChargeRefs.clear();
+  }
+
+  function triggerQuotaBarsChargeAnimation(targets) {
+    if (!Array.isArray(targets) || !targets.length) return false;
+    // 动画进行中不堆积或重启多轮播放；减少动态效果下交由静态提示处理
+    if (quotaBarChargePlaying || isQuotaReducedMotion()) return false;
+    const panelQuotaEl = el('panel-quota');
+    if (!panelQuotaEl || panelQuotaEl.hidden) return false;
+
+    const validRefs = [];
+    for (const ref of targets) {
+      if (ref && ref.chargeEligible && ref.track && ref.chargeStage) {
+        validRefs.push(ref);
+      }
+    }
+    if (!validRefs.length) return false;
+
+    for (const ref of validRefs) {
+      removeQuotaAttrIfPresent(ref.track, 'data-charging');
+      setQuotaHiddenIfChanged(ref.chargeStage, false);
+      quotaActiveChargeRefs.add(ref);
+    }
+    // 仅触发单次整体可见性提交，确保后续 CSS 关键帧从 0% 平滑起播
+    if (typeof panelQuotaEl.offsetHeight === 'number') void panelQuotaEl.offsetHeight;
+    for (const ref of validRefs) {
+      setQuotaAttrIfChanged(ref.track, 'data-charging', 'true');
+    }
+
+    quotaBarChargePlaying = true;
+    quotaBarChargeTimer = setTimeout(() => {
+      clearQuotaBarChargeAnimations();
+    }, QUOTA_BAR_CHARGE_DURATION_MS + 30);
+    return true;
+  }
+
+  function triggerQuotaRefreshIconSpin() {
+    if (isQuotaReducedMotion()) return;
+    const btn = el('btn-quota-refresh');
+    const icon = btn?.querySelector?.('.quota-refresh-icon');
+    if (!icon || typeof icon.animate !== 'function') return;
+    if (quotaRefreshSpinAnim && quotaRefreshSpinAnim.playState === 'running') return;
+    try {
+      const anim = icon.animate(
+        [{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }],
+        { duration: 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'none' }
+      );
+      quotaRefreshSpinAnim = anim;
+      const clearRef = () => {
+        if (quotaRefreshSpinAnim === anim) quotaRefreshSpinAnim = null;
+      };
+      anim.onfinish = clearRef;
+      anim.oncancel = clearRef;
+    } catch { }
+  }
+
+  function clearQuotaAnimations() {
+    for (const rafId of quotaAnimRafs) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    }
+    quotaAnimRafs.clear();
+    clearQuotaBarChargeAnimations();
+    if (quotaRefreshSpinAnim) {
+      try { quotaRefreshSpinAnim.cancel(); } catch { }
+      quotaRefreshSpinAnim = null;
+    }
+  }
+
+  function clearQuotaTimers() {
+    if (quotaAutoTimer) { clearTimeout(quotaAutoTimer); quotaAutoTimer = null; }
+    if (quotaResetTimer) { clearTimeout(quotaResetTimer); quotaResetTimer = null; }
+    if (quotaPostTurnTimer) { clearTimeout(quotaPostTurnTimer); quotaPostTurnTimer = null; }
+    if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    clearQuotaAnimations();
+    try { quotaAbortController?.abort?.(); } catch { }
+    quotaAbortController = null;
+  }
+
+  function loadQuotaCalibrationForScope(scopeKey) {
+    const clean = scopeKey ? String(scopeKey).trim() : 'anonymous';
+    if (quotaCalibrationScope === clean) return quotaCalibrationMap;
+    quotaCalibrationScope = clean;
+    quotaCalibrationMap = {};
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(`${QUOTA_CAL_STORAGE_PREFIX}${clean}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') quotaCalibrationMap = parsed;
+        }
+      }
+    } catch { }
+    return quotaCalibrationMap;
+  }
+
+  function saveQuotaCalibrationForScope(scopeKey, nextMap) {
+    const clean = scopeKey ? String(scopeKey).trim() : 'anonymous';
+    quotaCalibrationScope = clean;
+    quotaCalibrationMap = nextMap && typeof nextMap === 'object' ? nextMap : {};
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(`${QUOTA_CAL_STORAGE_PREFIX}${clean}`, JSON.stringify(quotaCalibrationMap));
+      }
+    } catch { }
+  }
+
+  // 仅在值实际改变时写入 DOM，避免重复替换 Text 节点或重设属性引发重排与闪烁
+  function setQuotaTextIfChanged(node, text) {
+    if (!node) return;
+    const next = text == null ? '' : String(text);
+    if (node.textContent !== next) node.textContent = next;
+  }
+
+  function setQuotaHiddenIfChanged(node, hidden) {
+    if (!node) return;
+    const next = Boolean(hidden);
+    if (Boolean(node.hidden) !== next) node.hidden = next;
+  }
+
+  function setQuotaAttrIfChanged(node, name, val) {
+    if (!node) return;
+    const next = String(val);
+    if (getChildAttr(node, name) !== next) node.setAttribute(name, next);
+  }
+
+  function removeQuotaAttrIfPresent(node, name) {
+    if (!node) return;
+    if (getChildAttr(node, name) !== null) node.removeAttribute?.(name);
+  }
+
+  function setQuotaClassIfChanged(node, cls) {
+    if (!node) return;
+    const next = String(cls || '');
+    if (node.className !== next) node.className = next;
+  }
+
+  function hideQuotaRefreshFeedback() {
+    if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    const fb = el('quota-refresh-feedback');
+    if (fb) setQuotaHiddenIfChanged(fb, true);
+  }
+
+  function showQuotaUpToDateFeedback() {
+    const fb = el('quota-refresh-feedback');
+    if (!fb) return;
+    if (quotaFeedbackTimer) { clearTimeout(quotaFeedbackTimer); quotaFeedbackTimer = null; }
+    setQuotaTextIfChanged(fb, t('quota.refresh.upToDate'));
+    setQuotaHiddenIfChanged(fb, false);
+    quotaFeedbackTimer = setTimeout(() => {
+      quotaFeedbackTimer = null;
+      if (!state.disposed && el('quota-refresh-feedback')) {
+        setQuotaHiddenIfChanged(el('quota-refresh-feedback'), true);
+      }
+    }, 1800);
+  }
+
+  function computeQuotaVisualSignature(view) {
+    if (!view || !Array.isArray(view.pools)) return 'empty';
+    const parts = [
+      view.currentModel?.productKey || '',
+      view.activeStatus || '',
+      view.badge?.fraction == null ? 'null' : view.badge.fraction.toFixed(4)
+    ];
+    for (const p of view.pools) {
+      const bStr = (p.buckets || []).map(b => `${b.bucketId}:${b.remainingFraction == null ? 'null' : b.remainingFraction.toFixed(4)}:${b.resetAtMs || ''}`).join(',');
+      parts.push(`${p.poolKey}=${p.status}=${bStr}`);
+    }
+    return parts.join('|');
+  }
+
+  function formatQuotaNumPctValue(pctVal) {
+    if (!Number.isFinite(pctVal)) return '';
+    const clamped = Math.max(0, Math.min(100, pctVal));
+    if (clamped === 0) return '0%';
+    if (clamped > 0 && clamped < 1) return `${Math.max(0.1, Math.round(clamped * 10) / 10)}%`;
+    return `${Math.round(clamped)}%`;
+  }
+
+  function animateQuotaPercentNode(node, targetFrac, animate, fallbackText = '') {
+    if (!node) return;
+    const prevState = quotaNumAnimState.get(node) || { rafId: 0, currentPct: null, targetPct: null };
+    if (targetFrac == null || !Number.isFinite(Number(targetFrac))) {
+      if (prevState.rafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(prevState.rafId);
+        quotaAnimRafs.delete(prevState.rafId);
+      }
+      quotaNumAnimState.set(node, { rafId: 0, currentPct: null, targetPct: null });
+      setQuotaTextIfChanged(node, fallbackText);
+      return;
+    }
+
+    const targetPct = Math.max(0, Math.min(100, Number(targetFrac) * 100));
+    const canAnimate = Boolean(
+      animate &&
+      !isQuotaReducedMotion() &&
+      typeof requestAnimationFrame === 'function' &&
+      prevState.currentPct !== null &&
+      Math.abs(targetPct - prevState.currentPct) >= 0.05
+    );
+
+    if (!canAnimate) {
+      if (prevState.rafId && prevState.targetPct !== null && Math.abs(prevState.targetPct - targetPct) < 0.05) {
+        return;
+      }
+      if (prevState.rafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(prevState.rafId);
+        quotaAnimRafs.delete(prevState.rafId);
+      }
+      quotaNumAnimState.set(node, { rafId: 0, currentPct: targetPct, targetPct });
+      setQuotaTextIfChanged(node, formatQuotaNumPctValue(targetPct));
+      return;
+    }
+
+    if (prevState.rafId && prevState.targetPct !== null && Math.abs(prevState.targetPct - targetPct) < 0.05) {
+      return;
+    }
+
+    if (prevState.rafId && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(prevState.rafId);
+      quotaAnimRafs.delete(prevState.rafId);
+    }
+
+    const startPct = prevState.currentPct;
+    const startTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const animObj = { rafId: 0, currentPct: startPct, targetPct };
+    quotaNumAnimState.set(node, animObj);
+
+    const step = (nowTs) => {
+      if (state.disposed) {
+        quotaAnimRafs.delete(animObj.rafId);
+        animObj.rafId = 0;
+        return;
+      }
+      const curNow = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const rawT = Math.min(1, Math.max(0, (curNow - startTs) / QUOTA_ANIM_DURATION_MS));
+      const eased = 1 - Math.pow(1 - rawT, 3);
+      const val = startPct + (targetPct - startPct) * eased;
+      animObj.currentPct = val;
+      setQuotaTextIfChanged(node, formatQuotaNumPctValue(val));
+      if (rawT < 1) {
+        animObj.rafId = requestAnimationFrame(step);
+        quotaAnimRafs.add(animObj.rafId);
+      } else {
+        quotaAnimRafs.delete(animObj.rafId);
+        animObj.rafId = 0;
+        animObj.currentPct = targetPct;
+        setQuotaTextIfChanged(node, formatQuotaNumPctValue(targetPct));
+      }
+    };
+    animObj.rafId = requestAnimationFrame(step);
+    quotaAnimRafs.add(animObj.rafId);
+  }
+
+  function resetQuotaState(opts = {}) {
+    clearQuotaTimers();
+    if (opts.clearAccountScope !== false) {
+      quotaState.accountScopeKey = null;
+      quotaCalibrationScope = null;
+      quotaCalibrationMap = {};
+    }
+    quotaLastEstComputeSig = '';
+    quotaCachedEstByKey = null;
+    quotaLastSnapshotSig = null;
+    quotaPendingSmoothAnim = false;
+    quotaBadgeLastHasFraction = false;
+    quotaState.snapshot = null;
+    quotaState.rawInput = null;
+    quotaState.browsePoolKey = null;
+    quotaState.busy = false;
+    quotaState.lastFetchedAtMs = null;
+    quotaState.lastSuccessAtMs = null;
+    quotaState.nextRefreshAtMs = null;
+    quotaState.error = null;
+    quotaState.errorKind = null;
+    quotaState.consecutiveErrors = 0;
+    quotaState.lastResetRequeryKey = null;
+    quotaInFlightPromise = null;
+    renderQuotaBoard();
+  }
+
+  function refreshQuotaTokenEstimates() {
+    quotaLastEstComputeSig = '';
+    quotaCachedEstByKey = null;
+    if (!state.disposed && (quotaState.snapshot || quotaState.rawInput)) {
+      renderQuotaBoard(Date.now(), { animate: false });
+    }
+  }
+
+  function handleQuotaAccountSwitch(nextScopeKey, opts = {}) {
+    const cleanNext = nextScopeKey ? String(nextScopeKey).trim() : null;
+    const prev = quotaState.accountScopeKey;
+    const changed = Boolean(cleanNext && prev && cleanNext !== prev);
+    if (changed || opts.forceRefresh) {
+      resetQuotaState({ clearAccountScope: true });
+      if (cleanNext) quotaState.accountScopeKey = cleanNext;
+      if (!state.disposed) void syncQuotaFromHost(true);
+      return true;
+    }
+    if (cleanNext && !prev) {
+      quotaState.accountScopeKey = cleanNext;
+    }
+    return false;
+  }
+
+  function getQuotaStatusLabelText(statusKey) {
+    const keyMap = {
+      available: 'quota.state.available',
+      low: 'quota.state.low',
+      exhausted: 'quota.state.exhausted',
+      no_permission: 'quota.state.no_permission',
+      stale: 'quota.state.stale',
+      error: 'quota.state.error',
+      unknown: 'quota.state.unknown'
+    };
+    return t(keyMap[statusKey] || 'quota.state.unknown');
+  }
+
+  function getQuotaShortBadgeText(statusKey) {
+    const keyMap = {
+      exhausted: 'quota.short.exhausted',
+      no_permission: 'quota.short.no_permission',
+      error: 'quota.short.error',
+      stale: 'quota.short.stale',
+      unknown: 'quota.short.unknown'
+    };
+    return keyMap[statusKey] ? t(keyMap[statusKey]) : '';
+  }
+
+  function getQuotaPillClass(statusKey) {
+    if (statusKey === 'available') return 'pill-good';
+    if (statusKey === 'low' || statusKey === 'stale') return 'pill-warn';
+    if (statusKey === 'exhausted' || statusKey === 'error') return 'pill-danger';
+    if (statusKey === 'no_permission') return 'pill-info';
+    return 'pill-muted';
+  }
+
+  function formatQuotaDateTime(ms) {
+    if (!Number.isFinite(Number(ms)) || Number(ms) <= 0) return t('quota.time.unknown');
+    const d = new Date(Number(ms));
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${mo}-${da} ${hh}:${mi}:${ss}`;
+  }
+
+  function formatCountdownMsCompact(ms) {
+    if (!Number.isFinite(Number(ms))) return t('quota.time.unknown');
+    if (ms <= 0) return '0s';
+    const sec = Math.ceil(ms / 1000);
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (currentPanelLanguage === 'en') {
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m`;
+      return `${s}s`;
+    }
+    if (d > 0) return `${d}天${h}小时`;
+    if (h > 0) return `${h}小时${m}分`;
+    if (m > 0) return `${m}分`;
+    return `${s}秒`;
+  }
+
+  function formatQuotaWindowTitle(bucket) {
+    if (!bucket) return '';
+    if (currentPanelLanguage === 'en') {
+      if (bucket.windowKey === '5h') return '5h Window';
+      if (bucket.windowKey === 'weekly') return 'Weekly Window';
+      if (bucket.windowKey === 'daily') return 'Daily Window';
+      return 'Primary Quota';
+    }
+    if (currentPanelLanguage === 'zh-TW') {
+      if (bucket.windowKey === '5h') return '5小時限額';
+      if (bucket.windowKey === 'weekly') return '每週限額';
+      if (bucket.windowKey === 'daily') return '每日限額';
+      return '目前主限額';
+    }
+    return bucket.windowLabel || '周期限额';
+  }
+
+  function getActiveQuotaModelInput() {
+    if (activeSessionModelConfirmed && (activeSessionModelKey || activeSessionProductKey)) {
+      const cfgList = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+      const activeKeyLower = String(activeSessionModelKey || '').trim().toLowerCase();
+      const matched = activeKeyLower ? cfgList.find(c =>
+        String(c?.modelId || '').trim().toLowerCase() === activeKeyLower ||
+        String(c?.modelOrAlias?.model || '').trim().toLowerCase() === activeKeyLower
+      ) : null;
+      if (matched) return matched;
+      return {
+        modelId: activeSessionModelKey || '',
+        label: state.latest?.model || activeSessionModelKey || activeSessionProductKey,
+        productKey: activeSessionProductKey || ''
+      };
+    }
+    if (state.latest?.modelId || state.latest?.model) {
+      return {
+        modelId: state.latest.modelId || state.latest.model,
+        label: state.latest.model || state.latest.modelId
+      };
+    }
+    return null;
+  }
+
+  function attachTokenEstimatesToQuotaView(view, nowMs) {
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (!view || !Array.isArray(view.pools) || !core?.applyQuotaTokenEstimates) return view;
+    const scopeKey = quotaState.accountScopeKey || view.accountScopeKey || 'anonymous';
+    const usageEvents = Array.isArray(ANTIGRAVITY_TOKEN_DATA.recentModelUsage) ? ANTIGRAVITY_TOKEN_DATA.recentModelUsage : [];
+    const coverageStartMs = ANTIGRAVITY_TOKEN_DATA.quotaUsageCoverageStartMs ?? null;
+    const lastEvTs = usageEvents.length ? Number(usageEvents[usageEvents.length - 1]?.ts || 0) : 0;
+    const poolSig = view.pools.map(p => `${p.poolKey}:${(p.buckets || []).map(b => `${b.bucketId}=${b.remainingFraction ?? 'n'}`).join(',')}`).join(';');
+    const computeSig = `${scopeKey}|${view.fetchedAtMs || 0}|${coverageStartMs ?? 'null'}|${usageEvents.length}|${lastEvTs}|${poolSig}`;
+
+    if (quotaLastEstComputeSig === computeSig && quotaCachedEstByKey) {
+      const enrichedPools = view.pools.map(p => {
+        const nextBuckets = (p.buckets || []).map(b => {
+          const bKey = `${p.poolKey}::${b.bucketId || b.windowKey}`;
+          return quotaCachedEstByKey[bKey] ? { ...b, tokenEstimate: quotaCachedEstByKey[bKey] } : b;
+        });
+        const pb = p.primaryBucket ? (nextBuckets.find(b => b.bucketId === p.primaryBucket.bucketId) || nextBuckets[0] || p.primaryBucket) : (nextBuckets[0] || null);
+        return { ...p, buckets: nextBuckets, primaryBucket: pb, tokenEstimate: pb?.tokenEstimate || p.tokenEstimate || null };
+      });
+      return { ...view, pools: enrichedPools };
+    }
+
+    const calMap = loadQuotaCalibrationForScope(scopeKey);
+    const applied = core.applyQuotaTokenEstimates(view, {
+      accountScopeKey: scopeKey,
+      usageEvents,
+      historyCoverageStartMs: coverageStartMs,
+      calibrationMap: calMap,
+      nowMs: view.fetchedAtMs || nowMs
+    });
+    if (applied?.nextCalibrationMap) {
+      saveQuotaCalibrationForScope(scopeKey, applied.nextCalibrationMap);
+    }
+    const cacheObj = {};
+    for (const p of (applied?.snapshot?.pools || [])) {
+      for (const b of (p.buckets || [])) {
+        cacheObj[`${p.poolKey}::${b.bucketId || b.windowKey}`] = b.tokenEstimate || null;
+      }
+    }
+    quotaLastEstComputeSig = computeSig;
+    quotaCachedEstByKey = cacheObj;
+    return applied?.snapshot || view;
+  }
+
+  function computeEffectiveQuotaView(nowMs = Date.now()) {
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const currentModelInput = getActiveQuotaModelInput();
+
+    // 1. 优先复用 rawInput 通过 buildModelQuotaSnapshot 完整演算（支持测试注入原始响应或本地配置变更）
+    if (quotaState.rawInput && core?.buildModelQuotaSnapshot) {
+      const built = core.buildModelQuotaSnapshot({
+        ...quotaState.rawInput,
+        currentModel: currentModelInput,
+        browsePoolKey: quotaState.browsePoolKey,
+        fetchMeta: {
+          fetchedAtMs: quotaState.lastSuccessAtMs ?? quotaState.lastFetchedAtMs,
+          nextRefreshAtMs: quotaState.nextRefreshAtMs,
+          staleThresholdMs: QUOTA_STALE_MS,
+          error: quotaState.error,
+          errorKind: quotaState.errorKind
+        },
+        nowMs
+      });
+      return attachTokenEstimatesToQuotaView(built, nowMs);
+    }
+
+    // 2. 基于主进程返回的标准化 snapshot 重新结合当前会话模型与实时 nowMs 刷新视图状态
+    const base = quotaState.snapshot;
+    if (!base) {
+      const hasErr = Boolean(quotaState.error);
+      return {
+        schemaVersion: 1,
+        syncState: hasErr ? 'error' : 'unknown',
+        fetchedAtMs: quotaState.lastSuccessAtMs ?? quotaState.lastFetchedAtMs,
+        nextRefreshAtMs: quotaState.nextRefreshAtMs,
+        staleThresholdMs: QUOTA_STALE_MS,
+        lastError: quotaState.error,
+        errorKind: quotaState.errorKind,
+        currentModel: currentModelInput ? { productLabel: String(currentModelInput.label || currentModelInput.modelId) } : null,
+        activeStatus: hasErr ? 'error' : 'unknown',
+        activeStatusLabel: getQuotaStatusLabelText(hasErr ? 'error' : 'unknown'),
+        badge: {
+          text: getQuotaShortBadgeText(hasErr ? 'error' : 'unknown'),
+          tag: hasErr ? t('quota.retry') : '',
+          fraction: null,
+          status: hasErr ? 'error' : 'unknown',
+          statusLabel: getQuotaStatusLabelText(hasErr ? 'error' : 'unknown')
+        },
+        activeReset: { hasResetTime: false, resetTimeText: null, countdownText: null, isResetPassed: false },
+        browsePoolKey: quotaState.browsePoolKey,
+        planTierName: ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName || null,
+        pools: []
+      };
+    }
+
+    const updatedPools = (base.pools || []).map(p => {
+      const nextBuckets = (p.buckets || []).map(b => {
+        if (!b.resetTimeIso || !core?.formatQuotaResetMeta) return { ...b };
+        const rm = core.formatQuotaResetMeta(b.resetTimeIso, nowMs);
+        return {
+          ...b,
+          hasResetTime: rm.hasResetTime,
+          resetAtMs: rm.resetAtMs,
+          resetTimeText: rm.resetTimeText,
+          countdownText: rm.countdownText,
+          isResetPassed: rm.isResetPassed
+        };
+      });
+      const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
+      const pb = priced[0] || nextBuckets[0] || p.primaryBucket || null;
+      return {
+        ...p,
+        buckets: nextBuckets,
+        primaryBucket: pb,
+        hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
+        resetTimeIso: pb?.resetTimeIso ?? p.resetTimeIso ?? null,
+        resetAtMs: pb?.resetAtMs ?? p.resetAtMs ?? null,
+        resetTimeText: pb?.resetTimeText ?? p.resetTimeText ?? null,
+        countdownText: pb?.countdownText ?? p.countdownText ?? null,
+        isResetPassed: Boolean(pb?.isResetPassed ?? p.isResetPassed)
+      };
+    });
+
+    // 针对实时切换后的会话模型重新匹配池与模型
+    const tStr = currentModelInput
+      ? String(currentModelInput.modelId || currentModelInput.label || '').trim().toLowerCase()
+      : '';
+    const tStripped = tStr.replace(/^model_/, '');
+    let matchedPool = null;
+    let matchedModel = null;
+    if (tStr) {
+      for (const p of updatedPools) {
+        for (const m of (p.models || [])) {
+          const allIds = [...(m.modelIds || []), ...(m.aliases || [])].map(x => String(x).toLowerCase());
+          if (allIds.some(id => id === tStr || id.replace(/^model_/, '') === tStripped)) {
+            matchedPool = p;
+            matchedModel = m;
+            break;
+          }
+          if (m.productLabel && m.productLabel.toLowerCase() === tStr) {
+            matchedPool = p;
+            matchedModel = m;
+            break;
+          }
+          if (m.productKey && currentModelInput?.productKey && m.productKey === currentModelInput.productKey) {
+            matchedPool = p;
+            matchedModel = m;
+            break;
+          }
+        }
+        if (matchedPool) break;
+      }
+      if (!matchedPool && core?.getSharedQuotaGroupKey) {
+        const gKey = core.getSharedQuotaGroupKey(currentModelInput);
+        matchedPool = updatedPools.find(p => p.poolKey === gKey) || null;
+        if (matchedPool) matchedModel = matchedPool.models?.[0] || null;
+      }
+    }
+
+    const lastOkMs = quotaState.lastSuccessAtMs ?? base.fetchedAtMs ?? null;
+    const ageExpired = lastOkMs !== null && (nowMs - lastOkMs > QUOTA_STALE_MS);
+    const anyResetPassed = updatedPools.some(p => p.isResetPassed && p.remainingFraction === 0);
+    const hasAnyPool = updatedPools.some(p => p.remainingFraction !== null || p.noPermission);
+    let syncState = 'unknown';
+    if (!hasAnyPool && quotaState.error) syncState = 'error';
+    else if (hasAnyPool && (quotaState.error || ageExpired || anyResetPassed)) syncState = 'stale';
+    else if (hasAnyPool) syncState = 'fresh';
+
+    let activeStatus = 'unknown';
+    let badgeText = t('quota.short.unknown');
+    let badgeTag = '';
+    let activeFraction = null;
+    let activeReset = { hasResetTime: false, resetTimeText: null, countdownText: null, isResetPassed: false };
+
+    if (syncState === 'error') {
+      activeStatus = 'error';
+      badgeText = t('quota.short.error');
+      badgeTag = t('quota.retry');
+    } else if (matchedModel?.noPermission || matchedPool?.noPermission) {
+      activeStatus = 'no_permission';
+      badgeText = t('quota.short.no_permission');
+    } else if (matchedPool) {
+      activeFraction = matchedPool.remainingFraction;
+      activeReset = {
+        hasResetTime: matchedPool.hasResetTime,
+        resetTimeIso: matchedPool.resetTimeIso,
+        resetAtMs: matchedPool.resetAtMs,
+        resetTimeText: matchedPool.resetTimeText,
+        countdownText: matchedPool.countdownText,
+        isResetPassed: matchedPool.isResetPassed
+      };
+      if (matchedPool.remainingFraction === null) {
+        activeStatus = syncState === 'stale' ? 'stale' : 'unknown';
+        badgeText = t(syncState === 'stale' ? 'quota.short.stale' : 'quota.short.unknown');
+      } else if (matchedPool.isExhausted || matchedPool.remainingFraction === 0) {
+        activeStatus = syncState === 'stale' ? 'stale' : 'exhausted';
+        badgeText = t('quota.short.exhausted');
+        badgeTag = matchedPool.primaryBucket?.windowShort || '';
+      } else {
+        activeStatus = syncState === 'stale' ? 'stale' : (matchedPool.remainingFraction <= 0.2 ? 'low' : 'available');
+        badgeText = core?.formatQuotaPercentText ? core.formatQuotaPercentText(matchedPool.remainingFraction) : matchedPool.percentText;
+        badgeTag = syncState === 'stale' ? t('quota.short.stale') : (matchedPool.primaryBucket?.windowShort || '');
+      }
+    } else if (syncState === 'stale') {
+      activeStatus = 'stale';
+      badgeText = t('quota.short.stale');
+    }
+
+    return attachTokenEstimatesToQuotaView({
+      ...base,
+      syncState,
+      fetchedAtMs: lastOkMs,
+      nextRefreshAtMs: quotaState.nextRefreshAtMs,
+      lastError: quotaState.error,
+      errorKind: quotaState.errorKind,
+      currentModel: matchedModel
+        ? {
+          productKey: matchedModel.productKey,
+          productLabel: matchedModel.productLabel,
+          poolKey: matchedPool.poolKey,
+          poolTitle: matchedPool.title,
+          noPermission: matchedModel.noPermission,
+          unavailabilityReason: matchedModel.unavailabilityReason,
+          noticeText: matchedModel.noticeText
+        }
+        : (currentModelInput ? { productLabel: String(currentModelInput.label || currentModelInput.modelId), poolKey: null, poolTitle: null } : base.currentModel),
+      activeStatus,
+      activeStatusLabel: getQuotaStatusLabelText(activeStatus),
+      badge: {
+        text: badgeText,
+        tag: badgeTag,
+        fraction: activeFraction,
+        status: activeStatus,
+        statusLabel: getQuotaStatusLabelText(activeStatus)
+      },
+      activeReset,
+      browsePoolKey: quotaState.browsePoolKey || matchedPool?.poolKey || updatedPools[0]?.poolKey || null,
+      pools: updatedPools
+    }, nowMs);
+  }
+
+  function formatBucketTokenEstimateLine(est) {
+    if (!est || est.estSource === 'unavailable' || est.estSource === 'unknown') return '';
+    if (est.estBasis === 'exhausted' || est.estSource === 'exhausted' || est.estRemainingTokens === 0) {
+      return t('quota.est.exhausted');
+    }
+    if (est.estBasis === 'incomplete_samples' || est.estSource === 'incomplete') {
+      return t('quota.est.incomplete');
+    }
+    if (est.estBasis === 'calibration_expired' || est.estSource === 'expired') {
+      return t('quota.est.expired');
+    }
+    if (est.estBasis === 'coverage_incomplete') {
+      return t('quota.est.coverageIncomplete');
+    }
+    if (est.estRemainingTokens != null && est.estRemainingShort) {
+      let basisKey = 'quota.est.basisCached';
+      if (est.estBasis === 'stale_with_divergence' || est.estSource === 'unreliable_cached') {
+        basisKey = 'quota.est.basisStaleDivergence';
+      } else if (est.estBasis === 'delta_calibrated' && est.estSource === 'delta') {
+        basisKey = 'quota.est.basisDelta';
+      } else if (est.estBasis === 'cycle_estimated' && est.estSource === 'cycle') {
+        basisKey = 'quota.est.basisCycle';
+      }
+      const mainPart = t('quota.est.approx', { tokens: est.estRemainingShort });
+      const basisPart = t(basisKey);
+      const mixedPart = est.mixedPoolModels ? ` (${t('quota.est.mixedModels')})` : '';
+      const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+      const usedShort = est.cycleTokensUsed > 0 && core?.formatApproxTokensShort
+        ? core.formatApproxTokensShort(est.cycleTokensUsed)
+        : null;
+      return usedShort
+        ? `${mainPart} · ${basisPart}${mixedPart} · ${t('quota.est.cycleUsed', { used: usedShort })}`
+        : `${mainPart} · ${basisPart}${mixedPart}`;
+    }
+    return t('quota.est.waiting');
+  }
+
+  function getChildAttr(node, name) {
+    if (!node) return null;
+    if (typeof node.getAttribute === 'function') return node.getAttribute(name);
+    return node.attributes?.[name] ?? null;
+  }
+
+  function reconcileQuotaChildOrder(container, desiredNodes) {
+    const cur = Array.from(container.children || []);
+    const sameOrder = cur.length === desiredNodes.length && cur.every((n, idx) => n === desiredNodes[idx]);
+    if (sameOrder) return;
+    if (typeof container.removeChild === 'function' && typeof container.insertBefore === 'function') {
+      const wantSet = new Set(desiredNodes);
+      for (const ch of cur) {
+        if (!wantSet.has(ch)) container.removeChild(ch);
+      }
+      for (let i = 0; i < desiredNodes.length; i++) {
+        const node = desiredNodes[i];
+        const atIdx = container.children[i] || null;
+        if (atIdx !== node) {
+          container.insertBefore(node, atIdx);
+        }
+      }
+      return;
+    }
+    if (typeof container.replaceChildren === 'function') {
+      container.replaceChildren(...desiredNodes);
+    } else {
+      if (Array.isArray(container.children)) container.children.length = 0;
+      for (const n of desiredNodes) container.appendChild?.(n);
+    }
+  }
+
+  function renderQuotaBucketsContainer(container, buckets, statusOverride = null, opts = {}) {
+    if (!container) return;
+    const list = Array.isArray(buckets) ? buckets : [];
+    const animate = Boolean(opts.animate);
+    const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+    if (!list.length) {
+      reconcileQuotaChildOrder(container, []);
+      return;
+    }
+
+    const existingRows = new Map();
+    for (const child of Array.from(container.children || [])) {
+      const bKey = getChildAttr(child, 'data-bucket-key');
+      if (bKey) existingRows.set(bKey, child);
+    }
+
+    const desiredRows = [];
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      const bKey = String(b.bucketId || b.windowKey || `b-${i}`);
+
+      let row = existingRows.get(bKey);
+      let refs = row ? quotaNodeRefsMap.get(row) : null;
+
+      if (!row || !refs) {
+        row = document.createElement('div');
+        row.className = 'quota-bucket-row';
+        row.setAttribute('data-bucket-key', bKey);
+
+        const meta = document.createElement('div');
+        meta.className = 'quota-bucket-meta';
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'quota-bucket-name';
+
+        const valEl = document.createElement('span');
+        valEl.className = 'quota-bucket-val';
+        const pctEl = document.createElement('span');
+        pctEl.className = 'quota-pct-num';
+        const resetEl = document.createElement('span');
+        resetEl.className = 'quota-reset-span';
+        valEl.appendChild(pctEl);
+        valEl.appendChild(resetEl);
+
+        meta.appendChild(nameEl);
+        meta.appendChild(valEl);
+
+        const track = document.createElement('div');
+        track.className = 'quota-bar-track';
+        const fillEl = document.createElement('div');
+        fillEl.className = 'quota-bar-fill';
+        track.appendChild(fillEl);
+
+        // 独立充能动画层：裁剪在真实比例宽度内，绝不归零底层也不填满到 100%
+        const chargeStage = document.createElement('div');
+        chargeStage.className = 'quota-bar-charge-stage';
+        chargeStage.hidden = true;
+        const chargeFill = document.createElement('div');
+        chargeFill.className = 'quota-bar-charge-fill';
+        const chargeSheen = document.createElement('div');
+        chargeSheen.className = 'quota-bar-charge-sheen';
+        chargeStage.appendChild(chargeFill);
+        chargeStage.appendChild(chargeSheen);
+        track.appendChild(chargeStage);
+
+        const estEl = document.createElement('div');
+        estEl.className = 'quota-bucket-est';
+        estEl.hidden = true;
+
+        row.appendChild(meta);
+        row.appendChild(track);
+        row.appendChild(estEl);
+        refs = {
+          nameEl,
+          pctEl,
+          resetEl,
+          track,
+          fillEl,
+          chargeStage,
+          chargeFill,
+          chargeSheen,
+          chargeRef: { track, chargeStage, chargeEligible: false },
+          estEl
+        };
+        quotaNodeRefsMap.set(row, refs);
+      }
+
+      const { nameEl, pctEl, resetEl, track, fillEl, chargeStage, chargeRef, estEl } = refs;
+      if (nameEl) setQuotaTextIfChanged(nameEl, formatQuotaWindowTitle(b));
+
+      if (pctEl) {
+        if (statusOverride === 'no_permission') {
+          animateQuotaPercentNode(pctEl, null, false, t('quota.short.no_permission'));
+        } else if (b.remainingFraction == null) {
+          animateQuotaPercentNode(pctEl, null, false, t('quota.time.unknown'));
+        } else {
+          animateQuotaPercentNode(pctEl, b.remainingFraction, animate, b.percentText);
+        }
+      }
+
+      if (resetEl) {
+        const resetSuffix = b.hasResetTime
+          ? ` · ${b.resetTimeText}${b.countdownText ? ` (${b.isResetPassed ? b.countdownText : formatCountdownMsCompact((b.resetAtMs || 0) - nowMs)})` : ''}`
+          : ` · ${t('quota.time.reset')}: ${t('quota.time.unknown')}`;
+        setQuotaTextIfChanged(resetEl, resetSuffix);
+      }
+
+      if (fillEl) {
+        const bStatus = statusOverride || (b.remainingFraction == null
+          ? 'unknown'
+          : (b.isExhausted || b.remainingFraction === 0 ? 'exhausted' : (b.remainingFraction <= 0.2 ? 'low' : 'available')));
+        const scaleVal = b.remainingFraction == null ? 0 : Math.max(0, Math.min(1, b.remainingFraction));
+        const scaleStr = scaleVal.toFixed(4);
+        const stageWidthStr = `${(scaleVal * 100).toFixed(2)}%`;
+        setQuotaAttrIfChanged(fillEl, 'data-status', bStatus);
+        if (getChildAttr(fillEl, 'data-fraction') !== scaleStr) {
+          fillEl.setAttribute('data-fraction', scaleStr);
+          if (typeof fillEl.style?.setProperty === 'function') {
+            fillEl.style.setProperty('--quota-scale', scaleStr);
+          }
+          if (fillEl.style) {
+            fillEl.style.transform = `scaleX(${scaleStr})`;
+          }
+        }
+        const chargeEligible = Boolean(
+          statusOverride !== 'no_permission' &&
+          bStatus !== 'no_permission' &&
+          bStatus !== 'unknown' &&
+          b.remainingFraction != null &&
+          Number.isFinite(Number(b.remainingFraction)) &&
+          scaleVal > 0
+        );
+        if (chargeStage) {
+          setQuotaAttrIfChanged(chargeStage, 'data-status', bStatus);
+          if (getChildAttr(chargeStage, 'data-fraction') !== scaleStr) {
+            chargeStage.setAttribute('data-fraction', scaleStr);
+            if (chargeStage.style) {
+              chargeStage.style.width = stageWidthStr;
+            }
+          }
+        }
+        if (track) {
+          setQuotaAttrIfChanged(track, 'data-charge-eligible', chargeEligible ? 'true' : 'false');
+          if (!chargeEligible) {
+            removeQuotaAttrIfPresent(track, 'data-charging');
+            if (chargeStage) setQuotaHiddenIfChanged(chargeStage, true);
+            if (chargeRef) quotaActiveChargeRefs.delete(chargeRef);
+          }
+        }
+        if (chargeRef) {
+          chargeRef.chargeEligible = chargeEligible;
+          if (chargeEligible && Array.isArray(opts.chargeTargets)) {
+            opts.chargeTargets.push(chargeRef);
+          }
+        }
+      }
+
+      if (estEl) {
+        const estText = statusOverride === 'no_permission' ? '' : formatBucketTokenEstimateLine(b.tokenEstimate);
+        if (estText) {
+          setQuotaHiddenIfChanged(estEl, false);
+          setQuotaTextIfChanged(estEl, estText);
+        } else {
+          setQuotaHiddenIfChanged(estEl, true);
+          setQuotaTextIfChanged(estEl, '');
+        }
+      }
+      desiredRows.push(row);
+    }
+
+    reconcileQuotaChildOrder(container, desiredRows);
+  }
+
+  function renderQuotaBoard(nowMs = Date.now(), renderOpts = {}) {
+    const viewQuotaBody = el('view-quota');
+    const savedScrollTop = (viewQuotaBody && typeof viewQuotaBody.scrollTop === 'number') ? viewQuotaBody.scrollTop : null;
+    const view = computeEffectiveQuotaView(nowMs);
+    const currentSig = computeQuotaVisualSignature(view);
+    const chargeBarTargets = renderOpts.chargeBars ? [] : null;
+    const shouldAnimate = Boolean(
+      renderOpts.animate !== undefined
+        ? renderOpts.animate
+        : (quotaPendingSmoothAnim && quotaLastSnapshotSig !== null && currentSig !== quotaLastSnapshotSig)
+    );
+    if (renderOpts.consumeAnim !== false && quotaPendingSmoothAnim) {
+      quotaPendingSmoothAnim = false;
+    }
+    quotaLastSnapshotSig = currentSig;
+
+    // 1. 渲染顶栏圆环入口与窄屏溢出菜单项（不只靠颜色，必含数值/状态短文本）
+    const bQuota = el('badge-quota');
+    const qFill = el('quota-ring-fill');
+    const qVal = el('quota-badge-val');
+    const qTag = el('quota-badge-tag');
+    const oQuotaVal = el('overflow-quota-val');
+
+    if (bQuota) {
+      setQuotaAttrIfChanged(bQuota, 'data-quota-state', view.activeStatus || 'unknown');
+      const tipModel = view.currentModel?.productLabel || t('quota.current.unmatched');
+      const tipReset = view.activeReset?.hasResetTime
+        ? `${view.activeReset.resetTimeText} (${formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs)})`
+        : t('quota.time.unknown');
+      const nextTitle = `${tipModel} · ${view.activeStatusLabel} (${view.badge.text}) · ${t('quota.time.reset')}: ${tipReset}`;
+      if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
+      setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
+    }
+    if (qFill) {
+      if (view.badge.fraction == null) {
+        const nextDash = view.activeStatus === 'unknown' ? '10 30.84' : `0 ${RING_CIRCUMFERENCE.toFixed(2)}`;
+        setQuotaAttrIfChanged(qFill, 'stroke-dasharray', nextDash);
+        setQuotaAttrIfChanged(qFill, 'stroke-dashoffset', '0');
+        quotaBadgeLastHasFraction = false;
+      } else {
+        const clampedFrac = Math.max(0, Math.min(1, view.badge.fraction));
+        const offsetStr = (RING_CIRCUMFERENCE * (1 - clampedFrac)).toFixed(2);
+        const dashStr = `${RING_CIRCUMFERENCE.toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`;
+        if (!quotaBadgeLastHasFraction && qFill.style && typeof qFill.getBoundingClientRect === 'function') {
+          qFill.style.transition = 'none';
+          qFill.setAttribute('stroke-dasharray', dashStr);
+          qFill.setAttribute('stroke-dashoffset', offsetStr);
+          qFill.getBoundingClientRect();
+          qFill.style.transition = '';
+        } else {
+          setQuotaAttrIfChanged(qFill, 'stroke-dasharray', dashStr);
+          setQuotaAttrIfChanged(qFill, 'stroke-dashoffset', offsetStr);
+        }
+        quotaBadgeLastHasFraction = true;
+      }
+    }
+    if (qVal) {
+      const hasNumericPct = view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error' && view.activeStatus !== 'unknown' && view.badge.fraction != null;
+      if (hasNumericPct) {
+        animateQuotaPercentNode(qVal, view.badge.fraction, shouldAnimate, view.badge.text);
+      } else {
+        let dispVal = view.badge.text;
+        if (view.activeStatus === 'exhausted') dispVal = t('quota.short.exhausted');
+        else if (view.activeStatus === 'no_permission') dispVal = t('quota.short.no_permission');
+        else if (view.activeStatus === 'error') dispVal = t('quota.short.error');
+        else if (view.activeStatus === 'unknown' || view.badge.fraction == null) {
+          dispVal = view.activeStatus === 'stale' ? t('quota.short.stale') : t('quota.short.unknown');
+        }
+        animateQuotaPercentNode(qVal, null, false, dispVal);
+      }
+    }
+    if (qTag) {
+      let dispTag = view.badge.tag;
+      if (view.activeStatus === 'error') dispTag = t('quota.retry');
+      else if (view.activeStatus === 'stale' && view.badge.fraction != null) dispTag = t('quota.short.stale');
+      if (dispTag) {
+        setQuotaHiddenIfChanged(qTag, false);
+        setQuotaTextIfChanged(qTag, dispTag);
+      } else {
+        setQuotaHiddenIfChanged(qTag, true);
+        setQuotaTextIfChanged(qTag, '');
+      }
+    }
+    if (oQuotaVal) {
+      const dispTxt = view.badge.fraction != null && view.activeStatus !== 'exhausted' && view.activeStatus !== 'no_permission' && view.activeStatus !== 'error'
+        ? view.badge.text
+        : (qVal ? qVal.textContent : view.badge.text);
+      const dispTag = (qTag && !qTag.hidden) ? qTag.textContent : '';
+      setQuotaTextIfChanged(oQuotaVal, dispTag ? `${dispTxt} · ${dispTag}` : dispTxt);
+    }
+
+    // 2. 刷新按钮与横幅渲染（请求中维持现有文字、宽度与卡片数据，避免闪烁与布局抽动）
+    const btnRefresh = el('btn-quota-refresh');
+    const txtRefresh = el('quota-refresh-text');
+    if (btnRefresh) {
+      if (Boolean(btnRefresh.disabled) !== Boolean(quotaState.busy)) {
+        btnRefresh.disabled = Boolean(quotaState.busy);
+      }
+      setQuotaAttrIfChanged(btnRefresh, 'data-busy', quotaState.busy ? 'true' : 'false');
+    }
+    if (txtRefresh) {
+      setQuotaTextIfChanged(txtRefresh, t('quota.refresh.btn'));
+    }
+
+    const tierPill = el('quota-plan-tier-pill');
+    if (tierPill) {
+      const tierTxt = view.planTierName || ANTIGRAVITY_TOKEN_DATA.planStatus?.tierName || '';
+      if (tierTxt && tierTxt !== '未知') {
+        setQuotaHiddenIfChanged(tierPill, false);
+        setQuotaTextIfChanged(tierPill, tierTxt);
+      } else {
+        setQuotaHiddenIfChanged(tierPill, true);
+      }
+    }
+
+    const bannerEl = el('quota-banner');
+    const bannerTextEl = el('quota-banner-text');
+    if (bannerEl && bannerTextEl) {
+      if (view.syncState === 'error' && view.lastError) {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'error');
+        setQuotaTextIfChanged(bannerTextEl, t('quota.errorBanner', { reason: view.lastError }));
+      } else if (view.syncState === 'stale') {
+        setQuotaHiddenIfChanged(bannerEl, false);
+        setQuotaAttrIfChanged(bannerEl, 'data-tone', 'warn');
+        const staleReason = view.lastError
+          || (view.pools.some(p => p.isResetPassed && p.remainingFraction === 0) ? t('quota.resetPassReason') : t('quota.ageExpiredReason'));
+        setQuotaTextIfChanged(bannerTextEl, t('quota.staleBanner', { reason: staleReason }));
+      } else {
+        setQuotaHiddenIfChanged(bannerEl, true);
+      }
+    }
+
+    // 三时间分列渲染：数据更新时间 / 下次自动刷新 / 当前额度重置
+    const tUpd = el('quota-time-updated');
+    const tNext = el('quota-time-next');
+    const tReset = el('quota-time-reset');
+    if (tUpd) {
+      const updStr = formatQuotaDateTime(view.fetchedAtMs);
+      setQuotaTextIfChanged(tUpd, updStr);
+      if (tUpd.title !== updStr) tUpd.title = updStr;
+    }
+    if (tNext) {
+      const prevNextText = String(tNext.textContent || '').trim();
+      const hasValidNextText = Boolean(prevNextText && prevNextText !== '—' && prevNextText !== t('quota.time.unknown') && prevNextText !== t('quota.refresh.busy'));
+      let nextStr = null;
+      if (quotaState.busy) {
+        if (!hasValidNextText) nextStr = t('quota.refresh.busy');
+      } else if (quotaState.autoPaused) {
+        nextStr = t('quota.time.paused');
+      } else if (Number.isFinite(Number(quotaState.nextRefreshAtMs))) {
+        const nextDiff = quotaState.nextRefreshAtMs - nowMs;
+        if (nextDiff > 0) {
+          nextStr = `${formatQuotaDateTime(quotaState.nextRefreshAtMs).slice(6)} (${formatCountdownMsCompact(nextDiff)})`;
+        } else if (!hasValidNextText) {
+          nextStr = t('quota.refresh.busy');
+        }
+      } else {
+        nextStr = t('quota.time.unknown');
+      }
+      if (nextStr !== null) {
+        setQuotaTextIfChanged(tNext, nextStr);
+        if (tNext.title !== nextStr) tNext.title = nextStr;
+      }
+    }
+    if (tReset) {
+      let resetStr = t('quota.time.unknown');
+      if (view.activeReset?.hasResetTime) {
+        const diffText = view.activeReset.isResetPassed
+          ? t('quota.resetPassReason')
+          : formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs);
+        resetStr = `${view.activeReset.resetTimeText} (${diffText})`;
+      }
+      setQuotaTextIfChanged(tReset, resetStr);
+      if (tReset.title !== resetStr) tReset.title = resetStr;
+    }
+
+    // 当前会话模型概览卡片
+    const curModelEl = el('quota-cur-model');
+    const curPoolEl = el('quota-cur-pool');
+    const curEstEl = el('quota-cur-est');
+    const curStatusEl = el('quota-cur-status');
+    const curAlertEl = el('quota-cur-alert');
+    const curBucketsEl = el('quota-cur-buckets');
+
+    const matchedPoolObj = view.pools.find(p => p.poolKey === view.currentModel?.poolKey);
+
+    if (curModelEl) {
+      setQuotaTextIfChanged(curModelEl, view.currentModel?.productLabel || t('quota.current.unmatched'));
+    }
+    if (curPoolEl) {
+      setQuotaTextIfChanged(curPoolEl, view.currentModel?.poolTitle ? `${view.currentModel.poolTitle}` : '');
+    }
+    if (curEstEl) {
+      const curEstText = !view.currentModel?.noPermission && matchedPoolObj?.primaryBucket?.tokenEstimate
+        ? formatBucketTokenEstimateLine(matchedPoolObj.primaryBucket.tokenEstimate)
+        : '';
+      if (curEstText) {
+        setQuotaHiddenIfChanged(curEstEl, false);
+        setQuotaTextIfChanged(curEstEl, curEstText);
+      } else {
+        setQuotaHiddenIfChanged(curEstEl, true);
+        setQuotaTextIfChanged(curEstEl, '');
+      }
+    }
+    if (curStatusEl) {
+      setQuotaClassIfChanged(curStatusEl, `key-pill ${getQuotaPillClass(view.activeStatus)}`);
+      setQuotaTextIfChanged(curStatusEl, getQuotaStatusLabelText(view.activeStatus));
+    }
+    if (curAlertEl) {
+      if (view.currentModel?.noPermission && view.currentModel?.unavailabilityReason) {
+        setQuotaHiddenIfChanged(curAlertEl, false);
+        setQuotaAttrIfChanged(curAlertEl, 'data-kind', 'noperm');
+        setQuotaTextIfChanged(curAlertEl, view.currentModel.unavailabilityReason);
+      } else if (
+        view.currentModel?.noticeText &&
+        !/^(?:new|beta|preview|updated|notice|recommended)$/i.test(String(view.currentModel.noticeText).trim())
+      ) {
+        setQuotaHiddenIfChanged(curAlertEl, false);
+        setQuotaAttrIfChanged(curAlertEl, 'data-kind', 'notice');
+        setQuotaTextIfChanged(curAlertEl, `Notice: ${view.currentModel.noticeText}`);
+      } else {
+        setQuotaHiddenIfChanged(curAlertEl, true);
+      }
+    }
+    if (curBucketsEl) {
+      renderQuotaBucketsContainer(
+        curBucketsEl,
+        matchedPoolObj?.buckets || [],
+        view.currentModel?.noPermission ? 'no_permission' : null,
+        { animate: shouldAnimate, nowMs, chargeTargets: view.currentModel?.noPermission ? null : chargeBarTargets }
+      );
+    }
+
+    // 共享额度池列表（原地复用已有 DOM 卡片，禁止整块摧毁重排，兼顾轻量 mock DOM）
+    const listEl = el('quota-pools-list');
+    if (listEl) {
+      if (!view.pools.length) {
+        let emptyEl = Array.from(listEl.children || []).find(ch => String(ch.className || '').includes('quota-pools-empty-state')) || null;
+        if (!emptyEl) {
+          emptyEl = document.createElement('div');
+          emptyEl.className = 'quota-pools-empty-state';
+          if (emptyEl.style) emptyEl.style.cssText = 'font-size:11px;color:var(--ag-text-muted);padding:10px;text-align:center;border:1px dashed var(--ag-border-subcard);border-radius:7px';
+        }
+        setQuotaTextIfChanged(emptyEl, t('quota.pools.empty'));
+        reconcileQuotaChildOrder(listEl, [emptyEl]);
+      } else {
+        const existingCards = new Map();
+        for (const ch of Array.from(listEl.children || [])) {
+          const pk = getChildAttr(ch, 'data-pool-key');
+          if (pk) existingCards.set(pk, ch);
+        }
+
+        const desiredCards = [];
+        for (let pIdx = 0; pIdx < view.pools.length; pIdx++) {
+          const pool = view.pools[pIdx];
+          const isCurrentPool = Boolean(view.currentModel?.poolKey && pool.poolKey === view.currentModel.poolKey);
+          const isBrowsing = Boolean(view.browsePoolKey && pool.poolKey === view.browsePoolKey);
+
+          let card = existingCards.get(pool.poolKey);
+          let refs = card ? quotaNodeRefsMap.get(card) : null;
+
+          if (!card || !refs) {
+            card = document.createElement('div');
+            card.className = 'quota-pool-card';
+            card.setAttribute('data-pool-key', pool.poolKey);
+            card.addEventListener('click', () => {
+              quotaState.browsePoolKey = pool.poolKey;
+              renderQuotaBoard(Date.now(), { animate: false });
+            });
+
+            const top = document.createElement('div');
+            top.className = 'quota-pool-top';
+            const titleEl = document.createElement('div');
+            titleEl.className = 'quota-pool-title';
+            const tagsEl = document.createElement('div');
+            tagsEl.className = 'quota-pool-tags';
+            const curTagEl = document.createElement('span');
+            curTagEl.className = 'quota-current-tag';
+            curTagEl.hidden = true;
+            const stPill = document.createElement('span');
+            stPill.className = 'key-pill quota-pool-status-pill';
+            tagsEl.appendChild(curTagEl);
+            tagsEl.appendChild(stPill);
+            top.appendChild(titleEl);
+            top.appendChild(tagsEl);
+
+            const reasonEl = document.createElement('div');
+            reasonEl.className = 'quota-pool-reason';
+            if (reasonEl.style) reasonEl.style.cssText = 'font-size:10.5px;color:var(--ag-text-muted);margin-bottom:4px';
+            reasonEl.hidden = true;
+
+            const bucketsBox = document.createElement('div');
+            bucketsBox.className = 'quota-buckets-list';
+
+            const chipsBox = document.createElement('div');
+            chipsBox.className = 'quota-models-chips';
+
+            card.appendChild(top);
+            card.appendChild(reasonEl);
+            card.appendChild(bucketsBox);
+            card.appendChild(chipsBox);
+            refs = { titleEl, curTagEl, stPill, reasonEl, bucketsBox, chipsBox };
+            quotaNodeRefsMap.set(card, refs);
+          }
+
+          const { titleEl, curTagEl, stPill, reasonEl, bucketsBox, chipsBox } = refs;
+
+          if (isCurrentPool) setQuotaAttrIfChanged(card, 'data-active-current', 'true');
+          else removeQuotaAttrIfPresent(card, 'data-active-current');
+          if (isBrowsing) setQuotaAttrIfChanged(card, 'data-browsing', 'true');
+          else removeQuotaAttrIfPresent(card, 'data-browsing');
+
+          if (titleEl) setQuotaTextIfChanged(titleEl, pool.title);
+          if (curTagEl) {
+            if (isCurrentPool) {
+              setQuotaHiddenIfChanged(curTagEl, false);
+              setQuotaTextIfChanged(curTagEl, t('quota.current.tag'));
+            } else {
+              setQuotaHiddenIfChanged(curTagEl, true);
+            }
+          }
+          if (stPill) {
+            const pStatus = pool.noPermission ? 'no_permission' : (pool.status || 'unknown');
+            setQuotaClassIfChanged(stPill, `key-pill quota-pool-status-pill ${getQuotaPillClass(pStatus)}`);
+            const pctStr = !pool.noPermission && pool.percentText && pool.percentText !== '未知' ? ` · ${pool.percentText}` : '';
+            setQuotaTextIfChanged(stPill, `${getQuotaStatusLabelText(pStatus)}${pctStr}`);
+          }
+
+          if (pool.noPermission && pool.unavailabilityReason) {
+            if (reasonEl) {
+              setQuotaHiddenIfChanged(reasonEl, false);
+              setQuotaTextIfChanged(reasonEl, pool.unavailabilityReason);
+            }
+            if (bucketsBox) {
+              setQuotaHiddenIfChanged(bucketsBox, true);
+              renderQuotaBucketsContainer(bucketsBox, [], null, { animate: false, nowMs });
+            }
+          } else {
+            if (reasonEl) setQuotaHiddenIfChanged(reasonEl, true);
+            if (bucketsBox) {
+              if (pool.buckets && pool.buckets.length) {
+                setQuotaHiddenIfChanged(bucketsBox, false);
+                renderQuotaBucketsContainer(bucketsBox, pool.buckets, null, { animate: shouldAnimate, nowMs, chargeTargets: chargeBarTargets });
+              } else {
+                setQuotaHiddenIfChanged(bucketsBox, true);
+                renderQuotaBucketsContainer(bucketsBox, [], null, { animate: false, nowMs });
+              }
+            }
+          }
+
+          if (chipsBox) {
+            const modelsList = Array.isArray(pool.models) ? pool.models : [];
+            if (!modelsList.length) {
+              setQuotaHiddenIfChanged(chipsBox, true);
+            } else {
+              setQuotaHiddenIfChanged(chipsBox, false);
+              const chipsSig = modelsList.map(m => `${m.productKey}:${m.productLabel}:${(m.efforts || []).join('/')}:${m.noPermission ? 1 : 0}:${m.noticeText || ''}:${view.currentModel?.productKey === m.productKey ? 1 : 0}:${t('quota.short.no_permission')}`).join(';');
+              if (getChildAttr(chipsBox, 'data-chips-sig') !== chipsSig) {
+                chipsBox.setAttribute('data-chips-sig', chipsSig);
+                const chipNodes = [];
+                for (const m of modelsList) {
+                  const chip = document.createElement('span');
+                  chip.className = 'quota-model-chip';
+                  if (view.currentModel?.productKey && m.productKey === view.currentModel.productKey) {
+                    chip.setAttribute('data-current-model', 'true');
+                  }
+                  const lbl = document.createElement('span');
+                  lbl.textContent = m.productLabel;
+                  chip.appendChild(lbl);
+                  if (m.efforts && m.efforts.length) {
+                    const ef = document.createElement('span');
+                    ef.className = 'quota-chip-efforts';
+                    ef.textContent = `(${m.efforts.join('/')})`;
+                    chip.appendChild(ef);
+                  }
+                  if (m.noPermission) {
+                    const np = document.createElement('span');
+                    np.className = 'quota-chip-noperm';
+                    np.textContent = t('quota.short.no_permission');
+                    chip.appendChild(np);
+                  } else if (m.noticeText) {
+                    const nt = document.createElement('span');
+                    nt.className = 'quota-chip-notice';
+                    nt.title = m.noticeText;
+                    nt.textContent = m.noticeTitle || 'Notice';
+                    chip.appendChild(nt);
+                  }
+                  chipNodes.push(chip);
+                }
+                reconcileQuotaChildOrder(chipsBox, chipNodes);
+              }
+            }
+          }
+          desiredCards.push(card);
+        }
+        reconcileQuotaChildOrder(listEl, desiredCards);
+      }
+    }
+
+    if (
+      savedScrollTop !== null &&
+      savedScrollTop > 0 &&
+      viewQuotaBody &&
+      el('panel-quota') &&
+      !el('panel-quota').hidden &&
+      Math.abs((viewQuotaBody.scrollTop || 0) - savedScrollTop) > 1
+    ) {
+      viewQuotaBody.scrollTop = savedScrollTop;
+    }
+
+    if (renderOpts.chargeBars) {
+      if (isQuotaReducedMotion()) {
+        showQuotaUpToDateFeedback();
+      } else if (chargeBarTargets && chargeBarTargets.length > 0) {
+        triggerQuotaBarsChargeAnimation(chargeBarTargets);
+      }
+    }
+
+    syncModelListQuotaIndicators(view, nowMs);
+    scheduleQuotaResetConfirmIfNeeded(view, nowMs);
+  }
+
+  function scheduleQuotaResetConfirmIfNeeded(view, nowMs = Date.now()) {
+    if (state.disposed) return;
+    if (quotaResetTimer) { clearTimeout(quotaResetTimer); quotaResetTimer = null; }
+    // 找到未来最近的 resetAtMs 并设定到点 +2s 自动刷新；若刚过 reset 且尚未确认重拉则安排一次即时确认
+    let soonestFutureMs = null;
+    let passedKey = null;
+    for (const p of (view.pools || [])) {
+      for (const b of (p.buckets || [])) {
+        if (!b.hasResetTime || !Number.isFinite(b.resetAtMs)) continue;
+        if (b.resetAtMs > nowMs) {
+          if (soonestFutureMs === null || b.resetAtMs < soonestFutureMs) soonestFutureMs = b.resetAtMs;
+        } else if (b.remainingFraction === 0) {
+          const rKey = `${p.poolKey}:${b.bucketId}:${b.resetTimeIso}`;
+          if (quotaState.lastResetRequeryKey !== rKey) {
+            passedKey = rKey;
+          }
+        }
+      }
+    }
+    if (passedKey && !quotaState.busy) {
+      quotaState.lastResetRequeryKey = passedKey;
+      quotaResetTimer = setTimeout(() => { void syncQuotaFromHost(true); }, 1500);
+      return;
+    }
+    if (soonestFutureMs !== null) {
+      const waitMs = Math.min(2147483000, Math.max(2000, soonestFutureMs - nowMs + 2000));
+      quotaResetTimer = setTimeout(() => { void syncQuotaFromHost(true); }, waitMs);
+    }
+  }
+
+  function scheduleQuotaAutoRefresh(delayMs = null) {
+    if (state.disposed) return;
+    if (quotaAutoTimer) { clearTimeout(quotaAutoTimer); quotaAutoTimer = null; }
+    const isWindowActive = host.getAttribute('data-window-active') !== 'false' && (typeof document === 'undefined' || !document.hidden);
+    let interval = delayMs;
+    if (!Number.isFinite(interval) || interval <= 0) {
+      if (quotaState.consecutiveErrors > 0) {
+        interval = Math.min(180000, 30000 * Math.pow(2, Math.min(2, quotaState.consecutiveErrors - 1)));
+      } else {
+        interval = isWindowActive ? QUOTA_REFRESH_FG_MS : QUOTA_REFRESH_BG_MS;
+      }
+    }
+    quotaState.nextRefreshAtMs = Date.now() + interval;
+    quotaAutoTimer = setTimeout(() => {
+      quotaAutoTimer = null;
+      if (!state.disposed) void syncQuotaFromHost(false, { silent: true });
+    }, interval);
+  }
+
+  function onQuotaWindowFocus() {
+    if (state.disposed) return;
+    quotaState.autoPaused = false;
+    const elapsed = quotaState.lastFetchedAtMs ? (Date.now() - quotaState.lastFetchedAtMs) : Infinity;
+    if (elapsed >= 20000 && !quotaState.busy) {
+      void syncQuotaFromHost(false, { silent: true });
+    } else {
+      scheduleQuotaAutoRefresh();
+    }
+  }
+
+  function onQuotaWindowBlur() {
+    if (state.disposed) return;
+    scheduleQuotaAutoRefresh(QUOTA_REFRESH_BG_MS);
+  }
+
+  function scheduleQuotaPostTurnRefresh() {
+    if (state.disposed) return;
+    if (quotaPostTurnTimer) clearTimeout(quotaPostTurnTimer);
+    quotaPostTurnTimer = setTimeout(() => {
+      quotaPostTurnTimer = null;
+      const elapsed = quotaState.lastFetchedAtMs ? (Date.now() - quotaState.lastFetchedAtMs) : Infinity;
+      if (!state.disposed && !quotaState.busy && elapsed > 5000) {
+        void syncQuotaFromHost(true);
+      }
+    }, 1500);
+  }
+
+  async function maybeRefreshQuotaOnOpen() {
+    const elapsed = quotaState.lastFetchedAtMs ? (Date.now() - quotaState.lastFetchedAtMs) : Infinity;
+    if (!quotaState.snapshot || elapsed > 15000) {
+      await syncQuotaFromHost(false);
+    }
+  }
+
+  async function syncQuotaFromHost(force = false, meta = {}) {
+    if (state.disposed) return null;
+    if (quotaInFlightPromise) {
+      return quotaInFlightPromise;
+    }
+
+    const isManual = Boolean(meta.manual);
+    const isSilent = Boolean(meta.silent) && !isManual;
+    if (isManual) triggerQuotaRefreshIconSpin();
+    const runner = (async () => {
+      const prevSig = computeQuotaVisualSignature(computeEffectiveQuotaView(Date.now()));
+      quotaState.busy = true;
+      renderQuotaBoard(Date.now(), { animate: false, consumeAnim: false });
+      let payload = null;
+      let rpcErr = null;
+      try {
+        if (typeof window !== 'undefined' && typeof window.contextMeterAPI?.getQuota === 'function') {
+          const res = await window.contextMeterAPI.getQuota({ force: Boolean(force) });
+          if (res?.ok && res.data) payload = res.data;
+          else if (res?.error) rpcErr = res.error;
+        } else if (typeof window !== 'undefined' && window.__AGContextMeterLive?.port) {
+          const live = window.__AGContextMeterLive;
+          quotaAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const r = await fetch(`http://127.0.0.1:${live.port}/quota`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-AG-Context-Token': live.token },
+            body: JSON.stringify({ force: Boolean(force) }),
+            signal: quotaAbortController?.signal
+          });
+          if (r.ok) {
+            const j = await r.json();
+            if (j?.ok && j.data) payload = j.data;
+            else if (j?.error) rpcErr = j.error;
+          } else {
+            rpcErr = `HTTP ${r.status}`;
+          }
+        }
+      } catch (e) {
+        if (e?.name !== 'AbortError') {
+          rpcErr = e?.message || '请求模型额度失败';
+        }
+      } finally {
+        quotaAbortController = null;
+      }
+
+      if (state.disposed) return null;
+      const nowMs = Date.now();
+      quotaState.busy = false;
+      quotaState.lastFetchedAtMs = nowMs;
+
+      if (payload) {
+        if (payload.accountSwitched || (payload.accountScopeKey && quotaState.accountScopeKey && payload.accountScopeKey !== quotaState.accountScopeKey)) {
+          clearQuotaBarChargeAnimations();
+          quotaState.snapshot = null;
+          quotaState.rawInput = null;
+          quotaState.browsePoolKey = null;
+          quotaState.lastResetRequeryKey = null;
+          quotaLastEstComputeSig = '';
+          quotaCachedEstByKey = null;
+        }
+        if (payload.accountScopeKey) quotaState.accountScopeKey = payload.accountScopeKey;
+
+        if (payload.ok !== false) {
+          quotaState.snapshot = payload.snapshot || null;
+          quotaState.rawInput = null;
+          quotaState.lastSuccessAtMs = payload.lastSuccessAtMs || payload.fetchedAtMs || nowMs;
+          quotaState.error = null;
+          quotaState.errorKind = null;
+          quotaState.consecutiveErrors = 0;
+          if (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0 && (!state.cascadeModelConfigs || !state.cascadeModelConfigs.length)) {
+            state.cascadeModelConfigs = payload.cascadeModelConfigs;
+            renderHeaderModelDropdown();
+            syncContextModelSelectionFromState();
+          }
+        } else {
+          quotaState.error = payload.error || '刷新失败';
+          quotaState.errorKind = payload.errorKind || 'network';
+          quotaState.consecutiveErrors += 1;
+          if (payload.snapshot && !quotaState.snapshot) {
+            quotaState.snapshot = payload.snapshot;
+          }
+        }
+      } else if (rpcErr) {
+        quotaState.error = rpcErr;
+        quotaState.errorKind = 'network';
+        quotaState.consecutiveErrors += 1;
+      }
+
+      const nextView = computeEffectiveQuotaView(nowMs);
+      const nextSig = computeQuotaVisualSignature(nextView);
+      const hasDataChanged = nextSig !== prevSig;
+      const requestSucceeded = Boolean(payload && payload.ok !== false && !rpcErr && !quotaState.error);
+      const shouldAnimateChange = Boolean(hasDataChanged && !quotaState.error && prevSig !== 'empty' && !isSilent);
+      const panelQuotaEl = el('panel-quota');
+      const shouldChargeBars = Boolean(isManual && requestSucceeded && panelQuotaEl && !panelQuotaEl.hidden);
+      quotaPendingSmoothAnim = shouldAnimateChange;
+      if (!hasDataChanged && isManual && requestSucceeded) {
+        showQuotaUpToDateFeedback();
+      } else if (hasDataChanged || !requestSucceeded) {
+        hideQuotaRefreshFeedback();
+      }
+
+      scheduleQuotaAutoRefresh();
+      renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
+      return quotaState.snapshot;
+    })();
+
+    quotaInFlightPromise = runner;
+    try {
+      return await runner;
+    } finally {
+      if (quotaInFlightPromise === runner) quotaInFlightPromise = null;
+    }
+  }
+
+  el('btn-quota-refresh')?.addEventListener('click', () => {
+    void syncQuotaFromHost(true, { manual: true });
+  });
+  el('btn-quota-banner-retry')?.addEventListener('click', () => {
+    void syncQuotaFromHost(true, { manual: true });
+  });
+  renderQuotaBoard();
+
+  let quotaTickCounter = 0;
   function tick() {
-    if (!state.disposed && !host.isConnected) {
+    if (state.disposed || (globalThis.__AGContextMeterActiveHost && globalThis.__AGContextMeterActiveHost !== host)) {
+      earlyForceDispose();
+      return;
+    }
+    if (!host.isConnected) {
       ensureHostDocked();
     }
     const id = route();
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
-      if (state.reportedFinalCallIds) state.reportedFinalCallIds.clear();
-      if (state.reportedFinalCallOutputs) state.reportedFinalCallOutputs.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
-        requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
-        scanBusy: false, scanNext: 0, scanError: '', scan: null,
-        reportedFinalCallIds: state.reportedFinalCallIds || new Set(),
-        reportedFinalCallOutputs: state.reportedFinalCallOutputs || new Map()
+        callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
+        scanBusy: false, scanNext: 0, scanError: '', scan: null
       });
+      // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
+      if (lastHistorySync > 0) {
+        lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
+      }
       toggle(false); hideContextTooltip(); renderFiles(null); render();
-      void syncTokenHistoryFromHost(false);
     }
     if (id && !state.requestBusy && Date.now() >= state.requestNext) void requestPoll(state.generation, id);
     if (id && !state.scanBusy && Date.now() >= state.scanNext) void scan(state.generation, id);
+    if (!state.disposed && state.pendingFinalCalls?.size && !state.flushFinalsBusy && Date.now() >= (state.nextFlushRetryAt || 0)) {
+      void flushPendingFinalCalls(false);
+    }
+    syncPendingAutomaticHistory();
     if (Date.now() - lastHistorySync > 15000) {
+      const isInitialSync = lastHistorySync === 0;
       lastHistorySync = Date.now();
       void syncTokenHistoryFromHost(false);
+      if (isInitialSync && !quotaState.snapshot && !quotaState.busy) {
+        void syncQuotaFromHost(false);
+      }
+      if (!isInitialSync && activeContextTab === 'models' && !isContextSettingsView) {
+        void fetchAvailableModelsIfNeeded();
+      }
+    }
+    quotaTickCounter = (quotaTickCounter + 1) % 2;
+    if (quotaTickCounter === 0 && el('panel-quota') && !el('panel-quota').hidden) {
+      renderQuotaBoard(Date.now());
     }
   }
 
   const timer = setInterval(tick, 500);
+  // 监听 SPA 路由跳转，切会话微任务内立即清旧状态并发起新会话采集，消除轮询间隙旧数据残留
+  let routeHookScheduled = false;
+  const scheduleImmediateRouteTick = () => {
+    if (routeHookScheduled || state.disposed) return;
+    routeHookScheduled = true;
+    Promise.resolve().then(() => {
+      routeHookScheduled = false;
+      if (!state.disposed && route() !== state.route) tick();
+    });
+  };
+  let origPushState = null;
+  let origReplaceState = null;
+  let wrappedPushState = null;
+  let wrappedReplaceState = null;
+  if (typeof globalThis.addEventListener === 'function') {
+    globalThis.addEventListener('popstate', scheduleImmediateRouteTick);
+  }
+  if (typeof globalThis.history === 'object' && globalThis.history) {
+    if (typeof globalThis.history.pushState === 'function') {
+      origPushState = globalThis.history.pushState;
+      wrappedPushState = function (...args) {
+        const res = origPushState.apply(this, args);
+        scheduleImmediateRouteTick();
+        return res;
+      };
+      try { globalThis.history.pushState = wrappedPushState; } catch { wrappedPushState = null; }
+    }
+    if (typeof globalThis.history.replaceState === 'function') {
+      origReplaceState = globalThis.history.replaceState;
+      wrappedReplaceState = function (...args) {
+        const res = origReplaceState.apply(this, args);
+        scheduleImmediateRouteTick();
+        return res;
+      };
+      try { globalThis.history.replaceState = wrappedReplaceState; } catch { wrappedReplaceState = null; }
+    }
+  }
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch {}
   globalThis.__AGContextMeter = {
-    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.2',
+    version: typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.5-1',
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {
       if (state.disposed) return false;
@@ -4137,7 +12188,7 @@
       return true;
     },
     theme: () => resolveTheme(),
-    setTheme: mode => { currentThemeMode = mode; try { localStorage.setItem('ag_theme_mode', mode); } catch {}; applyTheme(); },
+    setTheme: mode => { currentThemeMode = mode; try { localStorage.setItem('ag_theme_mode', mode); } catch { }; applyTheme(); },
     getCustomColors: () => ({ ...customColors }),
     setCustomColor,
     resetCustomColors,
@@ -4175,6 +12226,7 @@
     setCountry: val => applyDirectCountrySelection(val),
     setCurrency: val => applyDirectCurrencySelection(val),
     restoreSettingsFromHost,
+    syncTokenHistoryFromHost,
     launchCli: opts => triggerLaunchCli(opts),
     getLastCliLaunchResult: () => lastCliLaunchResult,
     getTimelineWindow: () => {
@@ -4198,32 +12250,182 @@
     findTopRightClusterForTest: () => findTopRightCluster(),
     syncWindowControlsOverlayForTest: () => syncWindowControlsOverlay(),
     computeWindowControlsWidthForTest: el => computeWindowControlsWidth(el),
+    getContextPreferencesState: () => ({
+      activeSessionModelKey,
+      activeSessionProductKey,
+      selectedEditModelKey,
+      selectedProductKey,
+      activeContextTab,
+      isContextSettingsView,
+      draft: { ...ctxDraft },
+      contextPreferences: { ...contextPreferencesMap },
+      unlockStatus: currentUnlockStatus ? { ...currentUnlockStatus } : null,
+      pendingRestartVerification: pendingRestartVerification ? { ...pendingRestartVerification } : null,
+      needsRestartAfterApply
+    }),
+    setContextLatestForTest: (latestObj, configs = [], capabilitiesById = null) => {
+      if (capabilitiesById && typeof capabilitiesById === 'object') mergeCapabilitiesMapClient(capabilitiesById);
+      if (Array.isArray(configs) && configs.length) state.cascadeModelConfigs = configs;
+      state.latest = latestObj;
+      if (latestObj && (state.route || state.activeConversationId)) {
+        recordObservationFromSummary(latestObj, state.route || state.activeConversationId, { ts: latestObj.ts || Date.now() });
+      }
+      manualModelSelection = false;
+      render();
+      return { activeSessionModelKey, activeSessionProductKey, selectedEditModelKey, selectedProductKey, draft: { ...ctxDraft } };
+    },
+    setModelCapabilitiesForTest: (capabilitiesById) => {
+      mergeCapabilitiesMapClient(capabilitiesById);
+      if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
+    },
+    getBudgetTrackerTracesForTest: () => (budgetTracker && typeof budgetTracker.exportDiagnosticTraces === 'function')
+      ? budgetTracker.exportDiagnosticTraces()
+      : [],
+    switchContextTabForTest: (tab) => switchContextTab(tab),
+    openContextSettingsForTest: (opts) => openContextSettings(opts),
+    setSpeedRecordsForTest: (records, calls = []) => {
+      ANTIGRAVITY_TOKEN_DATA.speedRecords = Array.isArray(records) ? records : [];
+      if (Array.isArray(calls)) state.sessionCalls = calls;
+      if (!isContextSettingsView && activeContextTab === 'speed') renderSpeedComparisonTab();
+      if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
+    },
+    setRestartVerificationForTest: (ver, preSnapshot = null) => {
+      pendingRestartVerification = ver ? { ...ver } : null;
+      if (preSnapshot) preRestartSnapshot = preSnapshot;
+      if (!isContextSettingsView && activeContextTab === 'models') renderModelSettingsTab();
+    },
+    getKnownModelProductsForTest: () => getKnownModelProducts(),
+    refreshUnlockStatusForTest: () => refreshUnlockStatus(),
+    refreshEnhanceStatusForTest: () => refreshEnhanceStatus(),
+    getEnhanceStateForTest: () => ({
+      currentBrandTitle,
+      selectedEnhanceTier,
+      enhanceTitleDraft,
+      enhanceTierDirty,
+      enhanceTitleDirty,
+      proxyInputDirty,
+      currentProxyEnabled,
+      hasPendingLsReload,
+      currentEnhanceStatus: currentEnhanceStatus ? { ...currentEnhanceStatus } : null
+    }),
+    getUnlockUiStateForTest: () => ({
+      hostSupportsRestart,
+      needsRestartAfterApply,
+      resultBoxDisplay: unlockResultBox?.style?.display || '',
+      resultRestartHidden: btnUnlockResultRestart ? btnUnlockResultRestart.hidden : null,
+      resultRetryHidden: btnUnlockResultRetry ? btnUnlockResultRetry.hidden : null,
+      resultManualHidden: unlockResultManual ? unlockResultManual.hidden : null,
+      headerRestartHidden: btnRestartHost ? btnRestartHost.hidden : null
+    }),
+    getContextScopeModeForTest: () => getContextScopeMode(),
+    setContextScopeModeForTest: mode => setScopeMode(mode),
+    getContextUnifiedPreferenceForTest: () => getContextUnifiedPreference(),
+    getPanelLanguage: () => getPanelLanguage(),
+    setPanelLanguage: (lang, opts) => applyPanelLanguage(lang, opts),
+    restoreSettingsForTest: () => restoreSettingsFromHost(),
+    translateForTest: (key, vars) => t(key, vars),
+    applyStaticTranslationsForTest: (rootNode) => applyStaticPanelTranslations(rootNode),
+    getModelQuotaStateForTest: (nowMs) => ({
+      state: {
+        accountScopeKey: quotaState.accountScopeKey,
+        browsePoolKey: quotaState.browsePoolKey,
+        busy: quotaState.busy,
+        lastFetchedAtMs: quotaState.lastFetchedAtMs,
+        lastSuccessAtMs: quotaState.lastSuccessAtMs,
+        nextRefreshAtMs: quotaState.nextRefreshAtMs,
+        error: quotaState.error,
+        activeSessionModelKey
+      },
+      view: computeEffectiveQuotaView(Number.isFinite(nowMs) ? nowMs : Date.now())
+    }),
+    setQuotaSnapshotForTest: (payload, nowMs) => {
+      const tNow = Number.isFinite(nowMs) ? nowMs : Date.now();
+      if (!payload) {
+        resetQuotaState({ clearAccountScope: true });
+        return computeEffectiveQuotaView(tNow);
+      }
+      const prevSig = computeQuotaVisualSignature(computeEffectiveQuotaView(tNow));
+      if (payload.accountSwitched || (payload.accountScopeKey && quotaState.accountScopeKey && payload.accountScopeKey !== quotaState.accountScopeKey)) {
+        resetQuotaState({ clearAccountScope: true });
+      }
+      if (payload.accountScopeKey) quotaState.accountScopeKey = payload.accountScopeKey;
+      quotaState.error = payload.error || null;
+      quotaState.errorKind = payload.errorKind || (payload.error ? 'network' : null);
+      if (payload.fetchedAtMs !== undefined) quotaState.lastFetchedAtMs = payload.fetchedAtMs;
+      if (payload.lastSuccessAtMs !== undefined) quotaState.lastSuccessAtMs = payload.lastSuccessAtMs;
+      if (payload.nextRefreshAtMs !== undefined) quotaState.nextRefreshAtMs = payload.nextRefreshAtMs;
+      if (payload.userStatusRes || payload.quotaSummaryRes || payload.cascadeModelConfigs) {
+        const fallbackCfgs = (Array.isArray(state.cascadeModelConfigs) && state.cascadeModelConfigs.length > 0)
+          ? state.cascadeModelConfigs
+          : null;
+        quotaState.rawInput = {
+          userStatusRes: payload.userStatusRes || null,
+          quotaSummaryRes: payload.quotaSummaryRes || null,
+          cascadeModelConfigs: (Array.isArray(payload.cascadeModelConfigs) && payload.cascadeModelConfigs.length > 0)
+            ? payload.cascadeModelConfigs
+            : fallbackCfgs,
+          planStatus: payload.planStatus || ANTIGRAVITY_TOKEN_DATA.planStatus || null
+        };
+        quotaState.snapshot = null;
+        if (!payload.error && payload.lastSuccessAtMs === undefined) quotaState.lastSuccessAtMs = tNow;
+      } else if (payload.snapshot !== undefined) {
+        quotaState.snapshot = payload.snapshot;
+        quotaState.rawInput = null;
+        if (!payload.error && payload.lastSuccessAtMs === undefined && payload.snapshot?.fetchedAtMs) {
+          quotaState.lastSuccessAtMs = payload.snapshot.fetchedAtMs;
+        }
+      }
+      const nextSig = computeQuotaVisualSignature(computeEffectiveQuotaView(tNow));
+      const shouldAnimate = Boolean(prevSig !== 'empty' && nextSig !== prevSig && !quotaState.error);
+      renderQuotaBoard(tNow, { animate: shouldAnimate });
+      return computeEffectiveQuotaView(tNow);
+    },
+    refreshQuotaForTest: (force = false, meta = {}) => syncQuotaFromHost(Boolean(force), meta),
+    selectQuotaPoolBrowseForTest: (poolKey) => {
+      quotaState.browsePoolKey = poolKey || null;
+      renderQuotaBoard();
+      return { browsePoolKey: quotaState.browsePoolKey, activeSessionModelKey };
+    },
+    showQuotaPanelForTest: (open = true) => {
+      showPanel(open ? 'quota' : 'none');
+      return !el('panel-quota')?.hidden;
+    },
     snapshot: () => ({ route: state.route, count: state.count, latest: state.latest, scan: state.scan, requestError: state.requestError, scanError: state.scanError, scanBusy: state.scanBusy, layoutMode: state.layoutMode, sessionCalls: state.sessionCalls, sessionCostTotal: state.sessionCostTotal }),
     dispose() {
-      state.disposed = true;
-      for (const controller of state.controllers) controller.abort();
+      earlyForceDispose();
+      clearQuotaTimers();
       clearInterval(timer);
-      if (layoutRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(layoutRaf);
-      syncHostStackingElevation(false);
-      try { themeObserver?.disconnect(); } catch {}
-      try { resizeObserver?.disconnect(); } catch {}
-      try { hostDomObserver?.disconnect(); } catch {}
+      try { globalThis.removeEventListener?.('popstate', scheduleImmediateRouteTick); } catch { }
       try {
-        window.removeEventListener?.('resize', onWindowResize);
-        window.removeEventListener?.('focus', onWindowFocus);
-        window.removeEventListener?.('blur', onWindowBlur);
+        if (wrappedPushState && globalThis.history?.pushState === wrappedPushState && origPushState) {
+          globalThis.history.pushState = origPushState;
+        }
+        if (wrappedReplaceState && globalThis.history?.replaceState === wrappedReplaceState && origReplaceState) {
+          globalThis.history.replaceState = origReplaceState;
+        }
+      } catch { }
+      syncHostStackingElevation(false);
+      try { uninstallRequestInterceptor(); } catch { }
+      try { themeObserver?.disconnect(); } catch { }
+      try {
         window.removeEventListener?.('mousemove', onPointerMove);
         window.removeEventListener?.('mouseup', onPointerUp);
-        navigator?.windowControlsOverlay?.removeEventListener?.('geometrychange', onWindowResize);
-      } catch {}
+      } catch { }
       document.removeEventListener('click', outside);
       document.removeEventListener('keydown', escape);
-      try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch {}
-      try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch {}
+      try { document.getElementById('ag-wco-spacer')?.remove?.(); } catch { }
+      try { document.getElementById('ag-topbar-host-fix')?.remove?.(); } catch { }
       host.remove();
     }
   };
-  void restoreSettingsFromHost();
+  syncPanelLanguageButtons(currentPanelLanguage);
+  applyStaticPanelTranslations(shadow);
+  refreshRegionPresetSelectOptions();
+  renderEnhanceSectionUI();
+  startupRestorePromise = restoreSettingsFromHost().finally(() => {
+    startupRestorePromise = null;
+  });
+  installRequestInterceptor();
   render();
   tick();
 })();

@@ -1916,26 +1916,29 @@ test('专项复核 14：隔离集成测试：状态机三分模型、目标定�
     const cfgAfterFail = loadModulesConfig();
     assert.equal(cfgAfterFail.modules.chinese.enabled, false, '安装失败后配置必须依然保持 false');
 
-    // 3. 正常执行包含汉化门禁的安装（模拟用户通过 CLI 或成功安装器打入带门禁与字典的完整包）
-    await install({ path: targetAsar, modules: { chinese: { enabled: true } } });
-    const readyDisk = inspectDiskModules(targetAsar);
+    // 3. 在全新隔离会话目录与纯净宿主副本上安装完整汉化包，模拟“客户端已开启汉化启动”，再测切回启动态的一致性判断
+    process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state-boot-zh');
+    const targetAsarBootZh = path.join(tmpDir, 'app-boot-zh.asar');
+    fs.copyFileSync(host, targetAsarBootZh);
+    await install({ path: targetAsarBootZh, modules: { chinese: { enabled: true } } });
+    const readyDisk = inspectDiskModules(targetAsarBootZh);
     assert.equal(readyDisk.chinese, true, '此时磁盘已注入汉化');
     assert.equal(readyDisk.chineseReady, true, '此时磁盘深层核实完整运行时与字典已就绪');
     assert.equal(readyDisk.chineseStatus, 'ready');
 
-    // 4. 客户端内关闭汉化 (已有完整运行时通过配置门禁切换: config_toggled)
-    const resClose = await handleToggleModule(fakeEvent, 'chinese', false, { asarPath: targetAsar });
+    // 4. 客户端内关闭汉化 (偏离启动态 enabled: true，必须提示需重启客户端生效)
+    const resClose = await handleToggleModule(fakeEvent, 'chinese', false, { asarPath: targetAsarBootZh });
     assert.equal(resClose.ok, true);
     assert.equal(resClose.status, 'config_toggled', '必须命中 config_toggled 结果类型');
     assert.equal(resClose.restartRequired, true, '必须提示需重启客户端生效');
     const cfgClosed = loadModulesConfig();
     assert.equal(cfgClosed.modules.chinese.enabled, false, '配置已正确更新为关闭');
 
-    // 5. 客户端内重新开启汉化 (同样命中 config_toggled，无需重复改写 ASAR)
-    const resReOpen = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsar });
+    // 5. 客户端内重新开启汉化 (切回与启动态 enabled: true 一致，不误报需重启)
+    const resReOpen = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: targetAsarBootZh });
     assert.equal(resReOpen.ok, true);
     assert.equal(resReOpen.status, 'config_toggled');
-    assert.equal(resReOpen.restartRequired, true);
+    assert.equal(resReOpen.restartRequired, false, '切回与启动态一致后不得再误报需要重启');
     const cfgReOpen = loadModulesConfig();
     assert.equal(cfgReOpen.modules.chinese.enabled, true, '配置已正确更新为开启');
 
@@ -2043,12 +2046,15 @@ const modulesConfigPath = testAsar + '/dist/modules-config.js';
 const { inspectDiskModules, loadModulesConfig } = require(modulesConfigPath);
 assert.equal(process.noAsar, undefined, 'require 内部 modules-config 后 process.noAsar 必须保持 undefined');
 
-// 触发状态检测，断言不再报错 ENOENT/open/lstat 且正常返回各模块就绪状态
+// 触发状态检测，断言不再报错 ENOENT/open/lstat 且正常返回各模块就绪状态（含 meterReady）
 const disk = inspectDiskModules(testAsar);
 assert.equal(disk.found, true);
 assert.equal(disk.meter, true);
+assert.equal(disk.meterReady, true, 'Electron ASAR 内运行不得误报 disk.meterReady = false');
 assert.equal(disk.chinese, true);
+assert.equal(disk.chineseReady, true);
 assert.equal(disk.proxy, true);
+assert.equal(disk.proxyReady, true);
 assert.equal(process.noAsar, undefined, '调用 inspectDiskModules 后 process.noAsar 必须依然为 undefined');
 
 const cfg = loadModulesConfig();
@@ -2067,6 +2073,104 @@ console.log('ELECTRON_ASAR_VERIFIED_SUCCESS');
 
     assert.equal(childRes.status, 0, `Electron 子进程异常退出 (${childRes.status})。STDERR: ${childRes.stderr}`);
     assert.match(childRes.stdout, /ELECTRON_ASAR_VERIFIED_SUCCESS/, 'Electron ASAR 内部加载断言必须成功完成');
+  } finally {
+    if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
+    else delete process.env.AG_METER_STATE_DIR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('专项复核 16：Electron original-fs 回退、ASAR 路径分隔符统一与真缺失准确报错', async () => {
+  const Module = require('module');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-test-meter-ready-'));
+  const prevStateDir = process.env.AG_METER_STATE_DIR;
+  process.env.AG_METER_STATE_DIR = path.join(tmpDir, 'state');
+
+  try {
+    const targetAsar = path.join(tmpDir, 'host.asar');
+    const host = await createMockHostAsar(tmpDir, '2.32.1');
+    fs.copyFileSync(host, targetAsar);
+    await install({
+      path: targetAsar,
+      modules: { meter: { enabled: true }, chinese: { enabled: true }, proxy: { enabled: false } }
+    });
+
+    const { inspectDiskModules } = require('./modules-config');
+
+    // 1. 普通 Node 下检测应当全部就绪
+    const nodeDisk = inspectDiskModules(targetAsar);
+    assert.equal(nodeDisk.found, true);
+    assert.equal(nodeDisk.meterReady, true);
+    assert.equal(nodeDisk.chineseReady, true);
+
+    // 2. 路径分隔符差异（反斜杠 + 无前导斜杠）应标准化后判为 ready
+    const winSlashDisk = inspectDiskModules(targetAsar, {
+      _builtinAsar: {
+        extractFile: (p, rel) => require('./asar-engine').builtinAsar.extractFile(p, rel),
+        listPackage: () => ['dist\\meter-main.js', 'dist\\meter-core.js', 'dist\\i18n\\zh-CN.json']
+      }
+    });
+    assert.equal(winSlashDisk.meterReady, true, 'Windows 反斜杠与无前导斜杠清单不得导致 meterReady 误报 false');
+
+    // 3. 当核心组件真实缺失时，meterReady 必须如实报告 false
+    const missingFileDisk = inspectDiskModules(targetAsar, {
+      _builtinAsar: {
+        extractFile: (p, rel) => require('./asar-engine').builtinAsar.extractFile(p, rel),
+        listPackage: () => ['/dist/meter-main.js'] // 故意缺失 meter-core.js
+      }
+    });
+    assert.equal(missingFileDisk.found, true);
+    assert.equal(missingFileDisk.meter, true);
+    assert.equal(missingFileDisk.meterReady, false, '真实缺失 meter-core.js 时不得错报 meterReady = true');
+
+    // 4. 模拟 Electron 环境下 fs 被劫持读取 .asar 失败，验证自动切换 original-fs 仍正常检测
+    const origLoad = Module._load;
+    const prevElectronVer = process.versions.electron;
+    let originalFsCalled = false;
+    try {
+      Object.defineProperty(process.versions, 'electron', { value: '33.0.0', configurable: true });
+      const interceptedFs = new Proxy(fs, {
+        get(target, prop) {
+          if (prop === 'openSync') {
+            return (p, ...rest) => {
+              if (String(p).endsWith('.asar')) throw new Error('Simulated Electron VFS ASAR lock');
+              return target.openSync(p, ...rest);
+            };
+          }
+          return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
+        }
+      });
+      const wrappedOriginalFs = new Proxy(fs, {
+        get(target, prop) {
+          if (prop === 'openSync') {
+            return (p, ...rest) => {
+              if (String(p).endsWith('.asar')) originalFsCalled = true;
+              return target.openSync(p, ...rest);
+            };
+          }
+          return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
+        }
+      });
+      Module._load = function (request, parent, isMain) {
+        if (request === 'fs') return interceptedFs;
+        if (request === 'original-fs') return wrappedOriginalFs;
+        return origLoad.call(this, request, parent, isMain);
+      };
+      delete require.cache[require.resolve('./asar-engine')];
+      delete require.cache[require.resolve('./modules-config')];
+      const { inspectDiskModules: electronInspect } = require('./modules-config');
+      const eDisk = electronInspect(targetAsar);
+      assert.equal(originalFsCalled, true, 'Electron 环境下必须通过 original-fs 读取 ASAR');
+      assert.equal(eDisk.found, true);
+      assert.equal(eDisk.meterReady, true, 'Electron 模拟下 disk.meterReady 必须为 true');
+      assert.equal(eDisk.chineseReady, true);
+    } finally {
+      Module._load = origLoad;
+      if (prevElectronVer === undefined) delete process.versions.electron;
+      else Object.defineProperty(process.versions, 'electron', { value: prevElectronVer, configurable: true });
+      delete require.cache[require.resolve('./asar-engine')];
+      delete require.cache[require.resolve('./modules-config')];
+    }
   } finally {
     if (prevStateDir !== undefined) process.env.AG_METER_STATE_DIR = prevStateDir;
     else delete process.env.AG_METER_STATE_DIR;
