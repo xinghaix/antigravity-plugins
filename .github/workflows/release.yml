@@ -3,8 +3,14 @@ name: Release
 on:
   push:
     tags:
+      - "*-v*"
       - "v*"
   workflow_dispatch:
+    inputs:
+      plugin:
+        description: "Single plugin ID to package (leave empty for full monorepo release)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -30,8 +36,13 @@ jobs:
           npm run check
           npm test
 
-      - name: Package per-plugin & bundle archives
-        run: npm run pack:release
+      - name: Package release archives
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.plugin }}" ]; then
+            npm run pack:release -- --plugin "${{ inputs.plugin }}"
+          else
+            npm run pack:release
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

@@ -2,9 +2,10 @@
 
 All notable changes to the `antigravity-plugins` monorepo will be documented in this file.
 
-## [1.0.1] - 2026-11-16
+## [Unreleased]
 
 ### Changed
+- Added single-plugin release packaging & workflow support (`<plugin-id>-v<version>` tags, `npm run pack:release -- --plugin <plugin-id>`) so only updated plugins are published individually.
 - Upgraded `antigravity-context-viewer` from `0.8.2` to `0.8.5-1` (adopting `<upstream-version>-<rev>` versioning to track upstream `elviscjn-cjn/antigravity-context-viewer` `v0.8.5`), bringing model quota rings, per-model context budgets, System Enhancement Hub, Gemini 4 Hydrogen pricing, background ledger workers, and `v0.8.5` stability fixes while preserving native Sidecar CDP auto-loading, macOS `arm64` Mach-O context unlock (`codesign`), and custom top-bar UX.
 
 ## [1.0.0] - 2026-11-13

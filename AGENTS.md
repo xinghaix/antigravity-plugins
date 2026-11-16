@@ -44,3 +44,8 @@ When the user asks you to install one or all plugins from this repository:
    npm test
    npm run pack:release
    ```
+4. **Releasing a single updated plugin**: tag and push `<plugin-id>-v<version>` (do NOT create an all-plugin `v*` release unless releasing the whole monorepo):
+   ```bash
+   git tag <plugin-id>-v<version>
+   git push origin <plugin-id>-v<version>
+   ```

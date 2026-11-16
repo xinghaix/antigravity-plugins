@@ -51,11 +51,30 @@ mkdir -p "${PLUGINS_HOME}"
 
 # Fast path: download per-plugin release archive when specific plugin IDs are requested
 if [ "${ALL}" -eq 0 ] && command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+  REGISTRY_JSON=""
+  REGISTRY_URL="https://raw.githubusercontent.com/xinghaix/antigravity-plugins/main/registry.json"
+  REGISTRY_JSON="$(curl -fsSL "${REGISTRY_URL}" 2>/dev/null || true)"
   FAILED=0
   for id in "${IDS[@]}"; do
     TMP_ARC="$(mktemp -d)"
-    URL="${RELEASE_BASE}/${id}.tar.gz"
-    if curl -fsSL "${URL}" -o "${TMP_ARC}/${id}.tar.gz" 2>/dev/null; then
+    PLUGIN_VER=""
+    if [ -n "${REGISTRY_JSON}" ] && command -v node >/dev/null 2>&1; then
+      PLUGIN_VER="$(printf '%s' "${REGISTRY_JSON}" | node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync(0,'utf8'));const p=(d.plugins||[]).find(x=>x.id===process.argv[1]);if(p&&p.version)process.stdout.write(String(p.version));" "${id}" 2>/dev/null || true)"
+    fi
+    DOWNLOADED=0
+    if [ -n "${PLUGIN_VER}" ]; then
+      TAG_URL="${REPO_URL}/releases/download/${id}-v${PLUGIN_VER}/${id}.tar.gz"
+      if curl -fsSL "${TAG_URL}" -o "${TMP_ARC}/${id}.tar.gz" 2>/dev/null; then
+        DOWNLOADED=1
+      fi
+    fi
+    if [ "${DOWNLOADED}" -eq 0 ]; then
+      URL="${RELEASE_BASE}/${id}.tar.gz"
+      if curl -fsSL "${URL}" -o "${TMP_ARC}/${id}.tar.gz" 2>/dev/null; then
+        DOWNLOADED=1
+      fi
+    fi
+    if [ "${DOWNLOADED}" -eq 1 ]; then
       rm -rf "${PLUGINS_HOME:?}/${id}"
       tar -xzf "${TMP_ARC}/${id}.tar.gz" -C "${PLUGINS_HOME}"
       rm -rf "${TMP_ARC}"

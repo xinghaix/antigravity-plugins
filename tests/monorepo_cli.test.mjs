@@ -84,12 +84,24 @@ try {
   const checkRes = runChecks(mockRepo, { checkRegistry: true, runAgyValidate: false });
   assert.equal(checkRes.pluginsCount, 2);
 
-  // 4. Release packaging verification
+  // 4. Release packaging verification (full + single-plugin isolation)
   const packRes = packageRelease(mockRepo);
   assert.ok(packRes.archives.includes('mcp-manager.tar.gz'));
   assert.ok(packRes.archives.includes('prompt-vault.zip'));
   assert.ok(existsSync(join(packRes.outDir, 'SHA256SUMS.txt')));
   assert.ok(existsSync(join(packRes.outDir, 'RELEASE_BODY.md')));
+
+  const singlePack = packageRelease(mockRepo, { pluginId: 'mcp-manager' });
+  assert.equal(singlePack.pluginId, 'mcp-manager');
+  assert.equal(singlePack.pluginCount, 1);
+  assert.deepEqual(singlePack.archives.sort(), [
+    'mcp-manager-v1.0.0.tar.gz',
+    'mcp-manager-v1.0.0.zip',
+    'mcp-manager.tar.gz',
+    'mcp-manager.zip',
+  ]);
+  assert.equal(existsSync(join(singlePack.outDir, 'prompt-vault.zip')), false);
+  assert.equal(existsSync(join(singlePack.outDir, 'antigravity-plugins-bundle-v1.0.0.zip')), false);
 
   console.log('MONOREPO CLI & SCAFFOLD TESTS PASSED');
 } finally {

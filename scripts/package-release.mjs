@@ -173,10 +173,54 @@ function extractReleaseNotes(rootDir, version) {
   return match ? `${match[1].trim()}\n` : `## v${version}\n`;
 }
 
-export function packageRelease(rootDir = MONOREPO_ROOT) {
+function extractPluginReleaseNotes(rootDir, plugin) {
+  const relNotesPath = join(rootDir, plugin.path, 'RELEASE_NOTES.md');
+  const escaped = plugin.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (existsSync(relNotesPath)) {
+    const md = readFileSync(relNotesPath, 'utf-8').replace(/\r\n/g, '\n');
+    const match = new RegExp(`(?:^|\\n)(#{1,2} v${escaped}[\\s\\S]*?)(?=\\n---\\s*\\n|\\n#{1,2} v\\d|$)`).exec(md);
+    if (match) return `${match[1].trim()}\n`;
+  }
+  const changelogPath = join(rootDir, plugin.path, 'CHANGELOG.md');
+  if (existsSync(changelogPath)) {
+    const md = readFileSync(changelogPath, 'utf-8').replace(/\r\n/g, '\n');
+    const match = new RegExp(`(## \\[${escaped}\\][\\s\\S]*?)(?=\\n## \\[|$)`).exec(md);
+    if (match) return `${match[1].trim()}\n`;
+  }
+  return `## ${plugin.displayName} v${plugin.version}\n\n${plugin.description}\n`;
+}
+
+function resolveTargetPlugin(plugins, refName, explicitPluginId) {
+  if (explicitPluginId) {
+    const found = plugins.find((p) => p.id === explicitPluginId);
+    if (!found) {
+      throw new Error(`Unknown plugin id "${explicitPluginId}". Available: ${plugins.map((p) => p.id).join(', ')}`);
+    }
+    if (refName && refName !== `${found.id}-v${found.version}`) {
+      throw new Error(`Tag ${refName} does not match plugin ${found.id} version ${found.id}-v${found.version}`);
+    }
+    return found;
+  }
+  if (refName) {
+    const matched = plugins.find((p) => refName.startsWith(`${p.id}-v`));
+    if (matched) {
+      const expectedTag = `${matched.id}-v${matched.version}`;
+      if (refName !== expectedTag) {
+        throw new Error(`Tag ${refName} does not match ${matched.id} version ${expectedTag}`);
+      }
+      return matched;
+    }
+  }
+  return null;
+}
+
+export function packageRelease(rootDir = MONOREPO_ROOT, options = {}) {
   const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf-8'));
   const refName = process.env.GITHUB_REF_NAME || '';
-  if (refName.startsWith('v') && refName !== `v${pkg.version}`) {
+  const plugins = scanPlugins(rootDir);
+  const targetPlugin = resolveTargetPlugin(plugins, refName, options.pluginId || '');
+
+  if (!targetPlugin && refName.startsWith('v') && refName !== `v${pkg.version}`) {
     throw new Error(`Tag ${refName} does not match root package.json version v${pkg.version}`);
   }
 
@@ -184,12 +228,12 @@ export function packageRelease(rootDir = MONOREPO_ROOT) {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
-  const plugins = scanPlugins(rootDir);
   const archives = [];
   const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+  const pluginsToPack = targetPlugin ? [targetPlugin] : plugins;
 
   // 1. Per-plugin versioned & stable latest archives (for remote 1-line installer)
-  for (const p of plugins) {
+  for (const p of pluginsToPack) {
     const pluginAbs = join(rootDir, p.path);
     const entries = collectEntries(pluginAbs, p.id, [], { skipTests: true });
     const zipBuf = buildZip(entries);
@@ -206,48 +250,62 @@ export function packageRelease(rootDir = MONOREPO_ROOT) {
     }
   }
 
-  // 2. Full monorepo bundle archive
-  const bundleItems = [
-    'README.md',
-    'README.en.md',
-    'AGENTS.md',
-    'LICENSE',
-    'NOTICE',
-    'CHANGELOG.md',
-    'CONTRIBUTING.md',
-    'SECURITY.md',
-    'CODE_OF_CONDUCT.md',
-    'registry.json',
-    'package.json',
-    'install.sh',
-    'install.bat',
-    'uninstall.sh',
-    'uninstall.bat',
-    'scripts',
-    'plugins',
-  ];
-  const bundleEntries = [];
-  for (const item of bundleItems) {
-    const abs = join(rootDir, item);
-    if (existsSync(abs)) collectEntries(abs, `antigravity-plugins/${item}`, bundleEntries, { skipTests: true });
+  if (!targetPlugin) {
+    // 2. Full monorepo bundle archive (only for full monorepo releases)
+    const bundleItems = [
+      'README.md',
+      'README.en.md',
+      'AGENTS.md',
+      'LICENSE',
+      'NOTICE',
+      'CHANGELOG.md',
+      'CONTRIBUTING.md',
+      'SECURITY.md',
+      'CODE_OF_CONDUCT.md',
+      'registry.json',
+      'package.json',
+      'install.sh',
+      'install.bat',
+      'uninstall.sh',
+      'uninstall.bat',
+      'scripts',
+      'plugins',
+    ];
+    const bundleEntries = [];
+    for (const item of bundleItems) {
+      const abs = join(rootDir, item);
+      if (existsSync(abs)) collectEntries(abs, `antigravity-plugins/${item}`, bundleEntries, { skipTests: true });
+    }
+    const bZip = `antigravity-plugins-bundle-v${pkg.version}.zip`;
+    const bTgz = `antigravity-plugins-bundle-v${pkg.version}.tar.gz`;
+    const bZipBuf = buildZip(bundleEntries);
+    const bTgzBuf = buildTarGz(bundleEntries);
+    writeFileSync(join(outDir, bZip), bZipBuf);
+    writeFileSync(join(outDir, bTgz), bTgzBuf);
+    archives.push({ name: bZip, hash: sha256(bZipBuf) });
+    archives.push({ name: bTgz, hash: sha256(bTgzBuf) });
   }
-  const bZip = `antigravity-plugins-bundle-v${pkg.version}.zip`;
-  const bTgz = `antigravity-plugins-bundle-v${pkg.version}.tar.gz`;
-  const bZipBuf = buildZip(bundleEntries);
-  const bTgzBuf = buildTarGz(bundleEntries);
-  writeFileSync(join(outDir, bZip), bZipBuf);
-  writeFileSync(join(outDir, bTgz), bTgzBuf);
-  archives.push({ name: bZip, hash: sha256(bZipBuf) });
-  archives.push({ name: bTgz, hash: sha256(bTgzBuf) });
 
   const sums = `${archives.map((a) => `${a.hash}  ${a.name}`).join('\n')}\n`;
   writeFileSync(join(outDir, 'SHA256SUMS.txt'), sums, 'utf-8');
-  writeFileSync(join(outDir, 'RELEASE_BODY.md'), extractReleaseNotes(rootDir, pkg.version), 'utf-8');
+  const body = targetPlugin
+    ? extractPluginReleaseNotes(rootDir, targetPlugin)
+    : extractReleaseNotes(rootDir, pkg.version);
+  writeFileSync(join(outDir, 'RELEASE_BODY.md'), body, 'utf-8');
 
-  return { outDir, archives: archives.map((a) => a.name), pluginCount: plugins.length };
+  return {
+    outDir,
+    archives: archives.map((a) => a.name),
+    pluginCount: pluginsToPack.length,
+    pluginId: targetPlugin ? targetPlugin.id : null
+  };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const res = packageRelease(MONOREPO_ROOT);
-  console.log(`Packaged ${res.pluginCount} plugins (${res.archives.length} archives) into ${res.outDir}`);
+  const args = process.argv.slice(2);
+  const pIdx = args.indexOf('--plugin');
+  const pluginId = pIdx >= 0 ? (args[pIdx + 1] || '') : '';
+  const res = packageRelease(MONOREPO_ROOT, { pluginId });
+  const scope = res.pluginId ? `plugin ${res.pluginId}` : `${res.pluginCount} plugins`;
+  console.log(`Packaged ${scope} (${res.archives.length} archives) into ${res.outDir}`);
 }

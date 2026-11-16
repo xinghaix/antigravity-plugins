@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/xinghaix/antigravity-plugins",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "plugins": [
     {
       "id": "antigravity-context-viewer",
