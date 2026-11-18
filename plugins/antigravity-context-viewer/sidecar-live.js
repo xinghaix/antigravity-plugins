@@ -12,9 +12,9 @@ const IDLE_POLL_MS = 5000;
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    return pkg.version || '0.8.5-3';
+    return pkg.version || '0.8.7-1';
   } catch {
-    return '0.8.5-3';
+    return '0.8.7-1';
   }
 }
 

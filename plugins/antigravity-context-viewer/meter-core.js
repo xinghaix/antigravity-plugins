@@ -196,60 +196,127 @@
     };
   }
 
-  const DECORATIVE_MODEL_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|最新|预览|預覽|推荐|推薦)$/i;
+  const DECORATIVE_BADGE_TAG_RE = /^(new|beta|preview|alpha|experimental|recommended|updated|hot|popular|最新|预览|預覽|推荐|推薦)$/i;
 
-  function inferTierFamily(rawVal) {
-    if (typeof rawVal !== 'string') return null;
-    const lower = rawVal.trim().toLowerCase();
-    if (!lower || lower === '[object object]' || /^\d+$/.test(lower)) return null;
-    const stripped = lower.replace(/^teams_tier_/, '');
-    if (stripped === 'unspecified' || stripped === 'unknown') return null;
-    if (/ultra|pro_ultimate|(?:^|[-_\s])ultimate(?:$|[-_\s])/.test(stripped)) return 'ultra';
-    if (/enterprise|hybrid/.test(stripped)) return 'enterprise';
-    if (stripped === 'teams' || /(?:^|[-_\s])teams(?:$|[-_\s])/.test(stripped)) return 'teams';
-    if (stripped === 'pro' || /(?:^|[-_\s])pro(?:$|[-_\s])|g1-pro/.test(stripped)) return 'pro';
-    if (stripped === 'plus' || /(?:^|[-_\s])plus(?:$|[-_\s])|g1-plus/.test(stripped)) return 'plus';
-    if (stripped === 'free' || /(?:^|[-_\s])free(?:$|[-_\s])|g1-free/.test(stripped)) return 'free';
-    return null;
+  /**
+   * 判断模型角标文本是否仅为装饰性标签，不能作为不可用或故障原因
+   */
+  function isDecorativeBadgeTagTitle(tagTitle) {
+    return typeof tagTitle === 'string' && DECORATIVE_BADGE_TAG_RE.test(tagTitle.trim());
   }
 
-  function expandSatisfiedTierFamilies(families) {
-    const out = new Set();
-    const list = Array.isArray(families) ? families : [families];
-    for (const fam of list) {
-      if (fam === 'ultra') {
-        out.add('ultra');
-        out.add('pro');
-        out.add('plus');
-        out.add('free');
-      } else if (fam === 'enterprise') {
-        out.add('enterprise');
-        out.add('teams');
-        out.add('pro');
-        out.add('plus');
-        out.add('free');
-      } else if (fam === 'teams') {
-        out.add('teams');
-        out.add('pro');
-        out.add('plus');
-        out.add('free');
-      } else if (fam === 'pro') {
-        out.add('pro');
-        out.add('plus');
-        out.add('free');
-      } else if (fam === 'plus') {
-        out.add('plus');
-        out.add('free');
-      } else if (fam === 'free') {
-        out.add('free');
-      }
+  /**
+   * 将账号套餐字段规范化为精确允许匹配的套餐标识集合，禁止宽泛子串误放行受限账号
+   */
+  function buildAllowedTierMatchSet(planStatus) {
+    if (!planStatus || typeof planStatus !== 'object') return null;
+    const rawTierKey = typeof planStatus.tierKey === 'string' ? planStatus.tierKey.trim().toLowerCase() : '';
+    const rawTierId = typeof planStatus.tierId === 'string' ? planStatus.tierId.trim().toLowerCase() : '';
+    const rawTeamsTier = typeof planStatus.teamsTier === 'string' ? planStatus.teamsTier.trim().toLowerCase() : '';
+
+    // 套餐尚未识别且无任何具体层级标识时，不执行 allowedTiers 猜测拦截
+    if (planStatus.status === 'unidentified' || ((!rawTierKey || rawTierKey === 'unknown') && !rawTierId && !rawTeamsTier)) {
+      return null;
     }
-    return out;
+
+    const tokens = new Set();
+    if (rawTierId) tokens.add(rawTierId);
+    if (rawTeamsTier) tokens.add(rawTeamsTier);
+    if (rawTierKey && rawTierKey !== 'unknown' && rawTierKey !== 'custom') tokens.add(rawTierKey);
+
+    const isUltraTier = rawTierKey === 'ultra' ||
+      rawTierId === 'g1-ultra-tier' ||
+      rawTierId === 'g1-ultra-lite-tier' ||
+      /ultra[-_\s]*lite/i.test(rawTierId) ||
+      rawTeamsTier === 'teams_tier_pro_ultimate' ||
+      rawTeamsTier === 'teams_tier_ultra';
+    const isEnterpriseTier = rawTierKey === 'enterprise' ||
+      /enterprise|hybrid/.test(rawTierId) ||
+      /enterprise|hybrid/.test(rawTeamsTier);
+    const isTeamsTier = !isEnterpriseTier && (rawTierKey === 'teams' || rawTeamsTier === 'teams_tier_teams');
+    const isProTier = !isUltraTier && !isEnterpriseTier && !isTeamsTier && (
+      rawTierKey === 'pro' ||
+      rawTierId === 'g1-pro-tier' ||
+      rawTeamsTier === 'teams_tier_pro'
+    );
+    const isPlusTier = rawTierKey === 'plus' ||
+      rawTierId === 'g1-plus-tier' ||
+      rawTeamsTier === 'teams_tier_plus';
+    const isFreeTier = rawTierKey === 'free' ||
+      rawTierId === 'free-tier' ||
+      rawTeamsTier === 'teams_tier_free';
+
+    if (isUltraTier) {
+      // Ultra 账号向上覆盖 Ultimate/Pro/Plus/Free，并兼容 TEAMS_TIER_PRO；不放行未声明的企业专享档位
+      tokens.add('ultra');
+      tokens.add('g1-ultra-tier');
+      tokens.add('g1-ultra-lite-tier');
+      tokens.add('teams_tier_pro_ultimate');
+      tokens.add('teams_tier_ultra');
+      tokens.add('ultimate');
+      tokens.add('teams_tier_pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('pro');
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    } else if (isEnterpriseTier) {
+      tokens.add('enterprise');
+      tokens.add('teams');
+      tokens.add('teams_tier_teams');
+      tokens.add('pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('teams_tier_pro');
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    } else if (isTeamsTier) {
+      tokens.add('teams');
+      tokens.add('teams_tier_teams');
+      tokens.add('pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('teams_tier_pro');
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    } else if (isProTier) {
+      tokens.add('pro');
+      tokens.add('g1-pro-tier');
+      tokens.add('teams_tier_pro');
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    } else if (isPlusTier) {
+      tokens.add('plus');
+      tokens.add('g1-plus-tier');
+      tokens.add('teams_tier_plus');
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    } else if (isFreeTier) {
+      tokens.add('free');
+      tokens.add('free-tier');
+      tokens.add('teams_tier_free');
+    }
+
+    return tokens.size > 0 ? tokens : null;
   }
 
-  function extractAllowedTierSpecs(allowedTiers) {
-    const specs = [];
-    if (!Array.isArray(allowedTiers)) return specs;
+  function extractAllowedTierValues(allowedTiers) {
+    const items = [];
+    if (!Array.isArray(allowedTiers)) return items;
     for (const entry of allowedTiers) {
       if (entry == null || typeof entry === 'number' || typeof entry === 'boolean') continue;
       if (typeof entry === 'string') {
@@ -258,32 +325,24 @@
         if (!lower || lower === '[object object]' || /^\d+$/.test(lower)) continue;
         const stripped = lower.replace(/^teams_tier_/, '');
         if (stripped === 'unspecified' || stripped === 'unknown') continue;
-        specs.push({
-          rawLower: lower,
-          family: inferTierFamily(trimmed),
-          label: trimmed
-        });
+        items.push({ tokens: [lower], label: trimmed });
         continue;
       }
       if (typeof entry === 'object') {
-        const strFields = [entry.name, entry.tierName, entry.label, entry.id, entry.tierId, entry.teamsTier, entry.tier, entry.slug, entry.key];
-        const labelCandidate = strFields.find(v => typeof v === 'string' && v.trim() && v.trim().toLowerCase() !== '[object object]' && !/^\d+$/.test(v.trim()));
-        for (const tok of strFields) {
-          if (typeof tok !== 'string') continue;
-          const trimmed = tok.trim();
-          const lower = trimmed.toLowerCase();
-          if (!lower || lower === '[object object]' || /^\d+$/.test(lower)) continue;
-          const stripped = lower.replace(/^teams_tier_/, '');
-          if (stripped === 'unspecified' || stripped === 'unknown') continue;
-          specs.push({
-            rawLower: lower,
-            family: inferTierFamily(trimmed),
-            label: (labelCandidate || trimmed).trim()
+        const fields = [entry.name, entry.tierName, entry.label, entry.id, entry.tierId, entry.teamsTier, entry.tier, entry.slug, entry.key];
+        const validStrs = fields
+          .filter(v => typeof v === 'string')
+          .map(v => v.trim())
+          .filter(v => {
+            const low = v.toLowerCase();
+            return low && low !== '[object object]' && !/^\d+$/.test(low) && low !== 'unspecified' && low !== 'teams_tier_unspecified' && low !== 'unknown';
           });
+        if (validStrs.length > 0) {
+          items.push({ tokens: validStrs.map(v => v.toLowerCase()), label: validStrs[0] });
         }
       }
     }
-    return specs;
+    return items;
   }
 
   function classifyModelQuotaAvailability(config, planStatus = null) {
@@ -292,70 +351,62 @@
     }
     const tagTitle = typeof config.tagTitle === 'string' ? config.tagTitle.trim() : '';
     const tagDesc = typeof config.tagDescription === 'string' ? config.tagDescription.trim() : '';
-    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用/i.test(tagTitle);
-    const isDecorativeBadgeTag = DECORATIVE_MODEL_TAG_RE.test(tagTitle);
+    const isTagUnavailable = /^(unavailable|disabled|不可用|无权限|無權限)$/i.test(tagTitle) || /unavailable|disabled|不可用|无权限|無權限/i.test(tagTitle);
+    const isDecorativeBadgeTag = isDecorativeBadgeTagTitle(tagTitle);
     const isExplicitNoticeTag = /^notice$/i.test(tagTitle);
     const isTagNotice = !isTagUnavailable && (Boolean(tagDesc) || isExplicitNoticeTag || (Boolean(tagTitle) && !isDecorativeBadgeTag));
 
-    const serverExplicitlyDisabled = Boolean(
-      config.disabled === true ||
-      config.enabled === false ||
-      config.unavailable === true ||
-      config.isUnavailable === true ||
-      config.status === 'unavailable' ||
-      isTagUnavailable
-    );
-    const hasServerGrantedQuota = Boolean(
-      !serverExplicitlyDisabled &&
-      typeof config.quotaInfo?.remainingFraction === 'number' &&
-      Number.isFinite(config.quotaInfo.remainingFraction)
-    );
-
     let tierBlocked = false;
     let tierReason = null;
-    if (!serverExplicitlyDisabled && !hasServerGrantedQuota && Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0 && planStatus) {
-      const specs = extractAllowedTierSpecs(config.allowedTiers);
-      const recognizedSpecs = specs.filter(sp => sp.family !== null);
-      const userCandidates = [planStatus.tierId, planStatus.teamsTier, planStatus.tierKey, planStatus.planName, planStatus.tierName]
-        .filter(v => typeof v === 'string')
-        .map(v => v.trim())
-        .filter(v => v && !['unknown', 'unidentified', 'custom', '未知'].includes(v.toLowerCase()));
-      const myExactIds = new Set(userCandidates.map(v => v.toLowerCase()));
-      const myFamilies = expandSatisfiedTierFamilies(userCandidates.map(inferTierFamily).filter(Boolean));
-      if ((myFamilies.size > 0 || myExactIds.size > 0) && recognizedSpecs.length > 0) {
-        const hit = specs.some(sp => myExactIds.has(sp.rawLower) || (sp.family && myFamilies.has(sp.family)));
+    if (Array.isArray(config.allowedTiers) && config.allowedTiers.length > 0) {
+      const tierItems = extractAllowedTierValues(config.allowedTiers);
+      const allowedTokens = tierItems.length > 0 ? buildAllowedTierMatchSet(planStatus) : null;
+      if (allowedTokens) {
+        const hit = tierItems.some(item => item.tokens.some(tok => allowedTokens.has(tok)));
         if (!hit) {
-          const uniqueLabels = [...new Set(specs.map(sp => sp.label).filter(Boolean))];
+          const uniqueLabels = [...new Set(tierItems.map(i => i.label).filter(Boolean))];
           tierBlocked = true;
           tierReason = `仅限 ${uniqueLabels.join(' / ')} 套餐可用`;
         }
       }
     }
 
-    const explicitlyDisabled = Boolean(serverExplicitlyDisabled || tierBlocked);
-
-    const safeUnavailReason = (typeof config.unavailabilityReason === 'string' && config.unavailabilityReason.trim() && !DECORATIVE_MODEL_TAG_RE.test(config.unavailabilityReason.trim()))
-      ? config.unavailabilityReason.trim()
-      : null;
-    const safeTagDesc = (tagDesc && !DECORATIVE_MODEL_TAG_RE.test(tagDesc)) ? tagDesc : null;
-    const safeTagTitle = (isTagUnavailable && tagTitle && !isDecorativeBadgeTag) ? tagTitle : null;
+    const explicitlyDisabled = Boolean(
+      config.disabled === true ||
+      config.enabled === false ||
+      config.unavailable === true ||
+      config.isUnavailable === true ||
+      config.status === 'unavailable' ||
+      isTagUnavailable ||
+      tierBlocked
+    );
 
     const rawConfigNotice = typeof config.notice === 'string' ? config.notice.trim() : '';
-    const hasConfigNotice = Boolean(rawConfigNotice && !DECORATIVE_MODEL_TAG_RE.test(rawConfigNotice) && !explicitlyDisabled);
+    const hasConfigNotice = Boolean(rawConfigNotice && !isDecorativeBadgeTagTitle(rawConfigNotice) && !explicitlyDisabled);
     const noticeText = isTagNotice
-      ? (safeTagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
+      ? (tagDesc || (!isDecorativeBadgeTag ? tagTitle : null))
       : (hasConfigNotice ? rawConfigNotice : null);
+
+    // 清洗服务端或上游缓存中可能被装饰角标污染的 reason，确保真实故障原因不被 New 等角标覆盖
+    const rawConfigReason = typeof config.unavailabilityReason === 'string' ? config.unavailabilityReason.trim() : '';
+    const cleanConfigReason = (rawConfigReason && !isDecorativeBadgeTagTitle(rawConfigReason)) ? rawConfigReason : '';
+    const safeTagDesc = (tagDesc && !isDecorativeBadgeTagTitle(tagDesc)) ? tagDesc : null;
+    const nonDecorativeTagTitle = (!isDecorativeBadgeTag && tagTitle) ? tagTitle : null;
+
+    const unavailabilityReason = tierBlocked
+      ? (cleanConfigReason || tierReason || safeTagDesc || nonDecorativeTagTitle || '当前套餐无权访问该模型')
+      : (cleanConfigReason || safeTagDesc || nonDecorativeTagTitle || tierReason || '当前套餐无权访问该模型');
 
     return {
       noPermission: explicitlyDisabled,
       unavailable: explicitlyDisabled,
-      reason: explicitlyDisabled ? (safeUnavailReason || safeTagDesc || tierReason || safeTagTitle || '当前套餐无权访问该模型') : null,
+      reason: explicitlyDisabled ? unavailabilityReason : null,
       noticeTitle: (noticeText && (isTagNotice || hasConfigNotice)) ? (tagTitle || 'Notice') : null,
       noticeText: noticeText || null
     };
   }
 
-  function resolveModelQuota(modelIdOrName, cascadeModelConfigs, planStatus = null) {
+  function resolveModelQuota(modelIdOrName, cascadeModelConfigs, optionsOrPlan = {}) {
     if (!Array.isArray(cascadeModelConfigs) || !cascadeModelConfigs.length || !modelIdOrName) {
       return null;
     }
@@ -385,7 +436,12 @@
 
     if (!matched) return null;
 
-    const avail = classifyModelQuotaAvailability(matched, planStatus);
+    const resolvedPlan = (optionsOrPlan && typeof optionsOrPlan === 'object')
+      ? (optionsOrPlan.planStatus !== undefined
+        ? optionsOrPlan.planStatus
+        : ((optionsOrPlan.tierKey || optionsOrPlan.tierId || optionsOrPlan.teamsTier || optionsOrPlan.status) ? optionsOrPlan : null))
+      : null;
+    const avail = classifyModelQuotaAvailability(matched, resolvedPlan);
     const qi = matched.quotaInfo || {};
     const parsed = parseQuotaFraction(qi, { unavailable: avail.noPermission, schemaKind: 'codeium_quota_info' });
     const poolNames = {
@@ -1726,13 +1782,13 @@
     const planStatus = us.planStatus || {};
     const planInfo = planStatus.planInfo || {};
     const email = us.email || null;
-    const teamsTier = planInfo.teamsTier || us.teamsTier || null;
     const rawTierName = String(userTier.name || planInfo.planName || '').trim();
 
     // 只有具备明确权益证据时才识别套餐，避免空对象或缺省状态被当成 Free
     const hasTierEvidence = Boolean(
       rawTierName ||
       userTier.id ||
+      planInfo.teamsTier ||
       planStatus.availablePromptCredits !== undefined ||
       planInfo.monthlyPromptCredits !== undefined
     );
@@ -1743,7 +1799,7 @@
         tierKey: 'unknown',
         tierName: '未知',
         tierId: null,
-        teamsTier,
+        teamsTier: null,
         planName: '未知',
         email,
         region: '未知',
@@ -1764,10 +1820,11 @@
     let tierDisplayName = '未知';
     let officialPrice = null;
     let priceRange = null;
-
+    const rawTeamsTier = typeof planInfo.teamsTier === 'string' ? planInfo.teamsTier.trim() : '';
     const rawTierId = String(userTier.id || '').trim();
     const rawTierDesc = String(userTier.description || '').trim();
-    if (/ultra/i.test(rawTierName) || /ultra/i.test(rawTierId)) {
+
+    if (/ultra/i.test(rawTierName) || /ultra/i.test(rawTierId) || /pro_ultimate|teams_tier_ultra/i.test(rawTeamsTier)) {
       tierKey = 'ultra';
       const combinedUltraHints = `${rawTierId} ${rawTierName} ${rawTierDesc}`;
       const explicitMultMatch = combinedUltraHints.match(/(?:^|[\s(\[（\-_:：])(\d+\s*x)(?:$|[\s)\]）\-_:：])/i);
@@ -1802,24 +1859,24 @@
         officialPrice = null;
         priceRange = '参考区间 $99.99 ~ $249.99/月（子档未知）';
       }
-    } else if (/pro/i.test(rawTierName) || /pro/i.test(rawTierId)) {
+    } else if (/pro/i.test(rawTierName) || /pro/i.test(rawTierId) || /^teams_tier_pro$/i.test(rawTeamsTier)) {
       tierKey = 'pro';
       tierDisplayName = 'Google AI Pro';
       officialPrice = 19.99;
       priceRange = '$19.99/月（公开参考）';
-    } else if (/plus/i.test(rawTierName) || /plus/i.test(userTier.id || '')) {
+    } else if (/plus/i.test(rawTierName) || /plus/i.test(rawTierId) || /^teams_tier_plus$/i.test(rawTeamsTier)) {
       tierKey = 'plus';
       tierDisplayName = 'Google AI Plus';
       officialPrice = 4.99;
       priceRange = '$4.99/月（公开参考）';
-    } else if (/free/i.test(rawTierName) || /free/i.test(userTier.id || '')) {
+    } else if (/free/i.test(rawTierName) || /free/i.test(rawTierId) || /^teams_tier_free$/i.test(rawTeamsTier)) {
       tierKey = 'free';
       tierDisplayName = 'Free';
       officialPrice = 0;
       priceRange = '$0/月（公开参考）';
     } else {
       tierKey = 'custom';
-      tierDisplayName = rawTierName || '未知套餐';
+      tierDisplayName = rawTierName || rawTeamsTier || '未知套餐';
       officialPrice = null;
       priceRange = '费率未知';
     }
@@ -1829,7 +1886,7 @@
       tierKey,
       tierName: tierDisplayName,
       tierId: userTier.id || null,
-      teamsTier,
+      teamsTier: planInfo.teamsTier || us.teamsTier || null,
       planName: planInfo.planName || tierDisplayName,
       email,
       region: '未知',
@@ -2248,6 +2305,7 @@
     let tierKey = 'unknown';
     let tierName = '未知';
     let tierId = null;
+    let teamsTier = null;
     let planName = '未知';
     let tierSource = 'unknown';
     let upgradedOfficialPrice = null;
@@ -2258,6 +2316,7 @@
       tierKey = rawLive.tierKey;
       tierName = up.tierName;
       tierId = rawLive.tierId;
+      teamsTier = rawLive.teamsTier || null;
       planName = (rawLive.planName && rawLive.planName !== rawLive.tierName) ? rawLive.planName : up.tierName;
       upgradedOfficialPrice = up.officialPriceMonthly;
       tierSource = 'live';
@@ -2265,6 +2324,8 @@
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
       tierName = effectiveCustom.tierName;
+      tierId = effectiveCustom.tierId || rawLive?.tierId || cachedLive?.tierId || null;
+      teamsTier = effectiveCustom.teamsTier || rawLive?.teamsTier || cachedLive?.teamsTier || null;
       planName = effectiveCustom.tierName;
       tierSource = 'custom';
     } else if (cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown') {
@@ -2273,6 +2334,7 @@
       tierKey = cachedLive.tierKey;
       tierName = up.tierName;
       tierId = cachedLive.tierId;
+      teamsTier = cachedLive.teamsTier || null;
       planName = (cachedLive.planName && cachedLive.planName !== cachedLive.tierName) ? cachedLive.planName : up.tierName;
       upgradedOfficialPrice = up.officialPriceMonthly;
       tierSource = 'cached_live';
@@ -2476,6 +2538,7 @@
       tierKey,
       tierName,
       tierId,
+      teamsTier,
       planName,
       email: currentEmail,
       accountRegion: country,
@@ -2656,8 +2719,8 @@
     }
 
     return {
-      schemaVersion: payload.schemaVersion || '0.8.5',
-      version: payload.version || '0.8.5',
+      schemaVersion: payload.schemaVersion || '0.8.7',
+      version: payload.version || '0.8.7',
       updatedAt: payload.updatedAt || '',
       firstUseDate: summary.firstUseDate,
       currentPeriod: payload.currentPeriod || {
@@ -2798,18 +2861,16 @@
   }
 
   /**
-   * 解析严格 v0.x.x 或 v0.x.x-N 格式的语义化版本
-   * 防御性要求：只接受 ^v?0\.\d+\.\d+(?:-\d+)?$，任何 v2.x、-beta 或其他前缀均返回 null
+   * 解析严格 v0.x.x 格式的语义化版本
+   * 防御性要求：只接受 ^v0\.\d+\.\d+$，任何 v2.x 或其他前缀均返回 null
    */
   function parseSemver(tag) {
     if (!tag || typeof tag !== 'string') return null;
     const m = tag.trim().match(/^v?0\.(\d+)\.(\d+)(?:-(\d+))?$/);
     if (!m) return null;
-    const res = { major: 0, minor: parseInt(m[1], 10), patch: parseInt(m[2], 10) };
-    if (m[3] !== undefined) {
-      res.rev = parseInt(m[3], 10);
-    }
-    return res;
+    const out = { major: 0, minor: parseInt(m[1], 10), patch: parseInt(m[2], 10) };
+    if (m[3] !== undefined) out.rev = parseInt(m[3], 10);
+    return out;
   }
 
   /**
@@ -2833,7 +2894,7 @@
   /**
    * 过滤并筛选可用更新 Release
    */
-  function filterReleases(releasesList, currentVersion = '0.8.5-3') {
+  function filterReleases(releasesList, currentVersion = '0.8.7-1') {
     if (!Array.isArray(releasesList)) return [];
     const valid = [];
     for (const rel of releasesList) {
@@ -3412,6 +3473,9 @@
       activeReset: activeResetMeta,
       browsePoolKey: browsePool?.poolKey || null,
       planTierName: planStatus?.tierName || planStatus?.planName || null,
+      planTierKey: planStatus?.tierKey || null,
+      planTierId: planStatus?.tierId || null,
+      planTeamsTier: planStatus?.teamsTier || null,
       pools,
       basisNote: '仅依据宿主接口返回的剩余比例与重置时间展示，不凭空换算剩余 Token 数量。'
     };
@@ -3936,6 +4000,7 @@
     formatQuotaPercentText,
     formatQuotaResetMeta,
     classifyModelQuotaAvailability,
+    isDecorativeBadgeTagTitle,
     buildModelQuotaSnapshot,
     formatApproxTokensShort,
     inferQuotaWindowDurationMs,

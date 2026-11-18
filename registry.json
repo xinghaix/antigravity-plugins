@@ -8,7 +8,7 @@
       "dirName": "antigravity-context-viewer",
       "path": "plugins/antigravity-context-viewer",
       "displayName": "Context Viewer",
-      "version": "0.8.5-3",
+      "version": "0.8.7-1",
       "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, cost analytics & native Sidecar CDP auto-loader without app.asar patching.",
       "logo": "assets/logo.svg",
       "components": {

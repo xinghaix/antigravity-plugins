@@ -21,7 +21,7 @@ const sidecarJson = JSON.parse(sidecarRaw);
 assert.equal(sidecarJson.args[0], '../../sidecar-live.js');
 assert.ok(existsSync(resolve(dirname(sidecarPath), sidecarJson.args[0])), 'sidecar target script must exist');
 
-// 2. Run all 15 unit test suites inside plugins/antigravity-context-viewer
+// 2. Run all 16 unit test suites inside plugins/antigravity-context-viewer
 const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
 const testFiles = [
   'meter-core.test.js',
@@ -38,6 +38,7 @@ const testFiles = [
   'meter-v083-fixes.test.js',
   'meter-model-context-isolation.test.js',
   'meter-v085-fixes.test.js',
+  'meter-hotload.test.js',
   'sidecar-live.test.js',
 ];
 
