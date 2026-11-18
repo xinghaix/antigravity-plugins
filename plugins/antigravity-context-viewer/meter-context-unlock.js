@@ -962,7 +962,64 @@ function cleanupOldReplacedFiles(targetDir, targetFileName, excludePath = null) 
  */
 let cachedProcInfo = null;
 let cachedProcAt = 0;
+let cachedProcTarget = null;
 let inFlightProcQuery = null;
+
+/**
+ * 解析 POSIX/macOS `ps -o etime=` 的运行时长文本 (`[[dd-]hh:]mm:ss`) 为毫秒数
+ */
+function parseUnixEtimeToMs(etimeStr) {
+  if (!etimeStr || typeof etimeStr !== 'string') return null;
+  const trimmed = etimeStr.trim();
+  const m = trimmed.match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+  if (!m) return null;
+  const days = m[1] ? Number(m[1]) : 0;
+  const hours = m[2] !== undefined ? Number(m[2]) : 0;
+  const mins = Number(m[3]);
+  const secs = Number(m[4]);
+  if (![days, hours, mins, secs].every(Number.isFinite)) return null;
+  return (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1000;
+}
+
+/**
+ * 从 Unix/macOS `ps -ax -o pid=,etime=,command=` 输出中按目标二进制精确匹配进程
+ */
+function matchUnixPsOutput(stdout, targetPath) {
+  const targetNorm = targetPath ? path.resolve(targetPath) : null;
+  const targetLower = targetNorm ? targetNorm.toLowerCase() : null;
+  const binName = targetPath ? path.basename(targetPath) : 'language_server';
+  const matches = [];
+
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\s+([0-9:-]+)\s+(.+)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const elapsedMs = parseUnixEtimeToMs(m[2]);
+    const cmdLine = m[3].trim();
+    if (!cmdLine) continue;
+
+    if (targetNorm) {
+      if (
+        cmdLine === targetNorm ||
+        cmdLine.startsWith(targetNorm + ' ') ||
+        cmdLine.toLowerCase() === targetLower ||
+        cmdLine.toLowerCase().startsWith(targetLower + ' ')
+      ) {
+        matches.push({ pid, elapsedMs, path: targetNorm });
+      }
+    } else {
+      const firstToken = cmdLine.split(/\s+/)[0];
+      if (path.basename(firstToken) === binName) {
+        matches.push({ pid, elapsedMs, path: firstToken });
+      }
+    }
+  }
+
+  // 若同时存在多条进程记录，取运行时间最长（最早启动）的实例，防止遗留未重启旧进程导致误判已生效
+  matches.sort((a, b) => (b.elapsedMs ?? -1) - (a.elapsedMs ?? -1));
+  return matches;
+}
 
 /**
  * 辅助检查文件独占写锁（耗时 < 0.2ms，仅作为辅助信号，不能直接代表进程正在运行）
@@ -985,11 +1042,12 @@ function checkFileWriteLock(filePath) {
  */
 async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = false) {
   const now = Date.now();
-  if (!forceRefresh && cachedProcInfo && (now - cachedProcAt < 2500)) {
+  const targetNormalized = targetPath ? path.resolve(targetPath).toLowerCase() : null;
+  if (!forceRefresh && cachedProcInfo && cachedProcTarget === targetNormalized && (now - cachedProcAt < 2500)) {
     return cachedProcInfo;
   }
 
-  if (inFlightProcQuery) {
+  if (inFlightProcQuery && cachedProcTarget === targetNormalized) {
     return inFlightProcQuery;
   }
 
@@ -1004,8 +1062,6 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
       isUnknown: false,
       queryFailed: false
     };
-
-    const targetNormalized = targetPath ? path.resolve(targetPath).toLowerCase() : null;
 
     if (process.platform === 'win32') {
       try {
@@ -1068,30 +1124,22 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
         result.isRunning = result.locked;
       }
     } else {
-      // Unix / macOS 异步探测
+      // Unix / macOS 异步探测（ps -o etime= 在 macOS BSD 与 Linux 通用，避免 GNU 专有 etimes= 报错并回填可执行文件路径）
       try {
-        const binName = targetPath ? path.basename(targetPath) : 'language_server';
-        const res = await new Promise((resolve, reject) => {
-          execFile('pgrep', ['-f', binName], { encoding: 'utf8', timeout: 2000 }, (err, out) => {
+        const psOut = await new Promise((resolve, reject) => {
+          execFile('ps', ['-ax', '-o', 'pid=,etime=,command='], { encoding: 'utf8', timeout: 2000, maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
             if (err) reject(err); else resolve(out);
           });
         });
-        const pids = String(res || '').trim().split(/\s+/).map(Number).filter(Boolean);
-        if (pids.length > 0) {
+        const matches = matchUnixPsOutput(psOut, targetPath);
+        if (matches.length > 0) {
           result.isRunning = true;
-          result.pids = pids;
-          result.pid = pids[0];
-          try {
-            const psOut = await new Promise((resolve, reject) => {
-              execFile('ps', ['-p', String(pids[0]), '-o', 'etimes='], { encoding: 'utf8', timeout: 1500 }, (err, out) => {
-                if (err) reject(err); else resolve(out);
-              });
-            });
-            const elapsedSec = parseInt(String(psOut || '').trim(), 10);
-            if (!isNaN(elapsedSec)) {
-              result.startTimeMs = Date.now() - (elapsedSec * 1000);
-            }
-          } catch {}
+          result.pids = matches.map(item => item.pid);
+          result.pid = matches[0].pid;
+          result.path = matches[0].path || targetPath || null;
+          if (Number.isFinite(matches[0].elapsedMs)) {
+            result.startTimeMs = Date.now() - matches[0].elapsedMs;
+          }
         } else {
           result.isRunning = false;
         }
@@ -1102,10 +1150,12 @@ async function getRunningLanguageServerInfoAsync(targetPath, forceRefresh = fals
     }
 
     cachedProcInfo = result;
+    cachedProcTarget = targetNormalized;
     cachedProcAt = Date.now();
     return result;
   })();
 
+  cachedProcTarget = targetNormalized;
   inFlightProcQuery = queryPromise;
   try {
     return await queryPromise;
@@ -3051,6 +3101,8 @@ module.exports = {
   analyzeBinary,
   analyzeBinaryAsync,
   getRunningLanguageServerInfoAsync,
+  parseUnixEtimeToMs,
+  matchUnixPsOutput,
   cleanupOldReplacedFiles,
   synthesizeAnalysisStatus,
   applyUnlock,

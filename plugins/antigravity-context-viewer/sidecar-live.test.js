@@ -278,3 +278,383 @@ test('tickSidecarLive injects Chinese by default when i18nActive is false and re
   assert.equal(res.reason, 'already_active');
   assert.equal(injectCalls.length, 0);
 });
+
+test('getSidecarPluginStatus resolves relative sidecar args against sidecarDir (Antigravity plugin layout)', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-sidecar-rel-'));
+  const configRoot = path.join(tmpDir, 'config');
+  const appDataDir = path.join(tmpDir, 'appdata');
+  const pluginDir = path.join(configRoot, 'plugins', 'antigravity-context-viewer');
+  const sidecarDir = path.join(pluginDir, 'sidecars', 'live-loader');
+  try {
+    fs.mkdirSync(sidecarDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'antigravity-context-viewer' }), 'utf8');
+    fs.writeFileSync(path.join(pluginDir, 'sidecar-live.js'), '// target\n', 'utf8');
+    fs.writeFileSync(path.join(sidecarDir, 'sidecar.json'), JSON.stringify({
+      command: 'node',
+      args: ['../../sidecar-live.js'],
+      has_web_ui: true
+    }), 'utf8');
+
+    const st = getSidecarPluginStatus({ configRoot, appDataDir });
+    assert.equal(st.installed, true);
+    assert.equal(st.scriptExists, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('tickSidecarLive handles running client without CDP (cdp_disabled) and invokes onInactive', async () => {
+  let inactiveCalled = 0;
+  let ensureCalled = 0;
+  const logs = [];
+  const { logStateChange } = require('./sidecar-live');
+
+  const res = await tickSidecarLive({
+    queryWindow: async () => ({
+      running: true,
+      cdpEnabled: false,
+      cdpPort: null,
+      pageFound: false,
+      reason: 'cdp_disabled',
+      origin: 'https://127.0.0.1:54007',
+      origins: ['https://127.0.0.1:54007']
+    }),
+    onInactive: async () => { inactiveCalled++; },
+    ensureBridge: async () => { ensureCalled++; }
+  });
+
+  assert.equal(res.action, 'waiting');
+  assert.equal(res.reason, 'cdp_disabled');
+  assert.equal(inactiveCalled, 1);
+  assert.equal(ensureCalled, 0);
+
+  const lastKeyRef = { current: null };
+  logStateChange(lastKeyRef, res, line => logs.push(line));
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /without CDP \(2\.33\+ default\)/);
+});
+
+test('local-api extractCandidateOriginsFromLog and connect fallback to main.log without DevToolsActivePort', async t => {
+  const https = require('https');
+  const { EventEmitter } = require('events');
+  const { extractCandidateOriginsFromLog, connect } = require('./local-api');
+
+  const origins = extractCandidateOriginsFromLog(
+    '[info] started on https://127.0.0.1:51001/\n' +
+    '[info] reloaded on https://127.0.0.1:54007/\n' +
+    '[info] duplicate https://127.0.0.1:51001/\n'
+  );
+  assert.deepEqual(origins, ['https://127.0.0.1:51001', 'https://127.0.0.1:54007']);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-mainlog-'));
+  const appDataDir = tmpDir;
+  const logDir = path.join(appDataDir, 'Antigravity', 'logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(path.join(logDir, 'main.log'), 'listening on https://127.0.0.1:54999/\n', 'utf8');
+
+  t.mock.method(https, 'request', (url, opts, cb) => {
+    const req = new EventEmitter();
+    req.setTimeout = () => {};
+    req.destroy = () => {};
+    req.end = (body) => {
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      process.nextTick(() => {
+        cb(res);
+        if (String(url).endsWith('/')) {
+          res.emit('data', '<script>window.__APP_CONFIG__ = {"csrfToken":"tok-mainlog"};</script>');
+        } else {
+          res.emit('data', JSON.stringify({ ok: true, echo: body ? JSON.parse(body) : null }));
+        }
+        res.emit('end');
+      });
+    };
+    return req;
+  });
+
+  try {
+    const api = await connect({ appDataDir });
+    assert.equal(api.origin, 'https://127.0.0.1:54999');
+    const pong = await api.call('Ping', { hello: '2.33' });
+    assert.deepEqual(pong, { ok: true, echo: { hello: '2.33' } });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('meter-collector collect() uses cachedUserStatusByOrigin without ReferenceError', async t => {
+  const https = require('https');
+  const { EventEmitter } = require('events');
+  const { collect, resetQuotaHostCacheForTest } = require('./meter-collector');
+
+  resetQuotaHostCacheForTest();
+  const origin = 'https://127.0.0.1:54988';
+  const convId = '11111111-2222-4333-8444-555555555555';
+
+  let getUserStatusCalls = 0;
+
+  t.mock.method(https, 'request', (url, opts, cb) => {
+    const req = new EventEmitter();
+    req.setTimeout = () => {};
+    req.destroy = () => {};
+    req.end = () => {
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      process.nextTick(() => {
+        cb(res);
+        const u = String(url);
+        const emitJson = obj => res.emit('data', Buffer.from(JSON.stringify(obj), 'utf8'));
+        if (u === `${origin}/`) {
+          res.emit('data', Buffer.from('<script>window.__APP_CONFIG__ = {"csrfToken":"tok-collect"};</script>', 'utf8'));
+        } else if (u.includes('GetUserStatus')) {
+          getUserStatusCalls++;
+          emitJson({
+            userStatus: {
+              cascadeModelConfigData: {
+                clientModelConfigs: [
+                  {
+                    modelOrAlias: { model: 'MODEL_PLACEHOLDER_M26' },
+                    label: 'Test Model',
+                    maxTokens: 200000
+                  }
+                ]
+              }
+            }
+          });
+        } else if (u.includes('GetAvailableModels')) {
+          emitJson({ models: {} });
+        } else if (u.includes('GetCascadeTrajectoryGeneratorMetadata')) {
+          emitJson({
+            generatorMetadata: [
+              {
+                chatModel: {
+                  model: 'MODEL_PLACEHOLDER_M26',
+                  usage: {
+                    inputTokens: 1200,
+                    cacheReadTokens: 300,
+                    outputTokens: 150
+                  },
+                  chatStartMetadata: {
+                    contextWindowMetadata: {
+                      estimatedTokensUsed: 1500,
+                      maxContextTokens: 200000
+                    }
+                  }
+                }
+              }
+            ]
+          });
+        } else if (u.includes('GetCascadeTrajectory')) {
+          emitJson({
+            numTotalSteps: 1,
+            numTotalGeneratorMetadata: 1,
+            trajectory: {
+              steps: [
+                {
+                  type: 'CORTEX_STEP_TYPE_USER_INPUT',
+                  userInput: { userResponse: 'hello antigravity 2.33' }
+                }
+              ]
+            }
+          });
+        } else {
+          emitJson({});
+        }
+        res.emit('end');
+      });
+    };
+    return req;
+  });
+
+  const out = await collect(origin, convId, { force: true });
+  assert.equal(out.conversation, convId);
+  assert.ok(getUserStatusCalls >= 1);
+  assert.ok(out.latest);
+  assert.equal(out.latest.budget, 200000);
+  assert.equal(out.latest.actual, 1650);
+  assert.equal(out.latest.output, 150);
+});
+
+test('cli detectRunningAntigravity, queryLiveWindow (cdp_disabled), resolveAntigravityLaunchTarget, and launchAntigravityWithCdp', async () => {
+  const {
+    queryLiveWindow,
+    resolveAntigravityLaunchTarget,
+    launchAntigravityWithCdp
+  } = require('./cli');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-launch-'));
+  try {
+    const fakeAsar = path.join(tmpDir, 'Antigravity.app', 'Contents', 'Resources', 'app.asar');
+    const fakeExec = path.join(tmpDir, 'Antigravity.app', 'Contents', 'MacOS', 'Antigravity');
+    fs.mkdirSync(path.dirname(fakeAsar), { recursive: true });
+    fs.mkdirSync(path.dirname(fakeExec), { recursive: true });
+    fs.writeFileSync(fakeAsar, 'asar', 'utf8');
+    fs.writeFileSync(fakeExec, 'bin', 'utf8');
+
+    const liveNoCdp = await queryLiveWindow({
+      portFile: path.join(tmpDir, 'missing-DevToolsActivePort'),
+      isProcessRunning: () => true,
+      discoverOrigins: async () => [{ origin: 'https://127.0.0.1:54007' }]
+    });
+    assert.equal(liveNoCdp.running, true);
+    assert.equal(liveNoCdp.cdpEnabled, false);
+    assert.equal(liveNoCdp.reason, 'cdp_disabled');
+    assert.equal(liveNoCdp.origin, 'https://127.0.0.1:54007');
+
+    const target = resolveAntigravityLaunchTarget(fakeAsar, { platform: 'darwin' });
+    assert.equal(target.appBundle, path.join(tmpDir, 'Antigravity.app'));
+    assert.equal(target.executable, fakeExec);
+
+    await assert.rejects(
+      () => launchAntigravityWithCdp({
+        customPath: fakeAsar,
+        platform: 'darwin',
+        queryLiveWindow: async () => ({ running: true, cdpEnabled: false }),
+        restart: false
+      }),
+      /--restart/
+    );
+
+    let runningFlag = true;
+    const quitCalls = [];
+    const spawnCalls = [];
+    const launched = await launchAntigravityWithCdp({
+      customPath: fakeAsar,
+      platform: 'darwin',
+      port: 9229,
+      restart: true,
+      settleMs: 0,
+      queryLiveWindow: async () => ({ running: true, cdpEnabled: false }),
+      isAntigravityProcessRunning: () => runningFlag,
+      execFileSync: (bin, args) => {
+        quitCalls.push([bin, args]);
+        runningFlag = false;
+      },
+      spawn: (cmd, args) => {
+        spawnCalls.push([cmd, args]);
+        return { unref() {} };
+      },
+      getDevToolsPort: () => 9229
+    });
+
+    assert.equal(launched.launched, true);
+    assert.equal(launched.restarted, true);
+    assert.equal(launched.cdpPort, 9229);
+    assert.equal(quitCalls[0][0], 'osascript');
+    assert.deepEqual(spawnCalls[0], ['open', ['-a', path.join(tmpDir, 'Antigravity.app'), '--args', '--remote-debugging-port=9229']]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('sidecar ui-server registers Aux Pane routes and serves /, assets, and /api/overview', async () => {
+  const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
+  const pages = new Map();
+  const gets = new Map();
+  const posts = new Map();
+  let runCalled = false;
+  let closed = false;
+
+  class MockResponse {
+    constructor(body, init = {}) {
+      this.body = body;
+      this.init = init;
+    }
+  }
+  class MockSidecarApp {
+    page(route, handler) { pages.set(route, handler); }
+    api(route, handler, method = 'POST') {
+      if (method === 'GET') gets.set(route, handler);
+      else posts.set(route, handler);
+    }
+    run() {
+      runCalled = true;
+      return {
+        port: 49999,
+        async close() { closed = true; }
+      };
+    }
+  }
+
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-srv-'));
+  fs.mkdirSync(path.join(tmpAg, 'conversations'), { recursive: true });
+  const convId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  fs.writeFileSync(path.join(tmpAg, 'conversations', `${convId}.db`), 'db', 'utf8');
+
+  try {
+    const srv = await startSidecarUiServer({
+      agDir: tmpAg,
+      importSidecarSdk: async () => ({ SidecarApp: MockSidecarApp, Response: MockResponse }),
+      deps: {
+        localApi: {
+          normalizeLoopbackOrigin: v => v,
+          connect: async () => ({
+            origin: 'https://127.0.0.1:54007',
+            origins: ['https://127.0.0.1:54007'],
+            call: async (method) => {
+              if (method === 'GetAllCascadeTrajectories') {
+                return {
+                  trajectorySummaries: {
+                    [convId]: { summary: 'Test 2.33 Session', lastModifiedTime: new Date().toISOString() }
+                  }
+                };
+              }
+              return {};
+            }
+          })
+        },
+        collector: {
+          collect: async (origin, id) => ({
+            conversation: id,
+            latest: { model: 'Gemini Test', used: 1000, budget: 100000, percent: 1, input: 800, cached: 100, output: 100, speed: { tps: 88, ttft: 0.4, duration: 1.2 } },
+            session: { steps: 2, groups: { user: { high: 500 }, assistant: { high: 500 } }, total: { high: 1000 }, attachmentTotal: { high: 0 }, attachments: [] },
+            generatorCount: 1
+          }),
+          fetchQuotaSnapshotFromHost: async () => ({ ok: true, planTierSummary: { tierName: 'Pro' }, snapshot: { pools: [] } }),
+          collectTokenHistoryAsync: async () => ({ version: '0.8.7-2', summary: { todayTokens: 123, monthTokens: 456, grandTotalTokens: 789 } }),
+          getContextUnlockStatus: async () => ({ status: 'ORIG', mode: 'default', arch: 'arm64' }),
+          getPluginSettings: () => ({ sidecarChinese: true, showCliButton: false, panelLanguage: 'zh-CN' }),
+          savePluginSettings: () => ({ ok: true })
+        },
+        cli: {
+          queryLiveWindow: async () => ({
+            running: true,
+            cdpEnabled: false,
+            cdpPort: null,
+            pageFound: false,
+            reason: 'cdp_disabled',
+            origin: 'https://127.0.0.1:54007',
+            origins: ['https://127.0.0.1:54007']
+          })
+        },
+        sidecarLive: {
+          getSidecarPluginStatus: () => ({ installed: true, scriptExists: true, runtimeLog: { tail: ['ok'] } }),
+          tickSidecarLive: async () => ({ action: 'waiting', reason: 'cdp_disabled' })
+        },
+        asarEngine: { getStateDir: () => tmpAg }
+      }
+    });
+
+    assert.equal(runCalled, true);
+    assert.equal(srv.port, 49999);
+    assert.equal(pages.has('/'), true);
+    assert.match(pages.get('/')(), /Context Viewer/);
+    assert.match(gets.get('/styles.css')().body, /--app-shell|\.app-shell/);
+    assert.match(gets.get('/app.js')().body, /\/api\/overview/);
+
+    const overview = await posts.get('/api/overview')({});
+    assert.equal(overview.ok, true);
+    assert.equal(overview.meta.cdpEnabled, false);
+    assert.equal(overview.meta.cdpReason, 'cdp_disabled');
+    assert.equal(overview.selectedConversationId, convId);
+    assert.equal(overview.conversations[0].title, 'Test 2.33 Session');
+    assert.equal(overview.session.latest.model, 'Gemini Test');
+    assert.equal(overview.tokens.summary.todayTokens, 123);
+    assert.equal(overview.unlock.status, 'ORIG');
+
+    await srv.close();
+    assert.equal(closed, true);
+  } finally {
+    fs.rmSync(tmpAg, { recursive: true, force: true });
+  }
+});

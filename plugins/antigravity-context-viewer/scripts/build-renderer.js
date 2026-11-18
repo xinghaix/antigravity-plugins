@@ -56,7 +56,7 @@ function buildRenderer(options = {}) {
   const effTargetFile = options.targetFile ? path.resolve(options.targetFile) : path.join(effRootDir, 'meter-renderer.js');
 
   const pkg = JSON.parse(fs.readFileSync(path.join(effRootDir, 'package.json'), 'utf8'));
-  const meterVersion = pkg.version || '0.8.7-1';
+  const meterVersion = pkg.version || '0.8.7-2';
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();

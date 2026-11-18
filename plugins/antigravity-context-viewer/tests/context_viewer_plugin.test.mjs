@@ -19,7 +19,17 @@ const sidecarRaw = readFileSync(sidecarPath, 'utf-8');
 assert.equal(sidecarRaw.includes('/Users/'), false, 'sidecar.json must be portable without hardcoded home paths');
 const sidecarJson = JSON.parse(sidecarRaw);
 assert.equal(sidecarJson.args[0], '../../sidecar-live.js');
+assert.equal(sidecarJson.has_web_ui, true, 'sidecar.json must declare has_web_ui for Aux Pane compatibility');
+assert.equal(
+  sidecarJson.ui_config?.views?.[0]?.entrypoint,
+  'SIDECAR_UI_ENTRYPOINT_AUX_PANE',
+  'sidecar.json must expose Aux Pane UI view'
+);
 assert.ok(existsSync(resolve(dirname(sidecarPath), sidecarJson.args[0])), 'sidecar target script must exist');
+for (const asset of ['ui-server.js', 'index.html', 'styles.css', 'app.js']) {
+  assert.ok(existsSync(join(dirname(sidecarPath), asset)), `missing sidecar UI asset: ${asset}`);
+}
+execFileSync(process.execPath, ['--check', join(dirname(sidecarPath), 'ui-server.js')], { stdio: 'inherit' });
 
 // 2. Run all 16 unit test suites inside plugins/antigravity-context-viewer
 const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));

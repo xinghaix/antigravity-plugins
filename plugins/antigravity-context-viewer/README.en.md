@@ -1,9 +1,9 @@
-# Antigravity Context & Token Viewer (Modified Edition `v0.8.7-1`)
+# Antigravity Context & Token Viewer (Modified Edition `v0.8.7-2`)
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **Upstream & Version Notice**: This plugin is a modified and enhanced edition derived from upstream [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) (MIT License, synced to upstream **`v0.8.7`**). It uses the `<upstream-version>-<rev>` versioning convention (`v0.8.7-1`), adding:
-> 1. **Native Antigravity Plugin & Sidecar CDP Auto-Loader** (`sidecars/live-loader` + `sidecar-live.js`): attaches the live toolbar gauge automatically via CDP on window startup/reload and manages the 1:1 local bridge lifecycle without patching `app.asar`.
+> **Upstream & Version Notice**: This plugin is a modified and enhanced edition derived from upstream [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) (MIT License, synced to upstream **`v0.8.7`**). It uses the `<upstream-version>-<rev>` versioning convention (`v0.8.7-2`), adding:
+> 1. **Native Aux Pane Sidecar UI & Antigravity `2.33+` No-CDP Support** (`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`): Antigravity `2.33+` disables `DevToolsActivePort` by default. Context Viewer now exposes a native Aux Pane panel (`sidecar://antigravity-context-viewer/live-loader/`) backed by `main.log` LS discovery for live context, quota, token history, and unlock diagnostics without patching `app.asar`, while retaining CDP topbar auto-injection, `node cli.js launch --restart`, and `node cli.js install`.
 > 2. **Renderer & Live i18n Self-Healing Enhancements** (`src/renderer/*`, `meter-renderer.js`, `install.js`, `live-host.js`): compact length+percentage context pill, default-hidden CLI button toggle, live Chinese injection, synced with upstream `v0.8.5` quota ring, per-model context budgets, and System Enhancement Hub.
 > 3. **Cross-Platform Context Unlock & Modular CLI Commands** (`meter-context-unlock.js` with macOS `arm64` Mach-O `tbnz` + `codesign` support, `cli.js` `sidecar:*`).
 

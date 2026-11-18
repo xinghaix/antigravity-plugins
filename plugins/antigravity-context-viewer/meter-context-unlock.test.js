@@ -939,3 +939,39 @@ test('跨平台与安全架构拦截：不支持的格式或架构明确拒绝�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Unix/macOS 进程探测：兼容 BSD etime= 格式与带空格二进制路径精确匹配，修复状态误报未确认', () => {
+  const { parseUnixEtimeToMs, matchUnixPsOutput, synthesizeAnalysisStatus } = require('./meter-context-unlock');
+
+  assert.equal(parseUnixEtimeToMs('05:25'), (5 * 60 + 25) * 1000);
+  assert.equal(parseUnixEtimeToMs('01:05:25'), (3600 + 5 * 60 + 25) * 1000);
+  assert.equal(parseUnixEtimeToMs('2-03:04:05'), (((2 * 24 + 3) * 60 + 4) * 60 + 5) * 1000);
+  assert.equal(parseUnixEtimeToMs('bad'), null);
+
+  const target = '/Applications/Antigravity.app/Contents/Resources/bin/language_server';
+  const psOutput = [
+    '  100 00:10 /usr/bin/grep language_server',
+    '  200 10:00 /tmp/other/language_server --flag',
+    '  81958 05:25 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone --enable_sidecars'
+  ].join('\n');
+
+  const matches = matchUnixPsOutput(psOutput, target);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].pid, 81958);
+  assert.equal(matches[0].path, target);
+  assert.equal(matches[0].elapsedMs, 325000);
+
+  const now = Date.now();
+  const syn = synthesizeAnalysisStatus({
+    gate3a: { status: 'patched', mode: 'dynamic', limit: null },
+    gate3b: { status: 'patched' },
+    proc: { isRunning: true, locked: false, pid: matches[0].pid, path: matches[0].path, startTimeMs: now - 60000 },
+    manifest: { targetPath: target, patchedSha256: 'abc', patchedAt: new Date(now - 120000).toISOString() },
+    container: null,
+    stats: { mtimeMs: now - 120000 },
+    target,
+    currentSha256: 'abc',
+    observedBudget: 712000
+  });
+  assert.equal(syn.overallStatus, 'patched_loaded');
+});

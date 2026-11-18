@@ -12,9 +12,9 @@ const IDLE_POLL_MS = 5000;
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    return pkg.version || '0.8.7-1';
+    return pkg.version || '0.8.7-2';
   } catch {
-    return '0.8.7-1';
+    return '0.8.7-2';
   }
 }
 
@@ -159,7 +159,8 @@ function getSidecarPluginStatus(options = {}) {
     try {
       sidecarManifest = JSON.parse(fs.readFileSync(paths.sidecarManifestPath, 'utf8'));
       const entry = Array.isArray(sidecarManifest?.args) ? sidecarManifest.args[0] : null;
-      scriptExists = Boolean(entry && fs.existsSync(entry));
+      const resolvedEntry = entry ? path.resolve(paths.sidecarDir, entry) : null;
+      scriptExists = Boolean(resolvedEntry && fs.existsSync(resolvedEntry));
     } catch {}
   }
 
@@ -269,6 +270,7 @@ async function tickSidecarLive(deps = {}) {
   const readSavedStamp = deps.readInjectedBundleStamp || (origin => readInjectedBundleStamp(origin));
   const writeSavedStamp = deps.writeInjectedBundleStamp || ((origin, stamp) => writeInjectedBundleStamp(origin, stamp));
   const isChineseEnabled = deps.isChineseEnabled || (() => {
+    if (typeof deps.injectChinese === 'boolean') return deps.injectChinese;
     try {
       return require('./meter-collector').getPluginSettings()?.sidecarChinese !== false;
     } catch {
@@ -281,6 +283,10 @@ async function tickSidecarLive(deps = {}) {
     if (deps.onInactive) await deps.onInactive();
     return { action: 'waiting', reason: 'client_not_running', live: live || { running: false } };
   }
+  if (live.cdpEnabled === false) {
+    if (deps.onInactive) await deps.onInactive();
+    return { action: 'waiting', reason: 'cdp_disabled', live };
+  }
   if (!live.pageFound) {
     return { action: 'waiting', reason: 'window_not_ready', live };
   }
@@ -290,7 +296,7 @@ async function tickSidecarLive(deps = {}) {
   const activeStamp = hasDomStampField
     ? live.injectedStamp
     : (currentStamp ? readSavedStamp(live.origin) : null);
-  const bundleUpdated = Boolean(currentStamp && currentStamp !== activeStamp);
+  const bundleUpdated = Boolean(currentStamp && currentStamp !== activeStamp) || Boolean(deps.forceInject);
   const wantChinese = Boolean(isChineseEnabled());
   const hasI18nField = Object.prototype.hasOwnProperty.call(live, 'i18nActive');
   const missingLiveChinese = Boolean(hasI18nField && wantChinese && !live.i18nActive);
@@ -361,6 +367,8 @@ function logStateChange(lastKeyRef, result, logger = console.log) {
     logger(`[${ts}] [context-viewer sidecar] Active cleanly (${result.reason})`);
   } else if (result.action === 'retry') {
     logger(`[${ts}] [context-viewer sidecar] Window detected (${result.live?.origin || 'pending'}), waiting to retry CDP injection`);
+  } else if (result.action === 'waiting' && result.reason === 'cdp_disabled') {
+    logger(`[${ts}] [context-viewer sidecar] Antigravity running without CDP (2.33+ default); Aux Pane UI ready (topbar auto-inject paused)`);
   } else {
     logger(`[${ts}] [context-viewer sidecar] Waiting for Antigravity window (${result.reason})`);
   }
@@ -461,9 +469,29 @@ if (require.main === module) {
       process.exitCode = 1;
     });
   } else {
+    let uiServer = null;
+    if (process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) {
+      try {
+        const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
+        Promise.resolve(startSidecarUiServer()).then(srv => {
+          uiServer = srv;
+          const ts = new Date().toISOString();
+          console.log(`[${ts}] [context-viewer sidecar] Aux Pane Web UI started (port ${srv?.port || process.env.ANTIGRAVITY_SIDECAR_WEB_PORT})`);
+        }).catch(err => {
+          const ts = new Date().toISOString();
+          console.error(`[${ts}] [context-viewer sidecar] Aux Pane Web UI failed to start: ${err?.message || String(err)}`);
+        });
+      } catch (err) {
+        const ts = new Date().toISOString();
+        console.error(`[${ts}] [context-viewer sidecar] Aux Pane Web UI load failed: ${err?.message || String(err)}`);
+      }
+    }
     const daemon = startSidecarDaemon();
     const shutdown = () => {
-      Promise.resolve(daemon.stop()).finally(() => process.exit(0));
+      Promise.allSettled([
+        Promise.resolve(daemon.stop()),
+        uiServer && typeof uiServer.close === 'function' ? Promise.resolve(uiServer.close()) : Promise.resolve()
+      ]).finally(() => process.exit(0));
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
@@ -481,6 +509,7 @@ module.exports = {
   getSidecarPluginStatus,
   createManagedBridgeController,
   tickSidecarLive,
+  logStateChange,
   runOnceWithTimeout,
   startSidecarDaemon
 };

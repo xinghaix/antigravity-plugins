@@ -1,5 +1,5 @@
 (function () {
-  const METER_VERSION = '0.8.7-1';
+  const METER_VERSION = '0.8.7-2';
 
   'use strict';
   if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
@@ -2066,7 +2066,7 @@
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
         data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-      <span id="v">v0.8.7-1</span>
+      <span id="v">v0.8.7-2</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -4059,7 +4059,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.7-1</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.7-2</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -7815,7 +7815,7 @@ function formatVendorLabel(vendor) {
   let showCliButton = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-1';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -9333,10 +9333,11 @@ function formatVendorLabel(vendor) {
           let rightPad = 8;
           const rightGroup = host.parentElement;
           if (rightGroup && rightGroup !== titlebar) {
-            const auxOpen = typeof document.querySelector === 'function'
-              && !!document.querySelector('[data-testid="aux-pane-sash"]');
+            const auxOpen = typeof document.querySelector === 'function' && Boolean(
+              document.querySelector('[data-testid="aux-pane-sash"], [data-aux-pane-open="true"], [data-side-panel-open="true"], [data-testid="toggle-aux-sidebar"][aria-expanded="true"]')
+            );
             const root = typeof document.querySelector === 'function'
-              ? document.querySelector('div.h-screen.w-screen')
+              ? document.querySelector('div.h-screen.w-screen, .agy-layout-vars')
               : null;
             const rightClusterVar = root?.style?.getPropertyValue?.('--right-cluster-width')?.trim() || '';
             if (auxOpen) {
@@ -9350,7 +9351,7 @@ function formatVendorLabel(vendor) {
               const topRightCluster = findTopRightCluster();
               if (topRightCluster && !rightGroup.contains?.(topRightCluster) && topRightCluster.getBoundingClientRect) {
                 const trRect = topRightCluster.getBoundingClientRect();
-                if (trRect && trRect.width > 0 && trRect.top < 50) {
+                if (trRect && trRect.width > 0 && trRect.top < 50 && trRect.left < tbRect.right - 16) {
                   rightPad = Math.max(rightPad, Math.round(trRect.width) - 4);
                 }
               }
@@ -19505,7 +19506,7 @@ function closeAllDropdowns(exceptWrap = null) {
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -19650,7 +19651,7 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-1';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;

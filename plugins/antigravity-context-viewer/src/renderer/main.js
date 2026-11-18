@@ -216,7 +216,7 @@
   let showCliButton = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-1';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -825,10 +825,11 @@
           let rightPad = 8;
           const rightGroup = host.parentElement;
           if (rightGroup && rightGroup !== titlebar) {
-            const auxOpen = typeof document.querySelector === 'function'
-              && !!document.querySelector('[data-testid="aux-pane-sash"]');
+            const auxOpen = typeof document.querySelector === 'function' && Boolean(
+              document.querySelector('[data-testid="aux-pane-sash"], [data-aux-pane-open="true"], [data-side-panel-open="true"], [data-testid="toggle-aux-sidebar"][aria-expanded="true"]')
+            );
             const root = typeof document.querySelector === 'function'
-              ? document.querySelector('div.h-screen.w-screen')
+              ? document.querySelector('div.h-screen.w-screen, .agy-layout-vars')
               : null;
             const rightClusterVar = root?.style?.getPropertyValue?.('--right-cluster-width')?.trim() || '';
             if (auxOpen) {
@@ -842,7 +843,7 @@
               const topRightCluster = findTopRightCluster();
               if (topRightCluster && !rightGroup.contains?.(topRightCluster) && topRightCluster.getBoundingClientRect) {
                 const trRect = topRightCluster.getBoundingClientRect();
-                if (trRect && trRect.width > 0 && trRect.top < 50) {
+                if (trRect && trRect.width > 0 && trRect.top < 50 && trRect.left < tbRect.right - 16) {
                   rightPad = Math.max(rightPad, Math.round(trRect.width) - 4);
                 }
               }
@@ -9598,7 +9599,7 @@
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -9743,7 +9744,7 @@
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-1';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const vEl = el('v');
         if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;

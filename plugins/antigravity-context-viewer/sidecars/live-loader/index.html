@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Context Viewer</title>
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="topbar-row">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 14l4-4"/>
+              <path d="M3.34 19a10 10 0 1 1 17.32 0"/>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <h1>Context Viewer</h1>
+            <span id="version-badge" class="pill pill-muted">v0.8.7-2</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="btn-auto" type="button" class="btn btn-ghost btn-xs active" title="每 10 秒自动刷新">自动 10s</button>
+          <button id="btn-lang" type="button" class="btn btn-ghost btn-xs" title="Switch language / 切换语言">EN</button>
+          <button id="btn-refresh" type="button" class="icon-btn" title="强制刷新全部数据">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+              <polyline points="21 3 21 9 15 9"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="conv-bar">
+        <label class="conv-label" for="conv-select" id="lbl-conv">会话:</label>
+        <select id="conv-select" class="select-input" aria-label="选择会话">
+          <option value="">自动探测最近会话…</option>
+        </select>
+      </div>
+
+      <div id="compat-banner" class="compat-banner"></div>
+
+      <nav class="tabs" role="tablist" aria-label="视图切换">
+        <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="session" id="tab-session">会话</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" data-tab="quota" id="tab-quota">配额</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" data-tab="tokens" id="tab-tokens">Token</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" data-tab="diagnostics" id="tab-diagnostics">诊断</button>
+      </nav>
+    </header>
+
+    <main id="content" class="content">
+      <section id="panel-session" class="panel active"></section>
+      <section id="panel-quota" class="panel"></section>
+      <section id="panel-tokens" class="panel"></section>
+      <section id="panel-diagnostics" class="panel"></section>
+    </main>
+
+    <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -922,6 +922,10 @@ exports.ensureMeterInjected = ensureMeterInjected;
 exports.installContextMeter = function (win) {
   registerIpcOnce();
   if (!win || win.isDestroyed?.()) return;
+  try {
+    const utils = require('./utils');
+    if (typeof utils?.isAuxWindow === 'function' && utils.isAuxWindow(win)) return;
+  } catch {}
 
   if (!boundWindows.has(win)) {
     boundWindows.add(win);
@@ -977,6 +981,11 @@ exports.installContextMeter = function (win) {
 
   const initialWc = getWindowWebContents(win);
   if (initialWc) {
+    const prevProbe = wcProbeTimers.get(win);
+    if (prevProbe) {
+      clearInterval(prevProbe);
+      wcProbeTimers.delete(win);
+    }
     bindToWc(initialWc);
   } else {
     // 若为 BaseWindow 且尚未挂载 WebContentsView，开启轻量安全探测轮询，并在 WeakMap 中记录定时器

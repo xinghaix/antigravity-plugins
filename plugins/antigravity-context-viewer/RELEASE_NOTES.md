@@ -1,3 +1,20 @@
+## v0.8.7-2
+
+适配 **Google Antigravity `2.33+`** 默认关闭 `DevToolsActivePort` 导致的失效问题，并修复 `0.8.7-1` 回归缺陷：
+
+- **新增原生 Aux Pane Sidecar 看板（免 CDP / 免改盘）**：
+  - `sidecars/live-loader/sidecar.json` 开启 `has_web_ui: true`（`SIDECAR_UI_ENTRYPOINT_AUX_PANE`），由 `sidecar-live.js` 在检测到 `ANTIGRAVITY_SIDECAR_WEB_PORT` 时自动启动 `sidecars/live-loader/ui-server.js`（基于 `sidecar_sdk`）；
+  - 直接在右侧 Aux Pane（`sidecar://antigravity-context-viewer/live-loader/`）提供 **会话上下文、配额监控、历史 Token 统计、环境诊断与设置** 四个页签，并附带 `2.33+` 顶栏恢复指引与一键复制命令。
+- **免 CDP 直连宿主 Language Server 与 2.33 选择器兼容**：
+  - `local-api.js` 在无 `DevToolsActivePort` 时自动从 `Antigravity/logs/main.log` 尾部探测仍在监听的本地 LS 端口与 CSRF Token；
+  - `cli.js` 区分「未开启 CDP 的运行中客户端 (`cdp_disabled`)」与「未运行 (`client_not_running`)」，新增 `node cli.js launch [--port N] [--restart]` 优雅重启开启调试端口恢复顶栏热注入；
+  - `sidecar-live.js` 修复相对路径 `../../sidecar-live.js` 校验误报，并在 `cdp_disabled` 时安静待命与清理过期桥接；
+  - `src/renderer/main.js` 新增 2.33 Aux Pane 展开态选择器（`[data-aux-pane-open="true"]` / `[data-side-panel-open="true"]` / `[data-testid="toggle-aux-sidebar"][aria-expanded="true"]`），`meter-main.js` 跳过 `utils.isAuxWindow(win)` 辅窗；
+  - `meter-context-unlock.js` 修复 macOS/Unix 下调用 GNU `ps -o etimes=` 报错及未回填进程路径，解决重启后状态持续误报 `patched_runtime_unconfirmed`（状态未确认）的问题；
+  - 修复 `meter-collector.js` `collect()` 中残留 `cachedHostUserStatus` 导致的 `ReferenceError`。
+
+---
+
 ## v0.8.7-1
 
 基于上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) `v0.8.7`（含 `v0.8.6`）完成合并升级：

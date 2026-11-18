@@ -13,30 +13,242 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const { loadAsarEngine, getStateDir } = require('./asar-engine');
 const { install, findAsarPath, tryHotInject, tryHotInjectDetailed, probeLiveHostRuntimeInfo, shutdownLiveHostGracefully, extractAsarFile } = require('./install');
 const { restore } = require('./restore');
 const { resolvePython, syncLiveRuntimeBundle } = require('./meter-collector');
+const { discoverOriginsFromMainLog } = require('./local-api');
 const { redactProxyUrl } = require('./meter-proxy');
 const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, AUTHOR_INFO } = require('./meter-context-unlock');
 
 const asar = loadAsarEngine();
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-function getDevToolsPort() {
-  const appData = process.env.APPDATA || (process.platform === 'darwin'
+function getDevToolsPort(options = {}) {
+  const appData = options?.appDataDir || process.env.APPDATA || (process.platform === 'darwin'
     ? path.join(os.homedir(), 'Library', 'Application Support')
     : path.join(os.homedir(), '.config'));
-  const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
+  const portFile = options?.portFile || path.join(appData, 'Antigravity', 'DevToolsActivePort');
   if (!fs.existsSync(portFile)) return null;
   const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
   return Number.isFinite(port) && port > 0 ? port : null;
 }
 
-async function queryLiveWindow() {
-  const port = getDevToolsPort();
-  if (!port) return { running: false };
+function isAntigravityProcessRunning(options = {}) {
+  if (typeof options.isProcessRunning === 'function') {
+    return Boolean(options.isProcessRunning());
+  }
+  if (process.env.ANTIGRAVITY_LS_ADDRESS) {
+    return true;
+  }
+  if ((process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') && !options.allowProcessCheckInTest) {
+    return false;
+  }
+  try {
+    if (process.platform === 'darwin') {
+      const out = execFileSync('pgrep', ['-x', 'Antigravity'], { encoding: 'utf8', timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] });
+      return Boolean(out && out.trim());
+    }
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq Antigravity.exe', '/NH'], { encoding: 'utf8', timeout: 1500, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      return /antigravity\.exe/i.test(String(out || ''));
+    }
+    const out = execFileSync('pgrep', ['-x', 'antigravity'], { encoding: 'utf8', timeout: 1200, stdio: ['ignore', 'pipe', 'ignore'] });
+    return Boolean(out && out.trim());
+  } catch {
+    return false;
+  }
+}
+
+async function detectRunningAntigravity(options = {}) {
+  const discoverFn = typeof options.discoverOrigins === 'function'
+    ? options.discoverOrigins
+    : () => discoverOriginsFromMainLog(options);
+  let apis = [];
+  try {
+    apis = await discoverFn();
+  } catch { }
+  const origins = Array.isArray(apis) ? apis.map(a => a?.origin).filter(Boolean) : [];
+  const processAlive = isAntigravityProcessRunning(options);
+  const running = Boolean(processAlive || origins.length > 0 || process.env.ANTIGRAVITY_LS_ADDRESS);
+  return { running, processAlive, origins };
+}
+
+function resolveAntigravityLaunchTarget(customPath, options = {}) {
+  const platform = options.platform || process.platform;
+  const findFn = typeof options.findAsarPath === 'function' ? options.findAsarPath : findAsarPath;
+  const existsFn = typeof options.existsSync === 'function' ? options.existsSync : fs.existsSync;
+  const readdirFn = typeof options.readdirSync === 'function' ? options.readdirSync : fs.readdirSync;
+  const asarPath = findFn(customPath);
+  const resourcesDir = path.dirname(asarPath);
+  const installOrContentsDir = path.resolve(resourcesDir, '..');
+
+  if (platform === 'darwin') {
+    const appBundle = path.dirname(installOrContentsDir);
+    const macOsDir = path.join(installOrContentsDir, 'MacOS');
+    let executable = path.join(macOsDir, 'Antigravity');
+    if (!existsFn(executable) && existsFn(macOsDir)) {
+      try {
+        const entries = readdirFn(macOsDir).filter(Boolean);
+        if (entries.length > 0) executable = path.join(macOsDir, entries[0]);
+      } catch {}
+    }
+    return {
+      platform,
+      asarPath,
+      appBundle: appBundle.endsWith('.app') && existsFn(appBundle) ? appBundle : null,
+      executable
+    };
+  }
+
+  if (platform === 'win32') {
+    const candidates = [
+      path.join(installOrContentsDir, 'Antigravity.exe'),
+      path.join(installOrContentsDir, 'antigravity.exe')
+    ];
+    const executable = candidates.find(c => existsFn(c)) || candidates[0];
+    return {
+      platform,
+      asarPath,
+      appBundle: null,
+      executable
+    };
+  }
+
+  const candidates = [
+    path.join(installOrContentsDir, 'antigravity'),
+    path.join(installOrContentsDir, 'Antigravity')
+  ];
+  const executable = candidates.find(c => existsFn(c)) || 'antigravity';
+  return {
+    platform,
+    asarPath,
+    appBundle: null,
+    executable
+  };
+}
+
+async function launchAntigravityWithCdp(options = {}) {
+  const rawPort = options.port === undefined || options.port === null ? 0 : Number(options.port);
+  if (!Number.isInteger(rawPort) || rawPort < 0 || rawPort > 65535) {
+    throw new Error(`无效的调试端口: ${options.port}（允许 0-65535，0 表示随机端口）`);
+  }
+  const platform = options.platform || process.platform;
+  const queryFn = typeof options.queryLiveWindow === 'function' ? options.queryLiveWindow : queryLiveWindow;
+  const isRunningFn = typeof options.isAntigravityProcessRunning === 'function'
+    ? () => options.isAntigravityProcessRunning()
+    : () => isAntigravityProcessRunning(options);
+  const execSyncFn = typeof options.execFileSync === 'function' ? options.execFileSync : execFileSync;
+  const spawnFn = typeof options.spawn === 'function' ? options.spawn : spawn;
+  const target = resolveAntigravityLaunchTarget(options.customPath, options);
+
+  const live = await queryFn(options);
+  let restarted = false;
+  if (live.running) {
+    if (live.cdpEnabled && !options.restart) {
+      return {
+        launched: false,
+        alreadyCdpEnabled: true,
+        restarted: false,
+        cdpPort: live.cdpPort || null,
+        requestedPort: rawPort,
+        target
+      };
+    }
+    if (!options.restart) {
+      throw new Error(
+        '检测到 Antigravity 正在运行但未开启 CDP 调试端口（2.33+ 默认关闭）。' +
+        '若需开启顶栏热注入，请添加 --restart 优雅重启：node cli.js launch --restart；' +
+        '或使用 Aux Pane 原生面板 (sidecar://antigravity-context-viewer/live-loader/) / 持久化安装 (node cli.js install)。'
+      );
+    }
+    try {
+      if (platform === 'darwin') {
+        execSyncFn('osascript', ['-e', 'tell application "Antigravity" to quit'], { timeout: 5000, stdio: 'ignore' });
+      } else if (platform === 'win32') {
+        execSyncFn('taskkill', ['/IM', 'Antigravity.exe'], { timeout: 5000, windowsHide: true, stdio: 'ignore' });
+      } else {
+        execSyncFn('pkill', ['-TERM', '-x', 'antigravity'], { timeout: 5000, stdio: 'ignore' });
+      }
+    } catch {}
+
+    const quitDeadline = Date.now() + (Number.isFinite(options.quitTimeoutMs) ? options.quitTimeoutMs : 8000);
+    while (isRunningFn() && Date.now() < quitDeadline) {
+      await new Promise(r => setTimeout(r, 250));
+    }
+    if (isRunningFn()) {
+      throw new Error('等待 Antigravity 优雅退出超时，请手动关闭客户端后重试 node cli.js launch。');
+    }
+    if (options.settleMs !== 0) {
+      await new Promise(r => setTimeout(r, options.settleMs ?? 300));
+    }
+    restarted = true;
+  }
+
+  const debugFlag = `--remote-debugging-port=${rawPort}`;
+  let command;
+  let spawnArgs;
+  if (platform === 'darwin' && target.appBundle) {
+    command = 'open';
+    spawnArgs = ['-a', target.appBundle, '--args', debugFlag];
+  } else {
+    command = target.executable;
+    spawnArgs = [debugFlag];
+  }
+
+  const child = spawnFn(command, spawnArgs, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false
+  });
+  if (child && typeof child.unref === 'function') {
+    child.unref();
+  }
+
+  let cdpPort = null;
+  if (options.waitForCdp !== false) {
+    const waitDeadline = Date.now() + (Number.isFinite(options.waitTimeoutMs) ? options.waitTimeoutMs : 8000);
+    const getPortFn = typeof options.getDevToolsPort === 'function' ? options.getDevToolsPort : () => getDevToolsPort(options);
+    while (Date.now() < waitDeadline) {
+      const detected = getPortFn();
+      if (detected) {
+        cdpPort = detected;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+  }
+
+  return {
+    launched: true,
+    alreadyCdpEnabled: false,
+    restarted,
+    requestedPort: rawPort,
+    cdpPort,
+    command,
+    args: spawnArgs,
+    target
+  };
+}
+
+async function queryLiveWindow(options = {}) {
+  const port = getDevToolsPort(options);
+  if (!port) {
+    const det = await detectRunningAntigravity(options);
+    if (det.running) {
+      return {
+        running: true,
+        cdpEnabled: false,
+        cdpPort: null,
+        pageFound: false,
+        reason: 'cdp_disabled',
+        origin: det.origins[0] || null,
+        origins: det.origins
+      };
+    }
+    return { running: false, cdpEnabled: false };
+  }
   try {
     const pages = await new Promise((resolve, reject) => {
       const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
@@ -49,7 +261,7 @@ async function queryLiveWindow() {
     });
     const matchedTargets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
     const target = matchedTargets[0];
-    if (!target) return { running: true, cdpPort: port, pageFound: false, origins: [] };
+    if (!target) return { running: true, cdpEnabled: true, cdpPort: port, pageFound: false, origins: [] };
     const origin = new URL(target.url).origin;
     const origins = Array.from(new Set(matchedTargets.map(p => { try { return new URL(p.url).origin; } catch { return null; } }).filter(Boolean)));
 
@@ -112,9 +324,22 @@ async function queryLiveWindow() {
       }));
     });
     ws.close();
-    return { running: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, ...status };
+    return { running: true, cdpEnabled: true, cdpPort: port, pageFound: true, origin, origins, windowCount: matchedTargets.length, ...status };
   } catch (e) {
-    return { running: false, error: e.message };
+    const det = await detectRunningAntigravity(options);
+    if (det.running) {
+      return {
+        running: true,
+        cdpEnabled: false,
+        cdpPort: null,
+        pageFound: false,
+        reason: 'cdp_disabled',
+        origin: det.origins[0] || null,
+        origins: det.origins,
+        error: e.message
+      };
+    }
+    return { running: false, cdpEnabled: false, error: e.message };
   }
 }
 
@@ -418,6 +643,7 @@ async function cmdStatus(customPath) {
     asarPath,
     antigravityVersion: version,
     asarPatched,
+    cdpEnabled: Boolean(live.cdpEnabled),
     versions: {
       diskVersion: diskVersion || null,
       rendererVersion: live.version || null,
@@ -453,18 +679,32 @@ async function cmdCheck(customPath) {
   const py = resolvePython();
   console.log(`  - Python 附件深度解析器: ${py || '未检测到（基础上下文统计不受影响）'}`);
   const live = await queryLiveWindow();
-  console.log(`  - 运行中窗口 CDP 状态: ${live.running ? `已连接 (端口 ${live.cdpPort})` : '客户端未运行或未开启调试端口'}`);
+  let cdpSummary = '客户端未运行';
+  if (live.running && live.cdpEnabled) {
+    cdpSummary = `已连接 (端口 ${live.cdpPort})`;
+  } else if (live.running && live.cdpEnabled === false) {
+    cdpSummary = '客户端运行中，但未开启 CDP 调试端口（Antigravity 2.33+ 默认关闭；可使用 Aux Pane 原生面板 sidecar://antigravity-context-viewer/live-loader/，或运行 node cli.js install / node cli.js launch --restart）';
+  }
+  console.log(`  - 运行中窗口 CDP 状态: ${cdpSummary}`);
   console.log('✅ 环境预检通过！');
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const cmd = (args.find(a => !a.startsWith('-')) || 'install').toLowerCase();
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
   const backupIdx = args.indexOf('--backup');
   const customBackup = backupIdx >= 0 ? args[backupIdx + 1] : null;
+  const portIdx = args.indexOf('--port');
+  const portValue = portIdx >= 0 ? args[portIdx + 1] : undefined;
+  const valueTokenIndices = new Set([
+    ...(pathIdx >= 0 ? [pathIdx + 1] : []),
+    ...(backupIdx >= 0 ? [backupIdx + 1] : []),
+    ...(portIdx >= 0 ? [portIdx + 1] : [])
+  ]);
+  const cmd = (args.find((a, idx) => !a.startsWith('-') && !valueTokenIndices.has(idx)) || 'install').toLowerCase();
   const isForce = args.includes('--force');
+  const isRestart = args.includes('--restart');
 
   if (cmd === 'install') {
     const meterVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
@@ -545,6 +785,15 @@ async function main() {
     }
   } else if (cmd === 'live') {
     const liveBefore = await queryLiveWindow();
+    if (liveBefore.running && liveBefore.cdpEnabled === false) {
+      throw new Error(
+        '检测到 Antigravity 正在运行但未开启 CDP 调试端口（Antigravity 2.33+ 默认不生成 DevToolsActivePort）。\n' +
+        '可选方案:\n' +
+        '  1. 直接在 Aux Pane 打开原生面板: sidecar://antigravity-context-viewer/live-loader/\n' +
+        '  2. 优雅重启并开启调试端口以恢复顶栏热挂载: node cli.js launch --restart\n' +
+        '  3. 写入 app.asar 持久化安装（重启后免 CDP 自动生效）: node cli.js install'
+      );
+    }
     const bridgePrep = await ensureLiveBridgeIfNeeded(liveBefore);
     const { getPluginSettings } = require('./meter-collector');
     const wantChinese = getPluginSettings()?.sidecarChinese !== false;
@@ -564,12 +813,33 @@ async function main() {
     }
     if (!report.ok) {
       await rollbackPreparedLiveBridge(bridgePrep);
+      if (liveBefore.running && liveBefore.cdpEnabled === false) {
+        throw new Error(
+          'Antigravity 正在运行但未开启 CDP 调试端口（2.33+ 默认关闭），请使用 node cli.js launch --restart、node cli.js install，或打开 sidecar://antigravity-context-viewer/live-loader/。'
+        );
+      }
       throw new Error('未检测到运行中的 Antigravity 主窗口，请先打开 Antigravity 或使用 node cli.js install。');
     }
     if (bridgePrep.previousLiveInfo) {
       await shutdownLiveHostGracefully(bridgePrep.previousLiveInfo);
     }
     console.log(`✅ 已通过 CDP 热注入当前运行的 ${report.injectedCount}/${report.windowCount} 个 Antigravity 窗口！`);
+  } else if (cmd === 'launch') {
+    const res = await launchAntigravityWithCdp({
+      customPath,
+      port: portValue !== undefined ? Number(portValue) : 0,
+      restart: isRestart
+    });
+    if (res.alreadyCdpEnabled) {
+      console.log(`✅ Antigravity 已开启 CDP 调试端口 (端口 ${res.cdpPort})，无需重启。`);
+    } else {
+      console.log(`🚀 已${res.restarted ? '优雅重启并' : ''}启动 Antigravity (--remote-debugging-port=${res.requestedPort})`);
+      if (res.cdpPort) {
+        console.log(`✅ 已检测到 DevToolsActivePort: ${res.cdpPort}，可执行 node cli.js live 或等待 Sidecar 自动挂载顶栏。`);
+      } else {
+        console.log('⏳ 客户端正在启动中，稍后可执行 node cli.js check 确认 CDP 端口就绪。');
+      }
+    }
   } else if (cmd === 'sidecar:install') {
     const { installSidecarPlugin } = require('./sidecar-live');
     const res = installSidecarPlugin();
@@ -808,6 +1078,7 @@ async function main() {
     console.log(`用法:
   node cli.js install [--path <app.asar>]   一键持久化安装并热注入当前运行窗口
   node cli.js live                          免改盘 CDP 热挂载到当前运行窗口
+  node cli.js launch [--port N] [--restart] 带 CDP 调试端口启动/优雅重启以恢复顶栏热挂载
   node cli.js sidecar:install               配置 Antigravity 原生后台 Sidecar 自动挂载
   node cli.js sidecar:status                查看 Sidecar 配置与运行日志状态
   node cli.js sidecar:once                  执行单次 Sidecar 探测与热注入
@@ -836,6 +1107,9 @@ module.exports = {
   cmdCheck,
   rollbackPreparedLiveBridge,
   queryLiveWindow,
+  detectRunningAntigravity,
+  resolveAntigravityLaunchTarget,
+  launchAntigravityWithCdp,
   ensureLiveBridgeIfNeeded,
   getDevToolsPort,
   isLiveBridgeAlive

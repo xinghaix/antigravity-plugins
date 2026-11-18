@@ -1,6 +1,6 @@
 ---
 name: context-viewer
-description: "Inspect and manage the modified Antigravity Context Viewer & Token Dashboard plugin (Sidecar CDP auto-loader, live status check, and optional modules)."
+description: "Inspect and manage the modified Antigravity Context Viewer & Token Dashboard plugin (Aux Pane Sidecar UI for Antigravity 2.33+, CDP auto-loader, live status check, and optional modules)."
 ---
 
 # Antigravity Context Viewer (`antigravity-context-viewer`)
@@ -9,6 +9,7 @@ This plugin is a modified edition of upstream [`elviscjn-cjn/antigravity-context
 
 ## How It Works
 
-- The bundled `sidecars/live-loader` daemon starts automatically with Antigravity, watches `DevToolsActivePort`, and hot-injects the top-bar context window gauge and token usage dashboard via CDP without requiring `app.asar` patching.
-- To check live status, inspect modules, or manage optional enhancements (`sidecar:status`, `status`, `check`, `unlock-status`), run `node cli.js <command>` inside the installed plugin directory (`~/.gemini/config/plugins/antigravity-context-viewer`).
-- To enable, disable, or inspect the plugin manifest in Antigravity, link the user to `[antigravity-context-viewer](customization://antigravity-context-viewer)`.
+- **Native Aux Pane Web UI (Antigravity 2.33+ default)**: Antigravity 2.33+ disables `DevToolsActivePort` (CDP) by default unless launched with `--remote-debugging-port`. The bundled `sidecars/live-loader` Sidecar now serves a native Aux Pane panel (`[Context Viewer](sidecar://antigravity-context-viewer/live-loader/)`) powered by `sidecar_sdk`, connecting directly to the local Language Server via `main.log` discovery without patching `app.asar` or needing CDP.
+- **Topbar Overlay via CDP or `app.asar`**: If CDP is active (or after running `node cli.js launch --restart`), `sidecars/live-loader` automatically hot-injects the compact topbar gauge into the main window (skipping auxiliary HUD windows and handling 2.33 aux-pane selectors). Users can also run `node cli.js install` inside `~/.gemini/config/plugins/antigravity-context-viewer` for persistent `app.asar` patching.
+- To check live status, inspect modules, or manage optional enhancements (`sidecar:status`, `status`, `check`, `launch --restart`, `unlock-status`), run `node cli.js <command>` inside `~/.gemini/config/plugins/antigravity-context-viewer`.
+- To open the Aux Pane UI directly, provide the clickable pill `[Context Viewer](sidecar://antigravity-context-viewer/live-loader/)`, or link `[antigravity-context-viewer](customization://antigravity-context-viewer)` for plugin settings.

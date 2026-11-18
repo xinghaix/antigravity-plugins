@@ -8,8 +8,8 @@
       "dirName": "antigravity-context-viewer",
       "path": "plugins/antigravity-context-viewer",
       "displayName": "Context Viewer",
-      "version": "0.8.7-1",
-      "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, cost analytics & native Sidecar CDP auto-loader without app.asar patching.",
+      "version": "0.8.7-2",
+      "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, quota & cost analytics via Aux Pane Sidecar UI (Antigravity 2.33+ ready) or CDP topbar.",
       "logo": "assets/logo.svg",
       "components": {
         "skills": 1,
@@ -19,11 +19,13 @@
         "mcp": false,
         "hooks": false
       },
-      "sidecarLinks": [],
+      "sidecarLinks": [
+        "sidecar://antigravity-context-viewer/live-loader/"
+      ],
       "suggestedPrompts": [
-        "检查 Context Viewer 当前运行状态与实时窗口连接情况",
-        "查看 Context Viewer 支持哪些上下文监控与界面增强模块",
-        "打开 Context Viewer 插件设置页"
+        "打开 Context Viewer 侧边面板 (sidecar://antigravity-context-viewer/live-loader/)",
+        "检查 Context Viewer 当前运行状态与 Antigravity 2.33+ 兼容情况",
+        "查看 Context Viewer 支持哪些上下文监控与界面增强模块"
       ]
     },
     {

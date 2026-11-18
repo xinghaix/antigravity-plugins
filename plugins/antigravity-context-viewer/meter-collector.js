@@ -626,7 +626,9 @@ async function collect(origin, id, options = {}) {
       let latest = null;
       const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
       const tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
-      let knownCascadeConfigs = Array.isArray(cachedHostUserStatus?.cascadeModelConfigs) ? cachedHostUserStatus.cascadeModelConfigs : [];
+      const originScope = normalizeQuotaOriginScope({ origin });
+      const cachedStatus = cachedUserStatusByOrigin.get(originScope)?.status || null;
+      let knownCascadeConfigs = Array.isArray(cachedStatus?.cascadeModelConfigs) ? cachedStatus.cascadeModelConfigs : [];
       const hasAnyCap = knownCascadeConfigs.some(c => Number.isFinite(c?.maxTokens) && c.maxTokens > 0);
       if (!knownCascadeConfigs.length || !hasAnyCap) {
         try {
@@ -636,9 +638,10 @@ async function collect(origin, id, options = {}) {
           }
         } catch { }
       }
+      const latestCachedStatus = cachedUserStatusByOrigin.get(originScope)?.status || cachedStatus;
       const mergedCascadeConfigs = mergeModelCapabilitiesIntoConfigs(
         knownCascadeConfigs,
-        cachedHostUserStatus?.availableModelDetails || null,
+        latestCachedStatus?.availableModelDetails || null,
         stepCapabilities
       );
       let latestModel = null;
@@ -680,7 +683,7 @@ async function collect(origin, id, options = {}) {
     const unknownFiles = attachments.filter(a => a.status !== 'parsed').length;
     const compactCascadeConfigs = mergedCascadeConfigs.map(sanitizeCascadeModelConfig).filter(Boolean);
     const modelCapabilitiesById = {
-      ...(cachedHostUserStatus?.availableModelDetails || {}),
+      ...(latestCachedStatus?.availableModelDetails || {}),
       ...stepCapabilities
     };
     const result = { version: PROJECT_VERSION, conversation: id, workspacePath: wsPath || null, latest, latestCallId, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, total, attachments, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt: Date.now(), errors: [] };
