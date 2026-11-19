@@ -22,6 +22,7 @@
       statusEnabled: '仅已启用',
       statusDisabled: '仅已禁用',
       statusWarn: '仅告警',
+      statusPrompt: '仅含提示词',
       wsLabel: '工作区:',
       wsPlaceholder: '添加项目目录路径，如 ~/Projects/app',
       wsAdd: '关联',
@@ -157,6 +158,37 @@
       exportDisplayLabel: '显示名称',
       exportDescLabel: '简介',
       exportConfirmBtn: '生成插件包',
+      promptBtn: '提示词',
+      promptBadgeActive: '提示词 · {mode}',
+      promptBadgePaused: '提示词已暂停',
+      promptBadgeTip: '点击编辑该 MCP 服务的专属提示词与注入模式',
+      promptModeShortOnDemand: '按需',
+      promptModeShortStrict: '强制',
+      promptModeShortSession: '常驻',
+      promptModalTitle: '专属提示词 · {name}',
+      promptModalSub: '通过 Antigravity 原生 Hook 在使用该 MCP 时自动注入系统提示词，不污染 mcp_config.json',
+      promptEnableLabel: '自动注入开关',
+      promptEnabledText: '已开启自动注入',
+      promptDisabledText: '已暂停自动注入',
+      promptModeLabel: '注入时机 (Injection Mode)',
+      promptModeOnDemand: '按需注入 (推荐，0 Token 浪费)',
+      promptModeStrict: '首次调用强制拦截 (Strict)',
+      promptModeSessionStart: '会话启动常驻 (SessionStart)',
+      promptHintOnDemand: '平时不占上下文。当模型读取该 MCP 的 schema 文件、命中触发关键词或调用工具时，自动通过系统消息注入一次。',
+      promptHintStrict: '优先按需注入；若模型跳过读取 schema 直接调用（如 eager 工具）且本会话尚未注入，首次调用将先拦截并附带规则，模型随即带规则重试。',
+      promptHintSessionStart: '每次新会话启动时直接注入（若该 MCP 在配置中已禁用则跳过）；适合几乎每次对话都会用到的核心工具。',
+      promptKeywordsLabel: '触发关键词（可选，逗号或换行分隔）',
+      promptKeywordsPlaceholder: '如: clickhouse, ck, sql 日志查询',
+      promptKeywordsHint: '当用户输入包含这些词时，会在首轮对话前提前注入该 MCP 提示词；留空则仅在实际使用 MCP 时触发。',
+      promptContentLabel: '提示词内容 (System Instructions)',
+      promptContentPlaceholder: '例如：\n1. 查询前先用 list_tables 查看表结构，严禁全表 SELECT *。\n2. 优先添加时间分区条件和 LIMIT 100。',
+      promptHookNote: '基于 Antigravity 原生 hooks.json 机制运行：同一会话内去重只注一次，修改内容后下次调用自动刷新。',
+      promptStorageLabel: '配置文件: {path}',
+      promptDeleteBtn: '清除提示词',
+      promptSaveBtn: '保存提示词',
+      promptSavedToast: '已保存 {name} 的专属提示词',
+      promptClearedToast: '已清空 {name} 的专属提示词',
+      promptDeletedToast: '已清除 {name} 的专属提示词',
     },
     en: {
       loading: 'Loading…',
@@ -175,6 +207,7 @@
       statusEnabled: 'Enabled Only',
       statusDisabled: 'Disabled Only',
       statusWarn: 'Warnings Only',
+      statusPrompt: 'Has Prompt',
       wsLabel: 'Workspace:',
       wsPlaceholder: 'Add project path, e.g. ~/Projects/app',
       wsAdd: 'Link',
@@ -310,6 +343,37 @@
       exportDisplayLabel: 'Display Name',
       exportDescLabel: 'Description',
       exportConfirmBtn: 'Create Plugin',
+      promptBtn: 'Prompt',
+      promptBadgeActive: 'Prompt · {mode}',
+      promptBadgePaused: 'Prompt Paused',
+      promptBadgeTip: 'Click to edit per-server prompt & hook injection mode',
+      promptModeShortOnDemand: 'On-Demand',
+      promptModeShortStrict: 'Strict',
+      promptModeShortSession: 'Session',
+      promptModalTitle: 'Server Prompt · {name}',
+      promptModalSub: 'Injected automatically by Antigravity native Hooks without polluting mcp_config.json',
+      promptEnableLabel: 'Auto-Injection',
+      promptEnabledText: 'Auto-injection enabled',
+      promptDisabledText: 'Auto-injection paused',
+      promptModeLabel: 'Injection Mode',
+      promptModeOnDemand: 'On-Demand (Recommended, 0 idle tokens)',
+      promptModeStrict: 'Strict Gate Before 1st Call (Strict)',
+      promptModeSessionStart: 'Always On at Session Start (SessionStart)',
+      promptHintOnDemand: 'Zero context cost when unused. Automatically injects once via systemMessage when the agent reads this MCP schema, matches keywords, or invokes it.',
+      promptHintStrict: 'Uses on-demand signals first; if the model skips reading schema (e.g. eager tools) and calls the server unbriefed, blocks the 1st call once with these instructions so it retries immediately.',
+      promptHintSessionStart: 'Injects once at the start of every new session (unless this MCP is disabled in configs). Ideal for core servers used in almost every session.',
+      promptKeywordsLabel: 'Trigger Keywords (optional, comma or newline separated)',
+      promptKeywordsPlaceholder: 'e.g. clickhouse, ck, analytics sql',
+      promptKeywordsHint: 'Injects early on turn 1 when user input contains any keyword; leave empty to trigger only when the MCP is accessed.',
+      promptContentLabel: 'System Instructions',
+      promptContentPlaceholder: 'Example:\n1. Always inspect table schema with list_tables first.\n2. Avoid full-table SELECT * and always include LIMIT 100.',
+      promptHookNote: 'Powered by native hooks.json: deduplicated per conversation and automatically re-delivered when edited.',
+      promptStorageLabel: 'Stored in: {path}',
+      promptDeleteBtn: 'Clear Prompt',
+      promptSaveBtn: 'Save Prompt',
+      promptSavedToast: 'Saved prompt for {name}',
+      promptClearedToast: 'Cleared prompt for {name}',
+      promptDeletedToast: 'Removed prompt for {name}',
     },
   };
 
@@ -409,6 +473,7 @@
       extraConfig: {},
     },
     exportTarget: null,
+    promptTarget: null,
   };
 
   // Sync theme light/dark from host preload tokens
@@ -539,6 +604,11 @@
 
     renderAlerts();
     renderServers(all);
+    if (state.promptTarget && !$('modal-prompt').classList.contains('hidden')) {
+      $('prompt-modal-title').textContent = t('promptModalTitle', { name: state.promptTarget.name });
+      syncPromptEnabledLabel();
+      syncPromptModeHint();
+    }
   }
 
   function renderAlerts() {
@@ -586,6 +656,7 @@
       if (state.statusFilter === 'enabled' && isOff) return false;
       if (state.statusFilter === 'disabled' && !isOff) return false;
       if (state.statusFilter === 'warn' && (!s.warnings || s.warnings.length === 0)) return false;
+      if (state.statusFilter === 'has-prompt' && !s.promptConfig?.prompt) return false;
       if (q) {
         const hay = [
           s.name,
@@ -594,6 +665,8 @@
           s.endpointUrl,
           s.pluginName,
           s.workspaceName,
+          s.promptConfig?.prompt,
+          ...(s.promptConfig?.keywords || []),
         ].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
@@ -638,6 +711,18 @@
     }
     const shortSt = String(hs.status || '').replace(/^MCP_SERVER_STATUS_/, '') || 'ERROR';
     return `<span class="badge badge-danger">${esc(t('hostErrorBadge', { status: shortSt }))}</span>`;
+  }
+
+  function renderPromptBadge(srv, key) {
+    const pc = srv.promptConfig;
+    if (!pc?.prompt) return '';
+    if (pc.enabled === false) {
+      return `<button type="button" class="badge badge-prompt-paused" data-action="prompt" data-key="${esc(key)}" title="${esc(t('promptBadgeTip'))}">${esc(t('promptBadgePaused'))}</button>`;
+    }
+    const modeKey = pc.mode === 'strict'
+      ? 'promptModeShortStrict'
+      : (pc.mode === 'session_start' ? 'promptModeShortSession' : 'promptModeShortOnDemand');
+    return `<button type="button" class="badge badge-prompt" data-action="prompt" data-key="${esc(key)}" title="${esc(t('promptBadgeTip'))}">${esc(t('promptBadgeActive', { mode: t(modeKey) }))}</button>`;
   }
 
   function renderCardHtml(srv) {
@@ -687,6 +772,7 @@
               <span class="badge ${srv.scope === 'global' ? 'badge-accent' : ''}">${esc(scopeLabel)}</span>
               <span class="badge">${esc(transportLabel)}</span>
               ${renderHostBadge(srv, key)}
+              ${renderPromptBadge(srv, key)}
               ${hasConflict ? `<span class="badge badge-warn">${esc(t('conflictBadge'))}</span>` : ''}
               ${srv.pluginDisabled ? `<span class="badge badge-warn">${esc(t('pluginDisabledBadge'))}</span>` : ''}
             </div>
@@ -707,6 +793,7 @@
           <button type="button" class="btn btn-secondary btn-xs" data-action="probe" data-key="${esc(key)}" ${isProbing ? 'disabled' : ''}>
             ${esc(isProbing ? t('probingBtn') : (probe ? t('reprobeBtn') : t('probeBtn')))}
           </button>
+          <button type="button" class="btn btn-secondary btn-xs" data-action="prompt" data-key="${esc(key)}">${esc(t('promptBtn'))}</button>
           ${!isPlugin ? `<button type="button" class="btn btn-secondary btn-xs" data-action="edit" data-key="${esc(key)}">${esc(t('editBtn'))}</button>` : ''}
           ${!isPlugin ? `<button type="button" class="btn btn-ghost btn-xs" data-action="clone" data-key="${esc(key)}">${esc(t('cloneBtn'))}</button>` : ''}
           <button type="button" class="btn btn-ghost btn-xs" data-action="copy" data-key="${esc(key)}">${esc(t('copyBtn'))}</button>
@@ -973,6 +1060,8 @@
           }
         } else if (action === 'export' && srv) {
           openExportModal(srv);
+        } else if (action === 'prompt' && srv) {
+          openPromptModal(srv);
         }
       });
     });
@@ -1283,6 +1372,73 @@
     $('modal-export').classList.remove('hidden');
   }
 
+  function syncPromptEnabledLabel() {
+    $('pr-enabled-label').textContent = $('pr-enabled').checked ? t('promptEnabledText') : t('promptDisabledText');
+  }
+
+  function syncPromptModeHint() {
+    const mode = $('pr-mode').value;
+    const key = mode === 'strict'
+      ? 'promptHintStrict'
+      : (mode === 'session_start' ? 'promptHintSessionStart' : 'promptHintOnDemand');
+    $('pr-mode-hint').textContent = t(key);
+  }
+
+  function syncPromptCharCount() {
+    $('pr-char-count').textContent = `${$('pr-text').value.length} / 16000`;
+  }
+
+  function openPromptModal(srv) {
+    state.promptTarget = srv;
+    const pc = srv.promptConfig || null;
+    $('prompt-modal-title').textContent = t('promptModalTitle', { name: srv.name });
+    $('pr-enabled').checked = pc ? pc.enabled !== false : true;
+    $('pr-mode').value = pc?.mode || 'on_demand';
+    $('pr-keywords').value = Array.isArray(pc?.keywords) ? pc.keywords.join(', ') : '';
+    $('pr-text').value = pc?.prompt || '';
+    $('pr-storage-path').textContent = state.data?.paths?.promptsFile
+      ? t('promptStorageLabel', { path: state.data.paths.promptsFile })
+      : '';
+    $('btn-prompt-delete').classList.toggle('hidden', !pc?.prompt);
+    syncPromptEnabledLabel();
+    syncPromptModeHint();
+    syncPromptCharCount();
+    $('modal-prompt').classList.remove('hidden');
+    $('pr-text').focus();
+  }
+
+  async function savePromptModal() {
+    if (!state.promptTarget) return;
+    const serverName = state.promptTarget.name;
+    try {
+      const res = await api('/api/prompt/save', {
+        serverName,
+        enabled: $('pr-enabled').checked,
+        mode: $('pr-mode').value,
+        keywords: $('pr-keywords').value,
+        prompt: $('pr-text').value,
+      });
+      $('modal-prompt').classList.add('hidden');
+      toast(t(res.deleted ? 'promptClearedToast' : 'promptSavedToast', { name: serverName }), 'success');
+      await refresh();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function deletePromptModal() {
+    if (!state.promptTarget) return;
+    const serverName = state.promptTarget.name;
+    try {
+      await api('/api/prompt/delete', { serverName });
+      $('modal-prompt').classList.add('hidden');
+      toast(t('promptDeletedToast', { name: serverName }), 'success');
+      await refresh();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
   async function saveEditorModal() {
     const scope = $('ed-scope').value;
     const workspacePath = scope === 'workspace' ? $('ed-workspace').value : undefined;
@@ -1417,6 +1573,11 @@
       if (!$('modal-raw').classList.contains('hidden')) {
         e.preventDefault();
         saveRawModal();
+        return;
+      }
+      if (!$('modal-prompt').classList.contains('hidden')) {
+        e.preventDefault();
+        savePromptModal();
         return;
       }
     }
@@ -1567,6 +1728,13 @@
       toast(err.message, 'error');
     }
   });
+
+  // Per-MCP Prompt modal
+  $('pr-enabled').addEventListener('change', syncPromptEnabledLabel);
+  $('pr-mode').addEventListener('change', syncPromptModeHint);
+  $('pr-text').addEventListener('input', syncPromptCharCount);
+  $('btn-prompt-save').addEventListener('click', savePromptModal);
+  $('btn-prompt-delete').addEventListener('click', deletePromptModal);
 
   applyStaticI18n();
   refresh();

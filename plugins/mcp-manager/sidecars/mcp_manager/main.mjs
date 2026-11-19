@@ -117,6 +117,10 @@ app.api('/api/import', handle((data) => store.importSnippet(data)));
 
 app.api('/api/export-plugin', handle((data) => store.exportAsPlugin(data)));
 
+app.api('/api/prompt/save', handle((data) => store.savePrompt(data)));
+
+app.api('/api/prompt/delete', handle((data) => store.deletePrompt(data)));
+
 app.api('/api/probe', handle(async (data) => {
   const result = await probeServer(data.config, typeof data.timeoutMs === 'number' ? data.timeoutMs : 7000);
   return { ok: true, probe: result };

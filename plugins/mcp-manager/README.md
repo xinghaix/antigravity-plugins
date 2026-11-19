@@ -18,6 +18,10 @@
 - **宿主运行时状态直连**：自动读取 Antigravity Language Server 的 `GetMcpServerStates`，在卡片上直接展示 `宿主已就绪` 与已加载工具数，点击即可零等待展开工具列表。
 - **实时协议探测（Live Probe）**：支持单个或一键**探测全部**本地 Stdio（含 Windows `.cmd`/`.bat` 与 `PATHEXT`、nvm/Homebrew/Cargo/Bun 等多路径自动解析）和远程 Streamable HTTP 服务，展示握手耗时、服务端版本与完整工具清单。
 - **可视化工具粒度过滤**：在探测抽屉中直接勾选/取消工具，支持按原有 `enabledTools`（白名单）或 `disabledTools`（黑名单）语义保存过滤配置，减少上下文冗余。
+- **单 MCP 专属提示词与 Hook 自动注入**：支持为任意 MCP（全局 / 工作区 / 插件自带）配置专属系统提示词，独立保存在 `~/.gemini/config/sidecar_data/mcp_manager/prompts.json`，不污染 `mcp_config.json`。通过 Antigravity 原生生命周期 Hook（`hooks.json`）支持三种模式：
+  - **按需注入（`on_demand`，默认）**：不用时零 Token 开销；在模型读取 MCP schema 文件、命中可选关键词或调用工具前自动注入一次。
+  - **首次强制拦截（`strict`）**：优先按需注入；若模型跳过读 schema（如 `eager` 工具）直接发起调用且尚未注入，首次调用将先拦截并带回提示词，模型随即可按规范重试。
+  - **会话常驻（`session_start`）**：新会话启动时直接注入（自动跳过在配置中已禁用的 MCP）。
 - **双模式编辑 & 兼容导入**：内置 `Filesystem` / `Fetch` / `GitHub` / `SQLite` / `Remote HTTP` / `SSE Bridge` 快捷模板、整行命令一键拆解、密码遮罩切换、表单/JSON 双向同步、克隆服务，以及一键导入 Antigravity / Claude Desktop / Cursor / VS Code（`servers` / `serverUrl`）配置片段。
 - **安全写入与历史备份恢复**：所有写入均采用临时文件原子替换（权限 `0600`）并保留最近 15 份自动备份，可在 `Raw / 备份` 面板一键格式化或回滚。
 - **一键打包为独立插件**：可将任意 MCP 服务导出为 `~/.gemini/config/plugins/<slug>/` 下的独立插件包，方便在插件中心按需开关。
@@ -68,10 +72,14 @@ node scripts/cli.mjs install mcp-manager
 ```text
 antigravity-mcp-manager/
 ├── plugin.json                  # Antigravity 插件清单
+├── hooks.json                   # 原生生命周期 Hook 配置（按需/强制/会话注入）
 ├── package.json                 # npm 元数据与脚本入口
 ├── assets/
 │   ├── logo.svg                 # 插件图标
 │   └── preview.svg              # 面板预览图
+├── hooks/
+│   ├── prompt_store.mjs         # 单 MCP 提示词读写与校验模块
+│   └── mcp_prompt_hook.mjs      # SessionStart / PreInvocation / Pre/PostToolUse 处理器
 ├── skills/mcp-manager/
 │   └── SKILL.md                 # 对话触发与 sidecar:// 导航技能
 ├── sidecars/mcp_manager/

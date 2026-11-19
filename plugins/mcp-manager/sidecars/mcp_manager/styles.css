@@ -462,6 +462,20 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
+.badge-prompt {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  cursor: pointer;
+}
+.badge-prompt:hover { filter: brightness(1.08); }
+.badge-prompt-paused {
+  background: var(--fill);
+  color: var(--fg-muted);
+  border-color: var(--border-col);
+  cursor: pointer;
+}
+.badge-prompt-paused:hover { filter: brightness(1.06); }
 
 .card-endpoint {
   font-family: var(--mono);
@@ -854,6 +868,21 @@ input:disabled + .switch-track { opacity: 0.45; cursor: not-allowed; }
 }
 .toast.error { background: var(--danger); color: #ffffff; }
 .toast.success { background: var(--success); color: #ffffff; }
+
+.prompt-mode-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-2);
+  background: var(--muted-bg);
+  border: 1px solid var(--border-col);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+}
+
+.char-counter {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
 
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(6px); }

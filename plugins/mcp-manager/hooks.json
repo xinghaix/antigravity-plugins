@@ -1,0 +1,42 @@
+{
+  "mcp-prompt-injector": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node hooks/mcp_prompt_hook.mjs",
+        "timeout": 5
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node hooks/mcp_prompt_hook.mjs",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "view_file|read_file|list_dir|find_by_name|call_mcp_tool|mcp_.*|list_resources|read_resource",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node hooks/mcp_prompt_hook.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "call_mcp_tool|mcp_.*|list_resources|read_resource",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node hooks/mcp_prompt_hook.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

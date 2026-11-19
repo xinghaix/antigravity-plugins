@@ -52,6 +52,12 @@ try {
   assert.equal(listed.find((p) => p.id === 'mcp-manager')?.installMode, 'linked-monorepo');
   assert.equal(listed.find((p) => p.id === 'mattpocock-skills')?.installMode, 'copy');
 
+  // Selective install mcp-manager (--copy) includes hooks.json and hooks/
+  const mcpCopyRes = installPlugins(['mcp-manager'], { link: false, rootDir: MONOREPO_ROOT, home: fakeHome });
+  assert.equal(mcpCopyRes[0].mode, 'copy');
+  assert.ok(existsSync(join(mcpCopyRes[0].target, 'hooks.json')));
+  assert.ok(existsSync(join(mcpCopyRes[0].target, 'hooks', 'mcp_prompt_hook.mjs')));
+
   const status = getMonorepoStatus({ rootDir: MONOREPO_ROOT, home: fakeHome });
   assert.equal(status.plugins.length >= 2, true);
 
@@ -91,19 +97,22 @@ try {
   assert.ok(existsSync(join(packRes.outDir, 'SHA256SUMS.txt')));
   assert.ok(existsSync(join(packRes.outDir, 'RELEASE_BODY.md')));
 
+  const mcpManifest = JSON.parse(readFileSync(join(MONOREPO_ROOT, 'plugins', 'mcp-manager', 'plugin.json'), 'utf-8'));
+  const mcpVer = mcpManifest.version;
+
   const singlePack = packageRelease(mockRepo, { pluginId: 'mcp-manager', refName: '' });
   assert.equal(singlePack.pluginId, 'mcp-manager');
   assert.equal(singlePack.pluginCount, 1);
   assert.deepEqual(singlePack.archives.sort(), [
-    'mcp-manager-v1.0.0.tar.gz',
-    'mcp-manager-v1.0.0.zip',
+    `mcp-manager-v${mcpVer}.tar.gz`,
+    `mcp-manager-v${mcpVer}.zip`,
     'mcp-manager.tar.gz',
     'mcp-manager.zip',
   ]);
   assert.equal(existsSync(join(singlePack.outDir, 'prompt-vault.zip')), false);
   assert.equal(existsSync(join(singlePack.outDir, 'antigravity-plugins-bundle-v1.0.0.zip')), false);
 
-  const tagPack = packageRelease(mockRepo, { refName: 'mcp-manager-v1.0.0' });
+  const tagPack = packageRelease(mockRepo, { refName: `mcp-manager-v${mcpVer}` });
   assert.equal(tagPack.pluginId, 'mcp-manager');
   assert.equal(tagPack.pluginCount, 1);
 

@@ -75,6 +75,7 @@
             <option value="enabled" data-i18n="statusEnabled">仅已启用</option>
             <option value="disabled" data-i18n="statusDisabled">仅已禁用</option>
             <option value="warn" data-i18n="statusWarn">仅告警</option>
+            <option value="has-prompt" data-i18n="statusPrompt">仅含提示词</option>
           </select>
         </div>
       </div>
@@ -391,6 +392,66 @@
         <div class="spacer"></div>
         <button type="button" class="btn btn-ghost" data-close="modal-export" data-i18n="cancelBtn">取消</button>
         <button id="btn-export-run" type="button" class="btn btn-primary" data-i18n="exportConfirmBtn">生成插件包</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Per-MCP Prompt Modal -->
+  <div id="modal-prompt" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="prompt-modal-title">专属提示词</h2>
+          <p id="prompt-modal-sub" class="modal-sub" data-i18n="promptModalSub">通过 Antigravity 原生 Hook 在使用该 MCP 时自动注入系统提示词，不污染 mcp_config.json</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="modal-prompt" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid-2">
+          <div class="field switch-field">
+            <span class="field-label" data-i18n="promptEnableLabel">自动注入开关</span>
+            <label class="switch-row">
+              <input id="pr-enabled" type="checkbox" checked>
+              <span class="switch-track"></span>
+              <span id="pr-enabled-label">已开启自动注入</span>
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label" data-i18n="promptModeLabel">注入时机 (Injection Mode)</span>
+            <select id="pr-mode">
+              <option value="on_demand" data-i18n="promptModeOnDemand">按需注入 (推荐，0 Token 浪费)</option>
+              <option value="strict" data-i18n="promptModeStrict">首次调用强制拦截 (Strict)</option>
+              <option value="session_start" data-i18n="promptModeSessionStart">会话启动常驻 (SessionStart)</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="pr-mode-hint" class="prompt-mode-hint"></div>
+
+        <label class="field">
+          <span class="field-label" data-i18n="promptKeywordsLabel">触发关键词（可选，逗号或换行分隔）</span>
+          <input id="pr-keywords" type="text" data-i18n-placeholder="promptKeywordsPlaceholder" placeholder="如: clickhouse, ck, sql 日志查询" autocomplete="off">
+          <span class="field-hint" data-i18n="promptKeywordsHint">当用户输入包含这些词时，会在首轮对话前提前注入该 MCP 提示词；留空则仅在实际使用 MCP 时触发。</span>
+        </label>
+
+        <div class="field">
+          <div class="field-head">
+            <span class="field-label" data-i18n="promptContentLabel">提示词内容 (System Instructions)</span>
+            <span id="pr-char-count" class="char-counter mono">0 / 16000</span>
+          </div>
+          <textarea id="pr-text" rows="8" maxlength="16000" data-i18n-placeholder="promptContentPlaceholder" placeholder="例如：&#10;1. 查询前先用 list_tables 查看表结构，严禁全表 SELECT *。&#10;2. 优先添加时间分区条件和 LIMIT 100。"></textarea>
+        </div>
+
+        <div class="field-hint" data-i18n="promptHookNote">基于 Antigravity 原生 hooks.json 机制运行：同一会话内去重只注一次，修改内容后下次调用自动刷新。</div>
+        <div id="pr-storage-path" class="field-hint mono"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-prompt-delete" type="button" class="btn btn-danger-ghost hidden" data-i18n="promptDeleteBtn">清除提示词</button>
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-ghost" data-close="modal-prompt" data-i18n="cancelBtn">取消</button>
+        <button id="btn-prompt-save" type="button" class="btn btn-primary" data-i18n="promptSaveBtn">保存提示词</button>
       </div>
     </div>
   </div>

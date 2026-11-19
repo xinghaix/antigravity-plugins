@@ -19,6 +19,8 @@ export const REPO_ROOT = resolve(__dirname, '..');
 
 const RUNTIME_ITEMS = [
   'plugin.json',
+  'hooks.json',
+  'hooks',
   'README.md',
   'LICENSE',
   'assets',

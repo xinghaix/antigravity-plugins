@@ -12,6 +12,13 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from 'node:path';
+import {
+  deleteServerPrompt,
+  readPromptsStore,
+  renameServerPrompt,
+  resolvePromptsFile,
+  saveServerPrompt,
+} from '../../hooks/prompt_store.mjs';
 
 const SAFE_NAME_RE = /^[a-zA-Z0-9._-]+$/;
 const PLUGIN_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -258,6 +265,7 @@ export function createStore(options = {}) {
   const userPluginsDir = options.userPluginsDir || join(configRoot, 'plugins');
   const builtinPluginsDir = options.builtinPluginsDir || join(home, '.gemini', 'antigravity', 'builtin', 'plugins');
   const dataDir = options.dataDir || process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR || join(configRoot, 'sidecar_data', 'mcp_manager');
+  const promptsFile = resolvePromptsFile({ homeDir: home, configRoot, promptsFile: options.promptsFile });
   const workspacesFile = join(dataDir, 'workspaces.json');
   const backupsDir = join(dataDir, 'backups');
 
@@ -493,6 +501,8 @@ export function createStore(options = {}) {
     const storedWorkspaces = loadWorkspaces();
     const allWorkspaces = [...new Set([...storedWorkspaces, ...requestedWorkspaces.filter(Boolean).map((p) => resolve(p))])];
     const hostOf = (name) => (isPlainObject(hostStates) && hostStates[name] ? hostStates[name] : null);
+    const promptsMap = readPromptsStore({ promptsFile }).prompts;
+    const promptOf = (name) => promptsMap[name] || null;
 
     const globalInfo = readJsonSafe(globalConfigPath);
     const globalServersObj = isPlainObject(globalInfo.parsed?.mcpServers) ? globalInfo.parsed.mcpServers : {};
@@ -502,6 +512,7 @@ export function createStore(options = {}) {
       filePath: globalConfigPath,
       readOnly: false,
       hostStatus: hostOf(name),
+      promptConfig: promptOf(name),
     }));
 
     const workspaces = allWorkspaces.map((wsPath) => {
@@ -516,6 +527,7 @@ export function createStore(options = {}) {
         filePath,
         readOnly: false,
         hostStatus: hostOf(name),
+        promptConfig: promptOf(name),
       }));
       return {
         path: wsPath,
@@ -535,7 +547,11 @@ export function createStore(options = {}) {
       ...scanPluginsDir(builtinPluginsDir, true, disabledMap),
     ].map((p) => ({
       ...p,
-      servers: p.servers.map((s) => ({ ...s, hostStatus: hostOf(s.name) })),
+      servers: p.servers.map((s) => ({
+        ...s,
+        hostStatus: hostOf(s.name),
+        promptConfig: promptOf(s.name),
+      })),
     }));
 
     // Collect name collisions across active servers
@@ -564,10 +580,12 @@ export function createStore(options = {}) {
       workspaces,
       plugins,
       conflicts,
+      prompts: promptsMap,
       paths: {
         globalConfigPath,
         userPluginsDir,
         backupsDir,
+        promptsFile,
       },
     };
   }
@@ -593,6 +611,17 @@ export function createStore(options = {}) {
     const { filePath, root } = loadScope(scope, workspacePath);
     const servers = { ...root.mcpServers };
 
+    const maybeMigratePrompt = () => {
+      if (!originalName || originalName === trimmedName) return;
+      const st = getState([workspacePath, originalWorkspacePath].filter(Boolean));
+      const stillExists = st.global.servers.some((s) => s.name === originalName)
+        || st.workspaces.some((w) => w.servers.some((s) => s.name === originalName))
+        || st.plugins.some((p) => p.servers.some((s) => s.name === originalName));
+      if (!stillExists) {
+        renameServerPrompt(originalName, trimmedName, { promptsFile });
+      }
+    };
+
     if (originalName && !sameTarget) {
       if (Object.prototype.hasOwnProperty.call(servers, trimmedName)) {
         throw new Error(`目标作用域中已存在同名服务 "${trimmedName}"`);
@@ -608,6 +637,7 @@ export function createStore(options = {}) {
         orig.root.mcpServers = nextOrig;
         writeConfigAtomic(orig.filePath, orig.root);
       }
+      maybeMigratePrompt();
       return { ok: true, filePath, name: trimmedName, moved: true };
     }
 
@@ -621,6 +651,7 @@ export function createStore(options = {}) {
     servers[trimmedName] = config;
     root.mcpServers = servers;
     writeConfigAtomic(filePath, root);
+    maybeMigratePrompt();
     return { ok: true, filePath, name: trimmedName };
   }
 
@@ -739,6 +770,14 @@ export function createStore(options = {}) {
     };
   }
 
+  function savePrompt({ serverName, prompt, enabled, mode, keywords } = {}) {
+    return saveServerPrompt({ serverName, prompt, enabled, mode, keywords }, { promptsFile });
+  }
+
+  function deletePrompt({ serverName } = {}) {
+    return deleteServerPrompt(serverName, { promptsFile });
+  }
+
   return {
     getState,
     addWorkspace,
@@ -751,5 +790,7 @@ export function createStore(options = {}) {
     exportAsPlugin,
     listBackups,
     restoreBackup,
+    savePrompt,
+    deletePrompt,
   };
 }

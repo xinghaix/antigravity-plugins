@@ -1,8 +1,8 @@
 {
   "name": "mcp-manager",
   "displayName": "MCP Manager",
-  "description": "Visual MCP server manager for Antigravity: inspect, add, edit, toggle, probe tools, and configure global, workspace, and plugin MCP servers.",
-  "version": "1.0.0",
+  "description": "Visual MCP server manager for Antigravity: inspect, add, edit, toggle, probe tools, configure global/workspace/plugin MCP servers, and auto-inject per-MCP prompts via native hooks.",
+  "version": "1.1.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "xinghaix",

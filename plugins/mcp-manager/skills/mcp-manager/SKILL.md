@@ -11,4 +11,4 @@ When the user wants to open or use the visual MCP manager, surface the sidecar p
 
 [MCP Manager](sidecar://mcp-manager/mcp_manager/)
 
-You can also help the user inspect, add, edit, toggle, or troubleshoot MCP server entries in `~/.gemini/config/mcp_config.json` and `<workspace>/.agents/mcp_config.json`.
+You can also help the user inspect, add, edit, toggle, or troubleshoot MCP server entries in `~/.gemini/config/mcp_config.json` and `<workspace>/.agents/mcp_config.json`, as well as configure per-MCP custom system prompts (`~/.gemini/config/sidecar_data/mcp_manager/prompts.json`) that are automatically injected via native lifecycle hooks (`hooks.json`) when the MCP server is used.

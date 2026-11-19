@@ -1,10 +1,30 @@
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createStore, normalizeSnippetInput, resolveExecutable } from '../sidecars/mcp_manager/mcp_store.mjs';
 import { probeHttpServer, probeStdioServer } from '../sidecars/mcp_manager/mcp_probe.mjs';
 import { getStatus, installPlugin, uninstallPlugin } from '../scripts/cli.mjs';
+import {
+  deleteServerPrompt,
+  MAX_PROMPT_LENGTH,
+  parseKeywords,
+  readPromptsStore,
+  renameServerPrompt,
+  saveServerPrompt,
+} from '../hooks/prompt_store.mjs';
+import {
+  extractServersFromToolCall,
+  extractServersFromTranscript,
+  handleHookEvent,
+  isServerDisabledInConfigs,
+  stripWrappingQuotes,
+} from '../hooks/mcp_prompt_hook.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOOK_SCRIPT_PATH = resolve(__dirname, '..', 'hooks', 'mcp_prompt_hook.mjs');
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-manager-test-'));
 
@@ -143,6 +163,9 @@ try {
   const copyRes = installPlugin({ link: false, target: cliTarget });
   assert.equal(copyRes.mode, 'copy');
   assert.ok(existsSync(join(cliTarget, 'plugin.json')));
+  assert.ok(existsSync(join(cliTarget, 'hooks.json')));
+  assert.ok(existsSync(join(cliTarget, 'hooks', 'mcp_prompt_hook.mjs')));
+  assert.ok(existsSync(join(cliTarget, 'hooks', 'prompt_store.mjs')));
   assert.equal(getStatus({ target: cliTarget, home: homeDir }).installMode, 'copy');
 
   const linkRes = installPlugin({ link: true, target: cliTarget });
@@ -221,6 +244,362 @@ try {
   } finally {
     globalThis.fetch = origFetch;
   }
+
+  // 11. Prompt store CRUD, validation, keyword parsing, and rename
+  const promptOpts = { homeDir, configRoot };
+  assert.deepEqual(parseKeywords('ck, ClickHouse，CK\n sql '), ['ck', 'ClickHouse', 'sql']);
+  assert.throws(
+    () => saveServerPrompt({ serverName: 'bad name!', prompt: 'x' }, promptOpts),
+    /服务名称/,
+  );
+  assert.throws(
+    () => saveServerPrompt({ serverName: 'clickhouse-mcp', prompt: 'x', mode: 'invalid_mode' }, promptOpts),
+    /不支持的注入模式/,
+  );
+  assert.throws(
+    () => saveServerPrompt({ serverName: 'clickhouse-mcp', prompt: 'x'.repeat(MAX_PROMPT_LENGTH + 1) }, promptOpts),
+    /不能超过/,
+  );
+
+  const savedP = saveServerPrompt({
+    serverName: 'clickhouse-mcp',
+    prompt: '  Always inspect tables before querying.  ',
+    mode: 'on_demand',
+    keywords: 'ClickHouse, ck',
+  }, promptOpts);
+  assert.equal(savedP.deleted, false);
+  assert.equal(savedP.entry.prompt, 'Always inspect tables before querying.');
+  assert.deepEqual(savedP.entry.keywords, ['ClickHouse', 'ck']);
+  assert.equal(readPromptsStore(promptOpts).prompts['clickhouse-mcp'].mode, 'on_demand');
+
+  const renRes = renameServerPrompt('clickhouse-mcp', 'ck-renamed', promptOpts);
+  assert.equal(renRes.renamed, true);
+  assert.equal(readPromptsStore(promptOpts).prompts['clickhouse-mcp'], undefined);
+  assert.equal(readPromptsStore(promptOpts).prompts['ck-renamed'].prompt, 'Always inspect tables before querying.');
+
+  const clearedP = saveServerPrompt({ serverName: 'ck-renamed', prompt: '   ' }, promptOpts);
+  assert.equal(clearedP.deleted, true);
+  assert.equal(readPromptsStore(promptOpts).prompts['ck-renamed'], undefined);
+
+  // 12. mcp_store integration: promptConfig attachment on global/workspace/plugin + rename migration
+  store.saveServer({
+    scope: 'global',
+    name: 'ck-global',
+    config: { url: 'https://ck.local/mcp' },
+  });
+  store.savePrompt({
+    serverName: 'ck-global',
+    prompt: 'Global CK rule',
+    mode: 'on_demand',
+    keywords: ['ck'],
+  });
+  store.savePrompt({
+    serverName: 'shared',
+    prompt: 'Plugin shared rule',
+    mode: 'strict',
+  });
+  st = store.getState();
+  assert.equal(st.global.servers.find((s) => s.name === 'ck-global').promptConfig.prompt, 'Global CK rule');
+  assert.equal(st.plugins[0].servers[0].promptConfig.mode, 'strict');
+  assert.equal(st.workspaces[0].servers[0].promptConfig, null);
+
+  // Renaming ck-global (across same scope) migrates promptConfig
+  store.saveServer({
+    scope: 'global',
+    originalScope: 'global',
+    originalName: 'ck-global',
+    name: 'ck-global-v2',
+    config: { url: 'https://ck.local/mcp' },
+  });
+  st = store.getState();
+  assert.equal(st.global.servers.find((s) => s.name === 'ck-global-v2').promptConfig.prompt, 'Global CK rule');
+  assert.equal(st.prompts['ck-global'], undefined);
+
+  // Cross-scope move + rename also migrates promptConfig
+  store.saveServer({
+    scope: 'workspace',
+    workspacePath: wsDir,
+    originalScope: 'global',
+    originalName: 'ck-global-v2',
+    name: 'ck-ws',
+    config: { url: 'https://ck.local/mcp' },
+  });
+  st = store.getState();
+  assert.equal(st.workspaces[0].servers.find((s) => s.name === 'ck-ws').promptConfig.prompt, 'Global CK rule');
+  assert.equal(st.prompts['ck-global-v2'], undefined);
+
+  const delPromptRes = store.deletePrompt({ serverName: 'ck-ws' });
+  assert.equal(delPromptRes.removed, true);
+  store.deletePrompt({ serverName: 'shared' });
+  store.deleteServer({ scope: 'workspace', workspacePath: wsDir, name: 'ck-ws' });
+
+  // 13. Hook helpers & fast-path when no prompts configured
+  const hookHome = join(tempRoot, 'hook-home');
+  const hookConfigRoot = join(hookHome, '.gemini', 'config');
+  const hookPromptsFile = join(hookConfigRoot, 'sidecar_data', 'mcp_manager', 'prompts.json');
+  const hookStateDir = join(hookConfigRoot, 'sidecar_data', 'mcp_manager', 'hook_sessions');
+  const hookOpts = { homeDir: hookHome, configRoot: hookConfigRoot, promptsFile: hookPromptsFile, stateDir: hookStateDir };
+
+  assert.equal(stripWrappingQuotes('"/Users/a/mcp/ck/run_query.json"'), '/Users/a/mcp/ck/run_query.json');
+  assert.deepEqual(
+    extractServersFromToolCall(
+      { name: 'mcp_foo_bar_query', args: {} },
+      new Set(['foo', 'foo_bar']),
+    ),
+    ['foo_bar'],
+  );
+  assert.deepEqual(
+    extractServersFromToolCall(
+      { name: 'read_file', args: { Path: '"/Users/xing/.gemini/antigravity/mcp/clickhouse-mcp/run_query.json"' } },
+      new Set(['clickhouse-mcp']),
+    ),
+    ['clickhouse-mcp'],
+  );
+
+  // Fast-path when prompts.json is empty
+  assert.deepEqual(handleHookEvent({ hookEventName: 'SessionStart', conversationId: 'c0' }, hookOpts), {});
+  assert.deepEqual(handleHookEvent({ hookEventName: 'PreInvocation', conversationId: 'c0' }, hookOpts), {});
+  assert.deepEqual(handleHookEvent({ hookEventName: 'PostToolUse', conversationId: 'c0', toolCall: { name: 'read_file', args: {} } }, hookOpts), {});
+  assert.deepEqual(handleHookEvent({ hookEventName: 'PreToolUse', conversationId: 'c0', toolCall: { name: 'call_mcp_tool', args: { ServerName: 'clickhouse-mcp' } } }, hookOpts), { decision: 'ask' });
+
+  // 14. Hook on_demand lazy schema-read flow + deduplication + live edit re-delivery
+  saveServerPrompt({
+    serverName: 'clickhouse-mcp',
+    prompt: 'Rule v1: Always add LIMIT 100.',
+    mode: 'on_demand',
+    keywords: ['clickhouse'],
+  }, hookOpts);
+
+  const postRead = handleHookEvent({
+    hookEventName: 'PostToolUse',
+    conversationId: 'conv-ondemand',
+    toolCall: {
+      name: 'read_file',
+      args: { Path: '/Users/xing/.gemini/antigravity/mcp/clickhouse-mcp/run_query.json' },
+    },
+  }, hookOpts);
+  assert.deepEqual(postRead, {});
+
+  const preInv1 = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-ondemand',
+    lastUserInput: 'check metrics',
+  }, hookOpts);
+  assert.equal(preInv1.injectSteps.length, 1);
+  assert.match(preInv1.injectSteps[0].systemMessage.systemMessage, /Rule v1: Always add LIMIT 100\./);
+  assert.match(preInv1.injectSteps[0].systemMessage.systemMessage, /<mcp_instructions server="clickhouse-mcp">/);
+
+  // Second PreInvocation in same conversation must deduplicate
+  const preInv2 = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-ondemand',
+    lastUserInput: 'clickhouse again',
+  }, hookOpts);
+  assert.deepEqual(preInv2, {});
+
+  // Editing prompt content changes hash and re-triggers delivery on next signal
+  saveServerPrompt({
+    serverName: 'clickhouse-mcp',
+    prompt: 'Rule v2: Always filter by event_date.',
+    mode: 'on_demand',
+    keywords: ['clickhouse'],
+  }, hookOpts);
+  const preInvEdited = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-ondemand',
+    lastUserInput: 'run another ClickHouse query',
+  }, hookOpts);
+  assert.equal(preInvEdited.injectSteps.length, 1);
+  assert.match(preInvEdited.injectSteps[0].systemMessage.systemMessage, /Rule v2: Always filter by event_date\./);
+
+  // 15. Hook keyword early trigger (non-matching ignored, case-insensitive match triggers)
+  assert.deepEqual(
+    handleHookEvent({ hookEventName: 'PreInvocation', conversationId: 'conv-kw', lastUserInput: 'hello world' }, hookOpts),
+    {},
+  );
+  const kwHit = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-kw',
+    lastUserInput: 'Please query CLICKHOUSE tables',
+  }, hookOpts);
+  assert.equal(kwHit.injectSteps.length, 1);
+  assert.match(kwHit.injectSteps[0].systemMessage.systemMessage, /Rule v2/);
+
+  // 16. Hook incremental transcript fallback (JSON-quoted args trigger; prose mentions do NOT trigger)
+  saveServerPrompt({
+    serverName: 'trino-mcp',
+    prompt: 'Trino rule: use EXPLAIN first.',
+    mode: 'on_demand',
+  }, hookOpts);
+  const transcriptFile = join(tempRoot, 'transcript.jsonl');
+  writeFileSync(transcriptFile, [
+    JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: 'Please mention trino-mcp in prose only' }),
+    JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', content: 'Thinking about trino-mcp', tool_calls: [] }),
+  ].join('\n') + '\n');
+
+  const tr1 = extractServersFromTranscript(transcriptFile, 0, ['trino-mcp']);
+  assert.deepEqual(tr1.servers, []);
+  const preTr1 = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-transcript',
+    transcriptPath: transcriptFile,
+  }, hookOpts);
+  assert.deepEqual(preTr1, {});
+
+  // Append a real PLANNER_RESPONSE tool_call reading trino-mcp schema (with JSON-quoted Path arg)
+  const existingTranscript = readFileSync(transcriptFile, 'utf-8');
+  writeFileSync(transcriptFile, existingTranscript + JSON.stringify({
+    step_index: 2,
+    type: 'PLANNER_RESPONSE',
+    tool_calls: [
+      {
+        name: 'read_file',
+        args: { Path: '"/Users/xing/.gemini/antigravity/mcp/trino-mcp/execute_query.json"' },
+      },
+    ],
+  }) + '\n');
+
+  const preTr2 = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-transcript',
+    transcriptPath: transcriptFile,
+  }, hookOpts);
+  assert.equal(preTr2.injectSteps.length, 1);
+  assert.match(preTr2.injectSteps[0].systemMessage.systemMessage, /Trino rule: use EXPLAIN first\./);
+
+  // Direct on_demand fallback on PreToolUse -> returns ask & queues for next PreInvocation
+  const preOnDemandDirect = handleHookEvent({
+    hookEventName: 'PreToolUse',
+    conversationId: 'conv-direct-ondemand',
+    toolCall: { name: 'call_mcp_tool', args: { ServerName: 'trino-mcp', ToolName: 'list_catalogs' } },
+  }, hookOpts);
+  assert.deepEqual(preOnDemandDirect, { decision: 'ask' });
+  const preInvAfterDirect = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-direct-ondemand',
+  }, hookOpts);
+  assert.equal(preInvAfterDirect.injectSteps.length, 1);
+  assert.match(preInvAfterDirect.injectSteps[0].systemMessage.systemMessage, /Trino rule: use EXPLAIN first\./);
+
+  // 17. Hook strict mode: blocks 1st un-briefed call (call_mcp_tool & eager mcp_<server>_<tool>), allows 2nd, skips block if already briefed
+  saveServerPrompt({
+    serverName: 'strict-srv',
+    prompt: 'Never run DROP TABLE.',
+    mode: 'strict',
+  }, hookOpts);
+
+  const strictDeny1 = handleHookEvent({
+    hookEventName: 'PreToolUse',
+    conversationId: 'conv-strict-1',
+    toolCall: { name: 'call_mcp_tool', args: { ServerName: 'strict-srv', ToolName: 'exec' } },
+  }, hookOpts);
+  assert.equal(strictDeny1.decision, 'deny');
+  assert.match(strictDeny1.reason, /Never run DROP TABLE\./);
+
+  const strictRetry = handleHookEvent({
+    hookEventName: 'PreToolUse',
+    conversationId: 'conv-strict-1',
+    toolCall: { name: 'call_mcp_tool', args: { ServerName: 'strict-srv', ToolName: 'exec' } },
+  }, hookOpts);
+  assert.deepEqual(strictRetry, { decision: 'ask' });
+
+  // Eager tool mcp_<serverName>_<toolName>
+  const eagerDeny = handleHookEvent({
+    hookEventName: 'PreToolUse',
+    conversationId: 'conv-strict-eager',
+    toolCall: { name: 'mcp_strict-srv_run_query', args: {} },
+  }, hookOpts);
+  assert.equal(eagerDeny.decision, 'deny');
+  assert.match(eagerDeny.reason, /Never run DROP TABLE\./);
+  assert.deepEqual(
+    handleHookEvent({
+      hookEventName: 'PreToolUse',
+      conversationId: 'conv-strict-eager',
+      toolCall: { name: 'mcp_strict-srv_run_query', args: {} },
+    }, hookOpts),
+    { decision: 'ask' },
+  );
+
+  // If strict-srv was already briefed proactively via schema read + PreInvocation, PreToolUse does NOT deny
+  handleHookEvent({
+    hookEventName: 'PostToolUse',
+    conversationId: 'conv-strict-proactive',
+    toolCall: { name: 'read_file', args: { Path: '/tmp/.gemini/antigravity/mcp/strict-srv/exec.json' } },
+  }, hookOpts);
+  const strictProactiveInv = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-strict-proactive',
+  }, hookOpts);
+  assert.equal(strictProactiveInv.injectSteps.length, 1);
+  assert.deepEqual(
+    handleHookEvent({
+      hookEventName: 'PreToolUse',
+      conversationId: 'conv-strict-proactive',
+      toolCall: { name: 'call_mcp_tool', args: { ServerName: 'strict-srv', ToolName: 'exec' } },
+    }, hookOpts),
+    { decision: 'ask' },
+  );
+
+  // 18. Hook session_start mode: active vs disabled in mcp_config.json vs prompt enabled: false + stale session cleanup
+  mkdirSync(hookConfigRoot, { recursive: true });
+  writeFileSync(join(hookConfigRoot, 'mcp_config.json'), JSON.stringify({
+    mcpServers: {
+      'sess-active': { url: 'https://a.test/mcp' },
+      'sess-disabled': { url: 'https://b.test/mcp', disabled: true },
+    },
+  }));
+  assert.equal(isServerDisabledInConfigs('sess-active', hookOpts), false);
+  assert.equal(isServerDisabledInConfigs('sess-disabled', hookOpts), true);
+
+  saveServerPrompt({ serverName: 'sess-active', prompt: 'Active session rule', mode: 'session_start' }, hookOpts);
+  saveServerPrompt({ serverName: 'sess-disabled', prompt: 'Disabled server rule', mode: 'session_start' }, hookOpts);
+  saveServerPrompt({ serverName: 'sess-paused', prompt: 'Paused prompt rule', mode: 'session_start', enabled: false }, hookOpts);
+
+  // Create a stale 8-day-old session file to verify pruning on SessionStart
+  mkdirSync(hookStateDir, { recursive: true });
+  const staleFile = join(hookStateDir, 'old-session.json');
+  writeFileSync(staleFile, '{"conversationId":"old-session"}\n');
+  const eightDaysAgoSec = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+  utimesSync(staleFile, eightDaysAgoSec, eightDaysAgoSec);
+
+  const sessStartRes = handleHookEvent({
+    hookEventName: 'SessionStart',
+    conversationId: 'conv-sess-1',
+  }, hookOpts);
+  assert.equal(sessStartRes.injectSteps.length, 1);
+  assert.match(sessStartRes.injectSteps[0].systemMessage.systemMessage, /Active session rule/);
+  assert.doesNotMatch(sessStartRes.injectSteps[0].systemMessage.systemMessage, /Disabled server rule/);
+  assert.doesNotMatch(sessStartRes.injectSteps[0].systemMessage.systemMessage, /Paused prompt rule/);
+  assert.equal(existsSync(staleFile), false, 'Expected >7d session state file to be pruned');
+
+  // Catch-up in PreInvocation if added mid-session without SessionStart
+  saveServerPrompt({ serverName: 'sess-late', prompt: 'Late session_start rule', mode: 'session_start' }, hookOpts);
+  const lateCatchup = handleHookEvent({
+    hookEventName: 'PreInvocation',
+    conversationId: 'conv-sess-1',
+  }, hookOpts);
+  assert.equal(lateCatchup.injectSteps.length, 1);
+  assert.match(lateCatchup.injectSteps[0].systemMessage.systemMessage, /Late session_start rule/);
+
+  // 19. Real CLI subprocess stdin/stdout smoke test for mcp_prompt_hook.mjs
+  const cliOut = execFileSync(process.execPath, [HOOK_SCRIPT_PATH], {
+    input: JSON.stringify({
+      hookEventName: 'PreToolUse',
+      conversationId: 'conv-cli-smoke',
+      toolCall: { name: 'call_mcp_tool', args: { ServerName: 'strict-srv', ToolName: 'ping' } },
+    }),
+    env: {
+      ...process.env,
+      MCP_MANAGER_PROMPTS_FILE: hookPromptsFile,
+      MCP_MANAGER_HOOK_STATE_DIR: hookStateDir,
+    },
+    encoding: 'utf-8',
+  });
+  const parsedCliOut = JSON.parse(cliOut);
+  assert.equal(parsedCliOut.decision, 'deny');
+  assert.match(parsedCliOut.reason, /Never run DROP TABLE\./);
+
+  deleteServerPrompt('strict-srv', hookOpts);
 
   console.log('ALL MCP MANAGER TESTS PASSED');
 } finally {
