@@ -32,9 +32,9 @@ async function loadSidecarSdk() {
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '0.8.7-2';
+    return pkg.version || '0.8.8-1';
   } catch {
-    return '0.8.7-2';
+    return '0.8.8-1';
   }
 }
 
@@ -98,8 +98,10 @@ function sanitizeUnlockPayload(unlock) {
   if (!unlock || typeof unlock !== 'object') return null;
   return {
     status: unlock.status || 'unknown',
-    mode: unlock.mode || null,
-    limit: unlock.limit ?? null,
+    mode: unlock.configuredMode || unlock.mode || null,
+    configuredMode: unlock.configuredMode || null,
+    limit: unlock.configuredLimitTokens ?? unlock.limit ?? unlock.gate3a?.limit ?? null,
+    configuredLimitTokens: unlock.configuredLimitTokens ?? null,
     dynamicExpr: unlock.dynamicExpr || null,
     arch: unlock.arch || null,
     format: unlock.format || null,
@@ -176,7 +178,7 @@ function createUiHandlers(options = {}) {
     }
 
     try {
-      const api = await deps.localApi.connect();
+      const api = await deps.localApi.connect(options.agDir ? { agDir: options.agDir } : undefined);
       const connectedOrigin = normalize(api?.origin);
       const origins = Array.isArray(api?.origins) && api.origins.length
         ? api.origins

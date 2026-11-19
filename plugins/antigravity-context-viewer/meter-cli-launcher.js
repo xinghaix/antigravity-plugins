@@ -401,7 +401,9 @@ function resolveCliExecutable(customCliPath, options = {}) {
           '/Applications/Antigravity.app',
           path.join(home, 'Applications', 'Antigravity.app'),
           '/Applications/Antigravity IDE.app',
-          path.join(home, 'Applications', 'Antigravity IDE.app')
+          path.join(home, 'Applications', 'Antigravity IDE.app'),
+          '/Applications/Google Antigravity.app',
+          path.join(home, 'Applications', 'Google Antigravity.app')
         ];
     for (const appRoot of appRoots) {
       candidates.push(
@@ -583,6 +585,9 @@ function escapePosixArg(arg) {
  * 严格按照合法顺序：显式注入 > 生产部署状态目录 > 宿主 bin 目录 > 仓库开发/解压目录
  */
 function resolveHelperExecutable(options = {}) {
+  if (typeof options._resolveHelperExecutable === 'function') {
+    return options._resolveHelperExecutable(options);
+  }
   // 1. 显式选项指定 helperPath（测试注入或外部强制指定），不存在则明确失败
   if (options.helperPath !== undefined && options.helperPath !== null && String(options.helperPath).trim() !== '') {
     const explicit = path.resolve(String(options.helperPath).trim());

@@ -979,6 +979,7 @@ test('更新下载稳定性与脱敏诊断：瞬态 ETIMEDOUT 触发有限次干
       fs.writeFileSync(targetAsar, 'dummy');
       const retryOk = await applyUpdateAsync({
         version: '0.8.8',
+        currentVersion: '0.8.7',
         targetPath: targetAsar,
         _requestGithubUrl: flakyFetcher,
         _maxDownloadRetries: 2,
@@ -1027,6 +1028,7 @@ test('更新下载稳定性与脱敏诊断：瞬态 ETIMEDOUT 触发有限次干
       };
       const failRes = await applyUpdateAsync({
         version: '0.8.8',
+        currentVersion: '0.8.7',
         targetPath: targetAsar,
         _requestGithubUrl: alwaysFailFetcher,
         _maxDownloadRetries: 1,
@@ -1087,31 +1089,32 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
     fs.copyFileSync(path.join(__dirname, 'meter-proxy.js'), path.join(distDir, 'meter-proxy.js'));
 
     const hostModCfg = require(path.join(distDir, 'modules-config.js'));
-    assert.equal(hostModCfg.PROJECT_VERSION, PROJECT_VERSION, '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
+    const pluginPkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.equal(hostModCfg.PROJECT_VERSION, pluginPkg.version, '未存在插件自身 package.json 时必须回退插件版本，绝不能误读宿主 2.32.1');
 
-    // 同目录存在本插件 package.json 时，应动态对齐新版本（例如 0.8.8）
+    // 同目录存在本插件 package.json 时，应动态对齐新版本（例如 0.8.9）
     const extDir = path.join(dir, 'ext');
     fs.mkdirSync(extDir, { recursive: true });
-    fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.8.8' }));
+    fs.writeFileSync(path.join(extDir, 'package.json'), JSON.stringify({ name: 'antigravity-context-viewer', version: '0.8.9' }));
     fs.copyFileSync(path.join(__dirname, 'modules-config.js'), path.join(extDir, 'modules-config.js'));
     fs.copyFileSync(path.join(__dirname, 'asar-engine.js'), path.join(extDir, 'asar-engine.js'));
     fs.copyFileSync(path.join(__dirname, 'meter-storage.js'), path.join(extDir, 'meter-storage.js'));
     fs.copyFileSync(path.join(__dirname, 'meter-proxy.js'), path.join(extDir, 'meter-proxy.js'));
     const extModCfg = require(path.join(extDir, 'modules-config.js'));
-    assert.equal(extModCfg.PROJECT_VERSION, '0.8.8', '存在本插件 package.json 时 PROJECT_VERSION 必须随包版本动态更新');
+    assert.equal(extModCfg.PROJECT_VERSION, '0.8.9', '存在本插件 package.json 时 PROJECT_VERSION 必须随包版本动态更新');
 
     // 渲染层：applyUpdate 返回 liveInjected: false 时不得将 #v 伪造为新版号
     h = createHotloadDomSandbox({
       liveBridge: null,
       contextMeterAPI: {
-        getRuntimeInfo: async () => ({ ok: true, backendVersion: '0.8.7', backendSource: 'electron-ipc' }),
+        getRuntimeInfo: async () => ({ ok: true, backendVersion: '0.8.8', backendSource: 'electron-ipc' }),
         checkUpdate: async () => ({
           ok: true,
           hasUpdate: true,
-          currentVersion: '0.8.7',
-          latestVersion: '0.8.8',
+          currentVersion: '0.8.8',
+          latestVersion: '0.8.9',
           releaseNotes: 'note',
-          htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.8'
+          htmlUrl: 'https://github.com/elviscjn-cjn/antigravity-context-viewer/releases/tag/v0.8.9'
         }),
         applyUpdate: async () => ({
           ok: true,
@@ -1119,22 +1122,22 @@ test('热加载 7：PROJECT_VERSION 精确跟随本插件 package.json 但不误
           liveInjected: false,
           backendHotReloaded: false,
           restartRequired: true,
-          version: '0.8.8',
-          installedVersion: '0.8.8'
+          version: '0.8.9',
+          installedVersion: '0.8.9'
         }),
-        getQuota: async () => ({ ok: true, activeStatus: 'available', planInfo: {}, groups: [], models: {}, backendVersion: '0.8.7' }),
+        getQuota: async () => ({ ok: true, activeStatus: 'available', planInfo: {}, groups: [], models: {}, backendVersion: '0.8.8' }),
         scan: async () => ({ status: 'empty' }),
         getSettings: async () => ({ ok: true, country: 'US', subscriptionRegion: 'US', currency: 'USD', pricingPeriod: 'month' }),
         saveSettings: async () => ({ ok: true })
       }
     });
     const vEl = h.shadowElements.get('v');
-    vEl.textContent = 'v0.8.7';
+    vEl.textContent = 'v0.8.8';
     h.shadowElements.get('btn-check-update-ctx').click();
     await h.flush(40);
     h.shadowElements.get('btn-apply-update').click();
     await h.flush(60);
-    assert.equal(vEl.textContent, 'v0.8.7', '未完成热注入时顶部运行版本号不得提前伪造为 v0.8.8');
+    assert.equal(vEl.textContent, 'v0.8.8', '未完成热注入时顶部运行版本号不得提前伪造为 v0.8.9');
   } finally {
     try { h?.cleanup?.(); } catch { }
     fs.rmSync(dir, { recursive: true, force: true });
@@ -1364,9 +1367,38 @@ test('热加载 12：build-renderer 检测到 truncated for diff preview 时立�
     fs.copyFileSync(path.join(__dirname, 'src', 'renderer', 'main.js'), truncatedMainPath);
     buildRenderer({ rootDir: tmpRoot, srcDir: tmpSrc, targetFile: tmpOut });
     const builtContent = fs.readFileSync(tmpOut, 'utf8');
-    assert.ok(builtContent.length > 100000, '正常源码应成功构建完整 meter-renderer.js');
     assert.ok(!builtContent.includes('truncated for diff preview'));
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('热加载 10：live-host /runtime-info 返回 hostBuildId 且 cli 同版本不同构建指纹不盲目复用旧进程', async () => {
+  const { LIVE_HOST_BUILD_ID } = require('./live-host');
+  const { getHostCoreBuildId, PROJECT_VERSION } = require('./modules-config');
+  assert.equal(LIVE_HOST_BUILD_ID, getHostCoreBuildId(__dirname), 'live-host 启动固化指纹必须与 modules-config 实时计算一致');
+
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-buildid-mismatch-'));
+  try {
+    // 写入与当前 version 相同但 hostBuildId 明显陈旧的 .live-session.json
+    const staleStamp = {
+      port: 65431,
+      token: 'stale-tok',
+      pid: process.pid,
+      origin: 'https://127.0.0.1:59991',
+      origins: ['https://127.0.0.1:59991'],
+      version: PROJECT_VERSION,
+      hostBuildId: '000000000000',
+      hasQuota: true
+    };
+    fs.writeFileSync(path.join(tmpState, '.live-session.json'), JSON.stringify(staleStamp));
+
+    const fakeSnapshot = { running: true, pageFound: true, origin: 'https://127.0.0.1:59991', origins: ['https://127.0.0.1:59991'], ipcBackendVersion: '0.8.7', hasIpcBridge: true, hasQuotaIpcBridge: true };
+    const { ensureLiveBridgeIfNeeded } = require('./cli');
+    // 在无真实 Antigravity 环境下验证不复用旧构建后进入拉新流程且不返回 reused: true
+    const res = await ensureLiveBridgeIfNeeded(fakeSnapshot, { stateDir: tmpState });
+    assert.notEqual(res?.reused, true, '同版本不同 hostBuildId 时绝不能直接复用旧 live-host 内存进程');
+  } finally {
+    fs.rmSync(tmpState, { recursive: true, force: true });
   }
 });

@@ -12,8 +12,9 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, findAsarPath } = require('./asar-engine');
-const { loadModulesConfig, saveModulesConfig, acquireFileLock } = require('./modules-config');
+const { loadAsarEngine, builtinAsar, collectUnpackedPaths, getStateDir, getAppDataDir, isIsolatedTestPath, findAsarPath } = require('./asar-engine');
+const { discoverAntigravityCdp, createCdpClient } = require('./local-api');
+const { loadModulesConfig, saveModulesConfig, acquireFileLock, getHostCoreBuildId } = require('./modules-config');
 const {
   TAGS,
   validateSyntax,
@@ -205,39 +206,31 @@ async function tryHotInjectDetailed(options = {}) {
     windows: []
   };
   try {
-    const appData = process.env.APPDATA || (process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : path.join(os.homedir(), '.config'));
+    const appData = getAppDataDir(options);
 
-    // 严格安全隔离门禁：若处于测试模式，严禁连接真实运行环境的 AppData/DevTools 端口！
-    if (process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') {
-      const isIsolatedTemp = appData.toLowerCase().includes(os.tmpdir().toLowerCase());
-      if (!isIsolatedTemp) {
+    // 严格安全隔离门禁：若处于测试模式且未显式指定隔离路径或显式测试端口，严禁连接真实宿主机 DevTools 端口！
+    if ((process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test') && !options.port && !options.appDataDir) {
+      if (!isIsolatedTestPath(appData)) {
         report.reason = 'test_mode_isolated';
         return report;
       }
     }
 
-    const portFile = path.join(appData, 'Antigravity', 'DevToolsActivePort');
-    if (!fs.existsSync(portFile)) {
-      report.reason = 'cdp_not_enabled';
+    let targets;
+    try {
+      const cdp = await discoverAntigravityCdp(options);
+      targets = Array.isArray(cdp.pages) ? cdp.pages : [];
+    } catch (cdpErr) {
+      const msg = String(cdpErr?.message || '');
+      if (msg.includes('未找到 Antigravity 主窗口')) {
+        report.reason = 'no_page_targets';
+      } else if (msg.includes('连接信息无效')) {
+        report.reason = 'invalid_cdp_port';
+      } else {
+        report.reason = 'cdp_not_enabled';
+      }
       return report;
     }
-    const port = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
-    if (!port) {
-      report.reason = 'invalid_cdp_port';
-      return report;
-    }
-    const pages = await new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json/list`, { agent: false }, res => {
-        let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-      });
-      req.setTimeout(2500, () => req.destroy(new Error('timeout')));
-      req.on('error', reject);
-    });
-    const targets = pages.filter(p => p.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(p.url));
     report.windowCount = targets.length;
     if (!targets.length) {
       report.reason = 'no_page_targets';
@@ -256,7 +249,7 @@ async function tryHotInjectDetailed(options = {}) {
     try {
       pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || null;
     } catch { }
-    const stateDir = getStateDir();
+    const stateDir = options.stateDir || getStateDir();
     const livePath = fs.existsSync(path.join(stateDir, '.live-session.json'))
       ? path.join(stateDir, '.live-session.json')
       : path.join(__dirname, '.live-session.json');
@@ -297,28 +290,10 @@ async function tryHotInjectDetailed(options = {}) {
     for (const target of targets) {
       const targetOrigin = new URL(target.url).origin;
       const winEntry = { origin: targetOrigin, injected: false, rendererVersion: null, backendSource: null, backendVersion: null, error: null };
-      let ws = null;
+      let cdpClient = null;
       try {
-        ws = new WebSocket(target.webSocketDebuggerUrl);
-        await new Promise((resolve, reject) => {
-          ws.addEventListener('open', resolve, { once: true });
-          ws.addEventListener('error', reject, { once: true });
-        });
-        let seq = 0;
-        const evalExpr = (expression, evalTimeoutMs = 6000) => new Promise((resolve, reject) => {
-          const id = ++seq;
-          const timer = setTimeout(() => reject(new Error('CDP eval timeout')), evalTimeoutMs);
-          const handler = ev => {
-            const d = JSON.parse(ev.data);
-            if (d.id === id) {
-              clearTimeout(timer);
-              ws.removeEventListener('message', handler);
-              resolve(d);
-            }
-          };
-          ws.addEventListener('message', handler);
-          ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-        });
+        cdpClient = await createCdpClient(target.webSocketDebuggerUrl, { timeoutMs: 5000 });
+        const evalExpr = (expression, evalTimeoutMs = 6000) => cdpClient.evaluate(expression, { timeoutMs: evalTimeoutMs });
 
         if (onlyChinese) {
           const chineseRes = await evalExpr(chineseScript);
@@ -369,7 +344,7 @@ async function tryHotInjectDetailed(options = {}) {
           }
 
           const evalRes = await evalExpr(bundle, 8000);
-          if (evalRes && !evalRes.error && !evalRes.result?.exceptionDetails) {
+          if (evalRes && !evalRes.error && !evalRes.exceptionDetails && !evalRes.result?.exceptionDetails) {
             winEntry.injected = true;
             report.injectedCount++;
             try {
@@ -401,14 +376,14 @@ async function tryHotInjectDetailed(options = {}) {
               try { await evalExpr(chineseScript); } catch {}
             }
           } else {
-            winEntry.error = evalRes?.result?.exceptionDetails?.text || evalRes?.error?.message || 'eval_failed';
+            winEntry.error = evalRes?.exceptionDetails?.text || evalRes?.result?.exceptionDetails?.text || evalRes?.error?.message || 'eval_failed';
           }
         }
       } catch (e) {
         winEntry.error = e.message;
       } finally {
-        if (ws) {
-          try { ws.close(); } catch { }
+        if (cdpClient) {
+          try { cdpClient.close(); } catch { }
         }
       }
       report.windows.push(winEntry);
@@ -759,6 +734,8 @@ async function install(options = {}) {
         'meter-cli-launcher.js',
         'meter-context-unlock.js',
         'meter-enhance.js',
+        'meter-accounts.js',
+        'macos-binary-utils.js',
         'local-api.js',
         'attachment_scan.py'
       ];
@@ -822,13 +799,28 @@ async function install(options = {}) {
       ].map(p => path.normalize(p));
       for (const file of originalEntries) {
         const name = path.normalize(file.slice(1));
-        const before = asar.statFile(sourceArchive, name);
-        const after = asar.statFile(packed, name);
-        if (before.files || before.link) continue;
+        let before = null;
+        let after = null;
+        try { before = asar.statFile(sourceArchive, name); } catch {}
+        try { after = asar.statFile(packed, name); } catch {}
+        if (!before || before.files || before.link) continue;
+        if (!after) throw new Error(`Target missing file after pack: ${name}`);
         if (!!before.unpacked !== !!after.unpacked) throw new Error(`Unpack flag changed: ${name}`);
         const isAllowed = allowedChanges.includes(name) || name.startsWith('dist' + path.sep + 'i18n' + path.sep);
-        if (!isAllowed && sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
-          throw new Error(`Unexpected file change: ${name}`);
+        if (!isAllowed) {
+          if (!before.unpacked) {
+            if (sha(asar.extractFile(sourceArchive, name)) !== sha(asar.extractFile(packed, name))) {
+              throw new Error(`Unexpected file change: ${name}`);
+            }
+          } else {
+            let bBuf = null;
+            let aBuf = null;
+            try { bBuf = builtinAsar.extractFile(sourceArchive, name); } catch {}
+            try { aBuf = builtinAsar.extractFile(packed, name); } catch {}
+            if (bBuf && aBuf && sha(bBuf) !== sha(aBuf)) {
+              throw new Error(`Unexpected unpacked file change: ${name}`);
+            }
+          }
         }
         verified++;
       }
@@ -988,6 +980,30 @@ async function install(options = {}) {
   }
 }
 
+function getRendererBuildId(filePath = null) {
+  try {
+    const p = filePath || path.join(__dirname, 'meter-renderer.js');
+    if (!fs.existsSync(p)) return null;
+    return sha(fs.readFileSync(p)).slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
+function getWatchBundleBuildId(baseDir = null) {
+  try {
+    const root = baseDir || __dirname;
+    const h = crypto.createHash('sha256');
+    for (const f of ['meter-core.js', 'meter-renderer.js', 'live-host.js', 'meter-collector.js', 'meter-storage.js', 'meter-proxy.js', 'meter-cli-launcher.js', 'meter-context-unlock.js', 'meter-enhance.js', 'meter-accounts.js', 'macos-binary-utils.js', 'local-api.js', 'modules-config.js', 'asar-engine.js', 'package.json']) {
+      const p = path.join(root, f);
+      if (fs.existsSync(p)) h.update(f + ':').update(fs.readFileSync(p));
+    }
+    return h.digest('hex').slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
 if (require.main === module) {
   install()
     .then(manifest => console.log(JSON.stringify(manifest, null, 2)))
@@ -1004,5 +1020,8 @@ module.exports = {
   tryHotInjectDetailed,
   probeLiveHostRuntimeInfo,
   shutdownLiveHostGracefully,
-  extractAsarFile
+  extractAsarFile,
+  getRendererBuildId,
+  getHostCoreBuildId,
+  getWatchBundleBuildId
 };

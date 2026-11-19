@@ -1,8 +1,9 @@
 (function () {
-  const METER_VERSION = '0.8.7-2';
+  const METER_VERSION = '0.8.8-1';
+  const METER_DISPLAY_VERSION = 'v0.8.8-1';
 
   'use strict';
-  if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1') return;
+  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
 
   // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
   let inheritedHotReloadState = null;
@@ -103,11 +104,24 @@
     isValidSpeedSample,
     computeMedian,
     summarizeSpeedByModel,
+    computeCacheReadStats,
+    summarizeCacheReadStats,
+    normalizeSessionCallRecord,
+    sanitizeTurnPreviewText,
+    groupSessionCallsByTurns,
+    ELV91_SCORE_RULE_VERSION,
+    formatHumanDuration,
+    computeStreamStability,
+    calculateExperienceScore,
+    evaluateGenerationExperience,
     getLvlForRange,
     getDailyModelCost,
     calculateIntervalCost,
     convertToCNY,
-    resolveEffectivePlanStatus
+    resolveEffectivePlanStatus,
+    selectPrimaryQuotaBucket,
+    splitModelDisplayAndEffort,
+    resolvePlaceholderModelInfo
   } = (globalThis.__AGContextMeterCore || {});
   const host = document.createElement('div');
   host.id = 'ag-context-meter';
@@ -134,6 +148,9 @@
       activeDaysCount: 0
     },
     dailyMap: {},
+    dailyModelMap: {},
+    dailyModelMapBySource: null,
+    modelMetaByKey: null,
     speedRecords: []
   };
 
@@ -421,6 +438,12 @@
     #badge-quota[data-quota-state="stale"] .quota-ring-fill{ stroke:var(--ag-ring-warn); opacity:0.78; }
     #badge-quota[data-quota-state="error"] .quota-ring-fill{ stroke:#f97316; }
     #badge-quota[data-quota-state="unknown"] .quota-ring-fill{ stroke:var(--ag-text-muted); opacity:0.55; }
+    .quota-badge-metric{
+      display:inline-flex;
+      align-items:baseline;
+      line-height:1;
+      gap:0;
+    }
     .quota-badge-val{
       display:inline;white-space:nowrap;line-height:1;
       font-size:12px;font-weight:500;font-variant-numeric:tabular-nums;
@@ -440,7 +463,7 @@
     :host([data-theme="light"]) #badge-quota[data-quota-state="no_permission"] .quota-badge-val{ color:#7e22ce; }
     .quota-badge-tag{
       display:inline;white-space:nowrap;line-height:1;
-      font-size:11px;font-weight:400;padding:0;margin-left:-4px;
+      font-size:11px;font-weight:400;padding:0;margin-left:0;
       border-radius:0;background:transparent;
       color:var(--ag-custom-context-text,var(--ag-context-text-default));
       opacity:0.65;
@@ -456,7 +479,7 @@
     #badge-quota[aria-expanded="true"] .quota-badge-tag{
       color:var(--ag-custom-context-text,var(--ag-toolbar-fg-hover));
     }
-    :host([data-layout="compact"]) #badge-quota{ padding:0 5px 0 4px;gap:3px; }
+    :host([data-layout="compact"]) #badge-quota{ padding:0 4px 0 3px;gap:2.5px; }
     :host([data-layout="compact"]) .quota-badge-tag{ display:none!important; }
     :host([data-layout="minimal"]) #badge-quota,
     :host([data-layout="ring-only"]) #badge-quota{ display:none!important; }
@@ -653,17 +676,15 @@
     }
     :host([data-layout="minimal"]) #badge-speed,
     :host([data-layout="minimal"]) #badge-tokens,
-    :host([data-layout="minimal"]) #badge-cli{
-      display:none!important;
-    }
-    :host([data-layout="minimal"]) #badge-overflow{
-      display:inline-flex!important;
-    }
+    :host([data-layout="minimal"]) #badge-cli,
     :host([data-layout="ring-only"]) #badge-speed,
     :host([data-layout="ring-only"]) #badge-tokens,
-    :host([data-layout="ring-only"]) #badge-cli,
-    :host([data-layout="ring-only"]) #badge-overflow{
+    :host([data-layout="ring-only"]) #badge-cli{
       display:none!important;
+    }
+    :host([data-layout="minimal"]) #badge-overflow,
+    :host([data-layout="ring-only"]) #badge-overflow{
+      display:inline-flex!important;
     }
 
     /* 上下文悬停信息气泡（严格还原参考图三层结构） */
@@ -798,6 +819,148 @@
     .switch-pill-btn.active{
       background:var(--ag-unified-bg);color:var(--ag-text-primary);font-weight:600;
       box-shadow:0 1px 3px rgba(0,0,0,0.18);
+    }
+    .model-usage-card{
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
+      border-radius:8px;padding:14px;margin-bottom:10px;
+    }
+    .model-usage-header{
+      display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;
+    }
+    .model-usage-title{
+      font-size:13.5px;font-weight:600;color:var(--ag-text-primary);margin-bottom:2px;
+    }
+    .model-usage-subtitle{
+      font-size:11px;color:var(--ag-text-muted);line-height:1.4;
+    }
+    .model-usage-controls{
+      display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px;
+    }
+    .model-usage-right-ctrls{
+      display:flex;align-items:center;flex-wrap:wrap;gap:6px;
+    }
+    .model-unattr-btn{
+      border:1px solid var(--ag-border-subcard);padding:2px 8px;
+    }
+    .model-usage-nav-row{
+      display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;
+    }
+    .model-usage-range-wrap{
+      display:flex;align-items:center;gap:8px;
+    }
+    .model-usage-range-lbl{
+      font-size:12px;font-weight:500;color:var(--ag-text-secondary);
+    }
+    .model-usage-nav-btns{
+      display:flex;align-items:center;gap:4px;
+    }
+    .model-usage-chart-wrap{
+      position:relative;padding-top:10px;margin-bottom:14px;
+    }
+    .model-usage-gridlines{
+      position:absolute;left:0;right:0;top:10px;height:140px;
+      pointer-events:none;
+    }
+    .model-usage-gridline{
+      position:relative;border-top:1px solid rgba(148,163,184,0.14);width:100%;
+    }
+    .model-usage-tick-line{
+      position:absolute;left:0;right:0;border-top:1px dashed rgba(148,163,184,0.22);pointer-events:none;
+    }
+    .model-usage-tick-lbl{
+      position:absolute;right:2px;top:-11px;font-size:9px;color:var(--ag-text-muted);opacity:0.86;background:transparent;
+    }
+    .model-chart-max-lbl{
+      position:absolute;right:0;top:-14px;font-size:9.5px;color:var(--ag-text-muted);opacity:0.85;
+    }
+    .model-usage-bars{
+      position:relative;z-index:1;height:140px;
+      display:flex;align-items:flex-end;gap:8px;padding:0 36px 0 6px;
+    }
+    .model-usage-bars.compact-30{
+      gap:3px;padding:0 34px 0 2px;
+    }
+    .model-usage-col{
+      flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;cursor:pointer;
+    }
+    .model-usage-stack{
+      position:relative;width:100%;max-width:44px;display:flex;flex-direction:column-reverse;overflow:hidden;
+      border-radius:3px 3px 0 0;transition:filter .14s,transform .14s,opacity .14s;
+    }
+    .model-usage-stack::after{
+      content:'';position:absolute;left:0;right:0;top:0;height:1px;background:rgba(255,255,255,0.48);pointer-events:none;
+    }
+    .model-usage-stack.is-overflow{
+      box-shadow:0 -2px 8px rgba(232,121,249,0.55);
+    }
+    .model-usage-stack.is-overflow::after{
+      height:2px;background:#e879f9;
+    }
+    .model-usage-bars.compact-30 .model-usage-stack{
+      max-width:18px;border-radius:3px 3px 0 0;
+    }
+    .model-usage-col:hover .model-usage-stack{
+      filter:brightness(1.1);
+    }
+    .model-usage-seg{
+      width:100%;opacity:0.92;transition:height .2s cubic-bezier(0.16,1,0.3,1),opacity .14s;flex-shrink:0;
+    }
+    .model-usage-seg.is-dimmed{
+      opacity:0.16!important;
+    }
+    .model-usage-col:hover .model-usage-seg:not(.is-dimmed){
+      opacity:1;
+    }
+    .model-usage-empty-bar{
+      width:100%;max-width:44px;height:1px;border-radius:1px 1px 0 0;background:rgba(148,163,184,0.18);
+    }
+    .model-usage-bars.compact-30 .model-usage-empty-bar{
+      max-width:18px;
+    }
+    .model-usage-xaxis{
+      display:flex;align-items:center;gap:8px;padding:6px 36px 0 6px;border-top:1px solid rgba(148,163,184,0.18);
+    }
+    .model-usage-xaxis.compact-30{
+      gap:3px;padding:6px 34px 0 2px;
+    }
+    .model-usage-xlabel{
+      flex:1;min-width:0;text-align:center;font-size:10.5px;color:var(--ag-text-muted);white-space:nowrap;
+    }
+    .model-usage-empty{
+      text-align:center;padding:24px 0;font-size:11.5px;color:var(--ag-text-muted);
+    }
+    .model-usage-legend{
+      display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 14px;padding-top:4px;
+    }
+    .model-legend-item{
+      display:flex;align-items:stretch;gap:9px;min-width:0;cursor:pointer;border-radius:4px;padding:2px 3px;transition:opacity .14s,background-color .14s;
+    }
+    .model-legend-item:hover{
+      background:rgba(148,163,184,0.08);
+    }
+    .model-legend-item.is-dimmed{
+      opacity:0.35;
+    }
+    .model-legend-item.is-locked{
+      background:rgba(167,139,250,0.12);
+    }
+    .model-legend-bar{
+      width:3px;border-radius:999px;flex-shrink:0;min-height:30px;
+    }
+    .model-legend-text{
+      display:flex;flex-direction:column;justify-content:center;min-width:0;
+    }
+    .model-legend-name{
+      font-size:11px;color:var(--ag-text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;
+    }
+    .model-legend-val-row{
+      display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;
+    }
+    .model-legend-pct{
+      font-size:14px;font-weight:700;color:var(--ag-text-primary);line-height:1.15;letter-spacing:-0.2px;
+    }
+    .model-legend-meta{
+      font-size:10px;color:var(--ag-text-muted);white-space:nowrap;
     }
     .plan-summary-price-badge{
       display:inline-flex;align-items:center;gap:4px;
@@ -944,18 +1107,38 @@
 
     /* Antigravity 原生定制下拉组件样式与动效 */
     .ag-dropdown-wrapper{
-      position:relative;width:100%;box-sizing:border-box;
+      position:relative;width:100%;box-sizing:border-box;min-width:0;
     }
     .ag-dropdown-trigger{
-      width:100%;box-sizing:border-box;
+      width:100%;box-sizing:border-box;min-width:0;
       display:flex;align-items:center;justify-content:space-between;gap:6px;
       padding:5px 8px;font-size:11px;
       color:var(--ag-text-primary);
       background:var(--ag-bg-input);
       border:1px solid var(--ag-border-subcard);
       border-radius:5px;
-      cursor:pointer;user-select:none;
+      cursor:pointer;user-select:none;outline:none;
       transition:background .15s cubic-bezier(0.16,1,0.3,1),border-color .15s cubic-bezier(0.16,1,0.3,1),box-shadow .15s cubic-bezier(0.16,1,0.3,1);
+    }
+    .ag-dropdown-trigger:focus-visible{
+      border-color:var(--ag-token-accent-default,#a78bfa);
+      box-shadow:0 0 0 2px rgba(167,139,250,0.22);
+    }
+    .ag-dropdown-label{
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;text-align:left;
+    }
+    .ag-dropdown-compact .ag-dropdown-trigger{
+      padding:3.5px 8px;font-size:10.5px;min-height:24px;border-radius:5px;
+      border-color:var(--ag-border-card);
+    }
+    .ag-dropdown-wrapper.align-right .ag-dropdown-menu{
+      left:auto;right:0;min-width:max(100%, 190px);max-width:min(300px, calc(100vw - 28px));
+    }
+    .ag-dropdown-item-text{
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;
+    }
+    .token-account-dropdown{
+      flex:0 1 240px;min-width:150px;max-width:260px;width:auto;
     }
     .ag-dropdown-trigger:hover{
       background:rgba(255,255,255,0.08);
@@ -1354,10 +1537,10 @@
     .key-bar-fill{height:100%;width:0%;border-radius:3px;background:var(--ag-custom-ring-used,var(--bar-color,#69c0ff));transition:width .24s ease,background-color .2s ease}
     :host([data-occupancy="warn"]) .key-bar-fill{background:var(--ag-ring-warn)}
     :host([data-occupancy="danger"]) .key-bar-fill{background:var(--ag-ring-danger)}
-    .key-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:7px}
-    .key-stat{background:var(--ag-bg-subcard);padding:6px 4px;border-radius:6px;border:1px solid var(--ag-border-subcard)}
-    .key-stat-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px}
-    .key-stat-val{font-size:12px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .key-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;margin-bottom:7px;min-width:0}
+    .key-stat{background:var(--ag-bg-subcard);padding:6px 5px;border-radius:6px;border:1px solid var(--ag-border-subcard);min-width:0}
+    .key-stat-label{font-size:10px;color:var(--ag-text-muted);margin-bottom:2px;overflow-wrap:anywhere}
+    .key-stat-val{font-size:11.5px;font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums;overflow-wrap:anywhere;word-break:break-word;white-space:normal;line-height:1.28}
     #key-used{color:var(--ag-custom-context-text,var(--ag-text-primary))}
     .key-takeaway{font-size:11px;color:var(--ag-text-secondary);padding-top:6px;border-top:1px solid var(--ag-border-subcard);line-height:1.4}
 
@@ -1430,12 +1613,15 @@
     .heat-tab-btn:focus-visible{box-shadow:0 0 0 1.5px var(--ag-token-accent-default,#a78bfa)}
 
     .heat-scroll-box{overflow-x:auto;overflow-y:hidden;padding:6px 6px 4px 6px}
+    .heat-scroll-box.is-cum-active{overflow:visible}
     .heat-grid-cols{display:flex;gap:3px}
     .heat-week-col{display:flex;flex-direction:column;gap:3px}
     .heat-cell{width:10px;height:10px;border-radius:2px;background:var(--ag-heat-lvl-0);cursor:pointer;transition:transform .12s ease}
     .heat-cell:hover{transform:scale(1.3);z-index:5;outline:1.5px solid var(--ag-heat-outline)}
     .heat-cell.is-future{opacity:0.36}
+    .heat-cell.is-unactivated{opacity:0.35}
     .heat-cell.is-today{outline:1.5px solid var(--ag-custom-token-accent,var(--ag-token-accent-default));outline-offset:0.5px}
+    .heat-cell.is-cum-linked{outline:2px solid #e879f9;outline-offset:1px;transform:scale(1.28);z-index:6;box-shadow:0 0 8px rgba(232,121,249,0.75)}
     .lvl-0{background:var(--ag-heat-lvl-0)}
     .lvl-1{background:var(--ag-heat-lvl-1)}
     .lvl-2{background:var(--ag-heat-lvl-2)}
@@ -1445,20 +1631,107 @@
     .heat-months{position:relative;height:18px;margin-top:4px;font-size:11px;color:var(--ag-text-muted);overflow:hidden}
     .heat-month-item{position:absolute;white-space:nowrap}
 
-    #h-weekly-box{display:none;height:105px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding-bottom:3px}
-    .w-bar-col{flex:1;height:100%;display:flex;align-items:flex-end;cursor:pointer}
-    .w-bar-fill{width:100%;border-radius:2px 2px 0 0;background:var(--ag-heat-lvl-0);min-height:3px;transition:height .22s ease,background-color .14s ease}
-    .w-bar-col:hover .w-bar-fill{background:var(--ag-custom-token-accent,var(--ag-heat-lvl-4))!important}
+    #h-weekly-box{position:relative;display:none;height:105px;align-items:flex-end;gap:3px;border-bottom:1px solid var(--ag-border-subtle);padding:6px 34px 3px 0}
+    .w-bar-col{flex:1;height:100%;display:flex;align-items:flex-end;cursor:pointer;position:relative;z-index:1}
+    .w-bar-fill{position:relative;width:100%;border-radius:2px 2px 0 0;background:var(--ag-heat-lvl-0);transition:height .22s ease,background-color .14s ease}
+    .w-bar-fill.is-empty{height:1px!important;background:rgba(148,163,184,0.25);border-radius:0}
+    .w-bar-fill.is-overflow::after{content:'';position:absolute;left:0;right:0;top:0;height:2px;background:#e879f9;box-shadow:0 -1px 6px rgba(232,121,249,0.65)}
+    .w-bar-col:hover .w-bar-fill:not(.is-empty){filter:brightness(1.14)}
+    .w-ref-line{position:absolute;left:0;right:0;border-top:1px dashed rgba(148,163,184,0.2);pointer-events:none}
+    .w-ref-lbl{position:absolute;right:0;top:-10px;font-size:8.5px;color:var(--ag-text-muted);opacity:0.82}
 
     #h-monthly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
     .heat-month-grid{display:grid;width:100%;height:100%;align-content:center;justify-content:center}
     .heat-month-cell{display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;transition:transform .12s ease}
+    .heat-month-cell.is-unactivated{opacity:0.35}
+    .heat-month-cell.is-future{opacity:0.36}
     .heat-month-cell:hover{transform:scale(1.18);z-index:5;outline:1.5px solid var(--ag-heat-outline,#fff)}
     .heat-month-cell-num{font-size:9.5px;font-weight:600;color:rgba(255,255,255,0.9);text-shadow:0 1px 2px rgba(0,0,0,0.65);pointer-events:none}
     :host([data-theme="light"]) .heat-month-cell-num{color:#18181b;text-shadow:none}
 
     #h-yearly-box{display:none;height:105px;width:100%;box-sizing:border-box;align-items:center;justify-content:center}
     .heat-yearly-svg{width:100%;height:105px;display:block;overflow:visible}
+
+    /* 累计总量 (A+C 推荐方案：摘要头 + 跨账号对数量级尺 + 比例时间带) */
+    #h-cum-box{display:none;width:100%;height:auto;min-height:0;overflow:visible;position:relative;box-sizing:border-box}
+    .cum-root{display:flex;flex-direction:column;gap:8px;width:100%;padding:2px 2px 4px;box-sizing:border-box}
+    .cum-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 12px}
+    .cum-head-left{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 10px}
+    .cum-total-big{font-size:19px;font-weight:700;color:var(--ag-text-primary);letter-spacing:-0.3px;font-variant-numeric:tabular-nums}
+    .cum-meta-text{font-size:11px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .cum-head-cost{font-size:12px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));font-variant-numeric:tabular-nums;white-space:nowrap}
+
+    .cum-ruler-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard)}
+    .cum-ruler-top{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--ag-text-muted);gap:6px}
+    .cum-ruler-badge{font-weight:600;color:var(--ag-text-primary);font-variant-numeric:tabular-nums}
+    .cum-ruler-badge.is-below-min{color:#eab308}
+    .cum-ruler-badge.is-above-max{color:#e879f9}
+    .cum-ruler-badge.is-zero{color:var(--ag-text-muted)}
+    .cum-ruler-track-wrap{position:relative;height:26px;margin:2px 8px 0}
+    .cum-ruler-track{position:absolute;left:0;right:0;top:10px;height:4px;border-radius:999px;background:rgba(148,163,184,0.22)}
+    .cum-ruler-tick{position:absolute;top:7px;width:1px;height:10px;background:rgba(148,163,184,0.48);transform:translateX(-0.5px)}
+    .cum-ruler-tick-lbl{position:absolute;top:13px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--ag-text-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+    .cum-ruler-tick[data-edge="start"] .cum-ruler-tick-lbl{left:0;transform:none}
+    .cum-ruler-tick[data-edge="end"] .cum-ruler-tick-lbl{left:auto;right:0;transform:none}
+    .cum-ruler-marker{position:absolute;top:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;pointer-events:none}
+    .cum-ruler-tri{width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa));filter:drop-shadow(0 0 4px rgba(167,139,250,0.65))}
+    .cum-ruler-marker.is-below-min .cum-ruler-tri{border-top-color:#eab308;filter:none}
+    .cum-ruler-marker.is-above-max .cum-ruler-tri{border-top-color:#e879f9;filter:drop-shadow(0 0 6px rgba(232,121,249,0.85))}
+    .cum-ruler-marker.is-zero{opacity:0.45}
+
+    .cum-strip-section{display:flex;flex-direction:column;gap:3px}
+    .cum-peak-chips{display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-height:16px}
+    .cum-peak-chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(167,139,250,0.14);border:1px solid rgba(167,139,250,0.32);color:var(--ag-text-primary);cursor:pointer;font-variant-numeric:tabular-nums}
+    .cum-peak-chip:hover,.cum-peak-chip.is-active{background:rgba(167,139,250,0.28);border-color:#a78bfa}
+    .cum-group-hint{margin-left:auto;font-size:9.5px;color:var(--ag-text-muted)}
+
+    .cum-strip{display:flex;width:100%;height:26px;border-radius:5px;overflow:hidden;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);box-sizing:border-box}
+    .cum-seg{position:relative;height:100%;min-width:1px;border:0;padding:0;margin:0;cursor:pointer;box-sizing:border-box;border-right:1px solid rgba(15,23,42,0.28);display:flex;align-items:center;justify-content:center;overflow:hidden;transition:filter .12s ease,opacity .12s ease;outline:none}
+    :host([data-theme="light"]) .cum-seg{border-right:1px solid rgba(255,255,255,0.5)}
+    .cum-seg:last-child{border-right:0}
+    .cum-seg-lbl{font-size:9.5px;font-weight:600;color:rgba(255,255,255,0.92);text-shadow:0 1px 2px rgba(0,0,0,0.6);white-space:nowrap;padding:0 3px;pointer-events:none;overflow:hidden;text-overflow:ellipsis}
+    :host([data-theme="light"]) .cum-seg-lbl{color:#fff;text-shadow:0 1px 1px rgba(0,0,0,0.35)}
+    .cum-seg.is-peak{box-shadow:inset 0 2px 0 rgba(255,255,255,0.45)}
+    .cum-seg:hover,.cum-seg:focus-visible{filter:brightness(1.16);z-index:2;box-shadow:inset 0 0 0 1.5px #fff}
+    .cum-seg.is-active{filter:brightness(1.22);z-index:3;box-shadow:inset 0 0 0 1.5px #e879f9}
+    .cum-seg.is-dimmed{opacity:0.42}
+
+    .cum-connectors-svg{width:100%;height:18px;display:block;overflow:visible}
+    .cum-conn-line{stroke:rgba(148,163,184,0.3);stroke-width:1;fill:none;transition:stroke .12s ease,stroke-width .12s ease}
+    .cum-conn-line.is-active{stroke:#e879f9;stroke-width:1.8}
+
+    .cum-axis-row{position:relative;width:100%;height:26px}
+    .cum-axis-slot{position:absolute;top:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;cursor:pointer;padding:0 2px;border:0;background:transparent;color:var(--ag-text-muted);outline:none}
+    .cum-axis-slot:focus-visible .cum-axis-dot,.cum-axis-slot:hover .cum-axis-dot,.cum-axis-slot.is-active .cum-axis-dot{transform:scale(1.6);background:#e879f9}
+    .cum-axis-dot{width:4px;height:4px;border-radius:999px;background:rgba(148,163,184,0.6);margin-top:2px;transition:transform .12s ease,background-color .12s ease}
+    .cum-axis-dot.is-peak{width:5px;height:5px;background:#a78bfa}
+    .cum-axis-zero{font-size:9px;line-height:10px;font-weight:700;color:var(--ag-text-muted);margin-top:-1px}
+    .cum-axis-slot.is-active .cum-axis-zero,.cum-axis-slot:hover .cum-axis-zero,.cum-axis-slot:focus-visible .cum-axis-zero{color:#e879f9}
+    .cum-axis-lbl{font-size:9px;color:var(--ag-text-muted);white-space:nowrap;margin-top:3px;font-variant-numeric:tabular-nums}
+
+    .cum-conclusion-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:11px;color:var(--ag-text-secondary);padding:5px 8px;border-radius:6px;background:rgba(167,139,250,0.07);border:1px solid rgba(167,139,250,0.18)}
+    .cum-conclusion-row strong{color:var(--ag-text-primary);font-weight:600}
+    .cum-conclusion-row.is-insufficient{color:var(--ag-text-muted);background:var(--ag-bg-subcard);border-color:var(--ag-border-subcard)}
+
+    .cum-inspector{display:flex;flex-direction:column;gap:6px;padding:7px 9px;border-radius:6px;background:var(--ag-bg-subcard);border:1px solid rgba(167,139,250,0.38);font-size:11px}
+    .cum-insp-top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px}
+    .cum-insp-metrics{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;font-variant-numeric:tabular-nums;color:var(--ag-text-secondary)}
+    .cum-insp-metrics strong{color:var(--ag-text-primary)}
+    .cum-insp-actions{display:flex;align-items:center;gap:5px}
+    .cum-mini-btn{border:1px solid var(--ag-border-subcard);background:var(--ag-bg-card);color:var(--ag-text-primary);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;white-space:nowrap}
+    .cum-mini-btn:hover{border-color:#a78bfa;background:rgba(167,139,250,0.14)}
+    .cum-week-days{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px;padding-top:4px;border-top:1px dashed var(--ag-border-subtle)}
+    .cum-day-row-btn{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;border:1px solid var(--ag-border-subcard);background:var(--ag-bg-card);color:var(--ag-text-secondary);font-size:10px;cursor:pointer;font-variant-numeric:tabular-nums}
+    .cum-day-row-btn:hover,.cum-day-row-btn.is-active{border-color:#a78bfa;color:var(--ag-text-primary);background:rgba(167,139,250,0.14)}
+
+    .cum-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:18px 12px;border-radius:6px;background:var(--ag-bg-subcard);border:1px dashed var(--ag-border-subcard);text-align:center}
+    .cum-empty-title{font-size:12px;font-weight:600;color:var(--ag-text-primary)}
+    .cum-empty-sub{font-size:10.5px;color:var(--ag-text-muted)}
+
+    .cum-root.is-narrow .cum-connectors-svg,
+    .cum-root.is-narrow .cum-axis-row,
+    .cum-root.is-narrow .cum-seg-lbl,
+    .cum-root.is-narrow .cum-ruler-tick[data-mid="true"] .cum-ruler-tick-lbl{display:none}
     @keyframes bubblePopIn{0%{transform:scale(0.6);opacity:0}100%{transform:scale(1);opacity:1}}
     .heat-yearly-bubble-group{transform-origin:center center;animation:bubblePopIn 0.22s cubic-bezier(0.16,1,0.3,1) both;cursor:pointer}
     /* 上下文加长面板样式 */
@@ -1525,9 +1798,6 @@
 
     @media (prefers-reduced-motion: reduce){.heat-yearly-bubble-group{animation:none!important}}
     .heat-yearly-bubble-group:hover circle.bubble-main{filter:brightness(1.22);stroke:var(--ag-text-primary);stroke-width:1.5px}
-
-    #h-cum-box{display:none;height:105px;position:relative}
-    canvas#h-cum-canvas{width:100%;height:105px;display:block}
 
     .heat-summary-bar{
       display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
@@ -1948,9 +2218,175 @@
       .ctx-tier-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
       .ctx-enhance-status-grid{grid-template-columns:1fr}
       .color-grid{grid-template-columns:1fr}
+      .model-usage-legend{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 10px}
+      .call-detail-grid{grid-template-columns:1fr}
+    }
+    .model-usage-legend{max-height:220px;overflow-y:auto}
+
+    /* 缓存读取占比与输入输出细分条 */
+    .token-cache-breakdown{
+      display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;
+      padding:8px 11px;margin:0 0 12px;font-size:11px;line-height:1.35;
+    }
+    .tcb-item{display:inline-flex;align-items:baseline;gap:5px;min-width:0}
+    .tcb-lbl{color:var(--ag-text-muted);font-size:10.5px;white-space:nowrap}
+    .tcb-val{color:var(--ag-text-primary);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .tcb-ratio-item{margin-left:auto}
+    .tcb-ratio-val{color:var(--ag-custom-token-accent,var(--ag-token-accent-default))}
+    .tcb-ratio-bar-track{flex:1 1 100%;height:3px;border-radius:999px;background:rgba(148,163,184,0.18);overflow:hidden;margin-top:1px}
+    .tcb-ratio-bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#6d28d9,#a855f7,#d8b4fe);transition:width .24s ease}
+    .tcb-note{flex:1 1 100%;font-size:10px;color:var(--ag-text-muted);margin-top:1px}
+    .tcb-note[hidden]{display:none!important}
+    .ref-cost-share-lbl{font-size:9px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .ref-cost-share-track{height:3px;width:100%;border-radius:999px;background:rgba(148,163,184,0.16);overflow:hidden;margin-top:4px}
+    .ref-cost-share-fill{height:100%;border-radius:999px;transition:width .24s ease}
+    .ref-cost-fill-input{background:#38bdf8}
+    .ref-cost-fill-cache{background:#34d399}
+    .ref-cost-fill-output{background:#a78bfa}
+
+    /* 最新调用卡片与当前会话请求时间线 */
+    @keyframes agCallEnter{
+      from{opacity:0;transform:translateY(5px)}
+      to{opacity:1;transform:translateY(0)}
+    }
+    .latest-call-card{
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;
+      padding:9px 11px;margin-top:8px;display:flex;flex-direction:column;gap:6px;min-width:0;
+    }
+    .latest-call-card[hidden]{display:none!important}
+    .latest-call-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-width:0}
+    .latest-call-title-wrap{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}
+    .latest-call-title{font-size:11.5px;font-weight:600;color:var(--ag-text-primary);white-space:nowrap}
+    .latest-call-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+    .latest-call-time{font-size:10.5px;color:var(--ag-text-muted);font-variant-numeric:tabular-nums}
+    .latest-call-link-btn{
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);color:var(--ag-text-secondary);
+      border-radius:5px;padding:2px 8px;font-size:10.5px;cursor:pointer;white-space:nowrap;
+    }
+    .latest-call-link-btn:hover{background:var(--ag-btn-hover);color:var(--ag-text-primary);border-color:var(--ag-btn-border-hover)}
+    .call-agent-badge{
+      display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:600;
+      background:rgba(59,130,246,0.14);color:#60a5fa;border:1px solid rgba(59,130,246,0.28);white-space:nowrap;
+    }
+    .call-agent-badge.is-subagent{
+      background:rgba(167,139,250,0.14);color:var(--ag-custom-token-accent,#a78bfa);border-color:rgba(167,139,250,0.34);
+    }
+    .call-agent-badge.is-unknown{
+      background:var(--ag-bg-subcard);color:var(--ag-text-muted);border-color:var(--ag-border-subcard);
+    }
+    :host([data-theme="light"]) .call-agent-badge{color:#2563eb;background:rgba(37,99,235,0.10)}
+    :host([data-theme="light"]) .call-agent-badge.is-subagent{color:#7c3aed;background:rgba(124,58,237,0.10)}
+    .latest-call-new-banner{
+      width:100%;text-align:center;padding:4px 8px;border-radius:5px;font-size:10.5px;font-weight:600;cursor:pointer;
+      background:rgba(37,99,235,0.14);color:#60a5fa;border:1px solid rgba(37,99,235,0.35);
+    }
+    :host([data-theme="light"]) .latest-call-new-banner{color:#1d4ed8;background:rgba(37,99,235,0.09)}
+    .latest-call-new-banner[hidden]{display:none!important}
+    .latest-call-body{min-width:0}
+    .latest-call-body.is-entering{animation:agCallEnter .21s cubic-bezier(0.16,1,0.3,1) both}
+    .latest-call-summary-row{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;
+      padding:6px 8px;cursor:pointer;min-width:0;
+    }
+    .latest-call-summary-row:hover{border-color:var(--ag-btn-border-hover);background:var(--ag-bg-card-hover)}
+    .latest-call-model-wrap{display:flex;align-items:center;gap:5px;min-width:0;flex:1 1 140px}
+    .latest-call-model{font-size:11.5px;font-weight:600;color:var(--ag-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .call-effort-tag{
+      font-size:9.5px;font-weight:600;padding:1px 5px;border-radius:4px;white-space:nowrap;flex-shrink:0;
+      background:var(--ag-bg-card);border:1px solid var(--ag-border-card);color:var(--ag-text-secondary);
+    }
+    .latest-call-metrics{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:10.5px;color:var(--ag-text-secondary);font-variant-numeric:tabular-nums;min-width:0}
+    .latest-call-metric-item{white-space:nowrap}
+    .latest-call-expand-caret{font-size:10px;color:var(--ag-text-muted);flex-shrink:0;transition:transform .16s ease}
+    .latest-call-summary-row[aria-expanded="true"] .latest-call-expand-caret{transform:rotate(180deg)}
+    .latest-call-details{
+      margin-top:6px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      border-radius:6px;padding:8px 9px;font-size:10.5px;line-height:1.45;min-width:0;overflow:hidden;
+    }
+    .call-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;min-width:0}
+    .call-detail-cell{display:flex;flex-direction:column;gap:1px;min-width:0}
+    .call-detail-k{font-size:9.5px;color:var(--ag-text-muted);overflow-wrap:anywhere;white-space:normal}
+    .call-detail-v{font-size:11px;font-weight:500;color:var(--ag-text-primary);overflow-wrap:anywhere;word-break:break-word;white-space:normal;font-variant-numeric:tabular-nums}
+    .call-detail-note{font-size:10px;line-height:1.4;color:var(--ag-text-secondary);margin-top:2px;overflow-wrap:anywhere;white-space:normal}
+    .tier-color-swatch{display:inline-block;width:7px;height:7px;border-radius:999px;margin-right:4px;vertical-align:middle;flex-shrink:0}
+    .call-detail-error{
+      margin-top:6px;padding:5px 7px;border-radius:5px;font-size:10.5px;overflow-wrap:anywhere;
+      background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.28);color:#f87171;
+    }
+    :host([data-theme="light"]) .call-detail-error{color:#dc2626}
+    .call-detail-error[hidden]{display:none!important}
+
+    .session-timeline-drawer{
+      margin-top:6px;padding-top:7px;border-top:1px solid var(--ag-border-subtle);
+      display:flex;flex-direction:column;gap:7px;min-width:0;
+    }
+    .session-timeline-summary{
+      flex:0 0 auto;font-size:10px;color:var(--ag-text-muted);line-height:1.45;background:var(--ag-bg-subcard);
+      border:1px solid var(--ag-border-subcard);border-radius:6px;padding:6px 8px;
+    }
+    .session-timeline-list{display:flex;flex-direction:column;gap:6px;flex:0 0 auto;max-height:min(360px,46vh);min-height:0;overflow-y:auto;overscroll-behavior:auto;padding-right:2px}
+    .timeline-turn-card{
+      flex:0 0 auto;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:6px;overflow:visible;min-width:0;
+    }
+    .timeline-turn-hdr{
+      width:100%;flex:0 0 auto;min-height:28px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;
+      background:transparent;border:none;border-radius:6px;color:inherit;cursor:pointer;text-align:left;min-width:0;
+    }
+    .timeline-turn-hdr:hover{background:var(--ag-bg-card-hover)}
+    .timeline-turn-left{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+    .timeline-turn-idx{font-size:10px;font-weight:700;color:var(--ag-custom-token-accent,#60a5fa);white-space:nowrap;flex-shrink:0}
+    .timeline-turn-prompt{font-size:11px;font-weight:500;color:var(--ag-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .timeline-turn-meta{font-size:10px;color:var(--ag-text-muted);white-space:nowrap;flex-shrink:0;font-variant-numeric:tabular-nums}
+    .timeline-turn-body{padding:0 8px 7px;display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--ag-border-subtle)}
+    .timeline-call-row{
+      flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;margin-top:4px;
+      border-radius:5px;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);
+      font-size:10.5px;cursor:pointer;min-width:0;flex-wrap:wrap;
+    }
+    .timeline-call-row:hover{border-color:var(--ag-btn-border-hover)}
+    .timeline-call-row.is-subagent{margin-left:14px;border-left:2px solid var(--ag-custom-token-accent,#a78bfa)}
+    .timeline-call-row.is-selected{border-color:var(--ag-custom-token-accent,#60a5fa)}
+    .timeline-call-main{display:flex;align-items:center;gap:5px;min-width:0;flex:1 1 130px}
+    .timeline-call-stats{display:flex;align-items:center;gap:6px;color:var(--ag-text-secondary);font-size:10px;font-variant-numeric:tabular-nums;flex-wrap:wrap}
+    .session-timeline-unlinked{
+      flex:0 0 auto;background:var(--ag-bg-subcard);border:1px dashed var(--ag-border-subcard);border-radius:6px;padding:6px 8px;
+      display:flex;flex-direction:column;gap:4px;
+    }
+    .session-timeline-unlinked-title{font-size:10px;font-weight:600;color:var(--ag-text-muted)}
+    .session-timeline-more-wrap{flex:0 0 auto;display:flex;justify-content:center;padding-top:2px}
+    .session-timeline-more-wrap[hidden],.session-timeline-unlinked[hidden]{display:none!important}
+
+    /* ELV-91 生成体验面板联动样式（闪电颜色、副标签、E评分徽章与拆解网格） */
+    .speed-badge-group{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+    .speed-bolt-icon{display:inline-block;transition:color .18s ease}
+    .speed-sub-label{
+      font-size:10.5px;color:var(--ag-text-secondary);margin-top:6px;line-height:1.35;
+      display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+    }
+    .speed-sub-label[hidden]{display:none!important}
+    .speed-breakdown-details{
+      margin-top:7px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      border-radius:6px;padding:7px 9px;font-size:10.5px;line-height:1.4;min-width:0;overflow:hidden;
+    }
+    .call-score-badge{
+      display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;
+      border:1px solid transparent;white-space:nowrap;font-variant-numeric:tabular-nums;
+    }
+    .call-score-badge[hidden]{display:none!important}
+    #badge-speed .speed-icon{transition:color .18s ease}
+    @media (max-width:480px){
+      .tcb-ratio-item{margin-left:0}
+      .latest-call-metrics{gap:6px}
+      .timeline-call-row.is-subagent{margin-left:8px}
+      #speed-summary .key-stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+      .panel-header-bar{gap:5px}
+      .ctx-lang-top-segmented .ctx-seg-btn{padding:2px 4px;font-size:10px}
+      .panel-icon-btn{width:22px;height:22px}
     }
     @media (prefers-reduced-motion: reduce){
-      *,.ag-unit,.ring-fill,.quota-ring-fill,.ctx-quota-ring-fill,.ctx-model-quota-chip,.quota-bar-fill,.quota-bar-charge-stage,.quota-bar-charge-fill,.quota-bar-charge-sheen,.quota-refresh-icon,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill{
+      *,.ag-unit,.ring-fill,.quota-ring-fill,.ctx-quota-ring-fill,.ctx-model-quota-chip,.quota-bar-fill,.quota-bar-charge-stage,.quota-bar-charge-fill,.quota-bar-charge-sheen,.quota-refresh-icon,.key-bar-fill,.ag-panel,#context-tooltip,.heat-cell,.w-bar-fill,.latest-call-body,.latest-call-body.is-entering{
         transition:none!important;animation:none!important;
       }
       .quota-bar-charge-stage{display:none!important}
@@ -1961,19 +2397,211 @@
     @media(max-width:760px){
       #panel-tokens:not(.cost-compact-view){width:calc(100vw - 24px)}
     }
+
+    /* 多账号筛选条、ELV-57 配额对照、自动切号与 ELV-52 保活紧凑样式 */
+    .token-account-bar{
+      display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;
+      padding:5px 8px;border-radius:7px;background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);
+      font-size:10.5px;min-width:0;
+    }
+    .token-account-lbl{color:var(--ag-text-muted);white-space:nowrap}
+    .token-account-select,.quota-compact-select,.quota-compact-input{
+      font-size:10.5px;padding:3px 6px;border-radius:5px;border:1px solid var(--ag-border-card);
+      background:var(--ag-bg-input);color:var(--ag-text-primary);max-width:100%;min-width:0;
+    }
+    .token-account-select{flex:0 1 auto;min-width:160px;overflow:hidden;text-overflow:ellipsis}
+    .token-account-note{color:var(--ag-text-muted);font-size:10px;overflow-wrap:anywhere;flex:1 1 160px}
+    .quota-accounts-section{
+      margin-top:10px;padding-top:10px;border-top:1px solid var(--ag-border-subtle);
+      display:flex;flex-direction:column;gap:6px;min-width:0;
+    }
+    .quota-subsec-header{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+    .quota-subsec-title{font-size:11.5px;font-weight:600;color:var(--ag-text-secondary)}
+    .quota-subsec-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+    .quota-accounts-list,.quota-compare-list{display:flex;flex-direction:column;gap:5px;min-width:0}
+    .quota-acct-card,.quota-subcard,.quota-compare-card{
+      background:var(--ag-bg-subcard);border:1px solid var(--ag-border-subcard);border-radius:7px;
+      padding:7px 9px;font-size:10.5px;display:flex;flex-direction:column;gap:4px;min-width:0;
+    }
+    .quota-acct-card.is-active{border-color:rgba(59,130,246,0.45)}
+    .quota-subcard-row{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;min-width:0}
+    .quota-acct-email{font-weight:600;color:var(--ag-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+    .quota-acct-meta{color:var(--ag-text-muted);font-size:10px;overflow-wrap:anywhere}
+    .quota-acct-error{color:#f59e0b;font-size:10px;overflow-wrap:anywhere;padding:3px 6px;border-radius:4px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25)}
+    .quota-acct-refresh-btn{font-size:10px;padding:2px 6px}
+    .quota-acct-remove-btn{font-size:10px;padding:2px 7px;border-radius:4px;color:#f87171;border:1px solid rgba(239,68,68,0.28);background:rgba(239,68,68,0.08);cursor:pointer;transition:background-color .12s,border-color .12s,opacity .12s}
+    .quota-acct-remove-btn:hover:not(:disabled){background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.45);color:#fca5a5}
+    .quota-acct-remove-btn:disabled{opacity:0.45;cursor:not-allowed}
+    :host([data-theme="light"]) .quota-acct-remove-btn{color:#dc2626}
+    :host([data-theme="light"]) .quota-acct-remove-btn:hover:not(:disabled){color:#b91c1c}
+    .quota-acct-feedback{
+      padding:5px 8px;border-radius:6px;font-size:10.5px;background:rgba(59,130,246,0.12);
+      border:1px solid rgba(59,130,246,0.3);color:var(--ag-text-primary);overflow-wrap:anywhere;
+    }
+    .quota-acct-feedback.is-error{
+      background:rgba(239,68,68,0.1);border-color:rgba(239,68,68,0.35);color:#fca5a5;
+    }
+    .quota-acct-feedback.is-success{
+      background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.35);color:#86efac;
+    }
+    :host([data-theme="light"]) .quota-acct-feedback.is-error{color:#dc2626}
+    :host([data-theme="light"]) .quota-acct-feedback.is-success{color:#15803d}
+    .quota-switch-lbl{display:inline-flex;align-items:center;gap:5px;font-weight:600;color:var(--ag-text-primary);cursor:pointer}
+    .auto-switch-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:4px}
+    .quota-field-lbl{display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--ag-text-muted);min-width:0}
+    .auto-switch-candidates-wrap,.auto-switch-save-row{grid-column:1 / -1;display:flex;flex-direction:column;gap:4px}
+    .auto-switch-save-row{flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    .auto-switch-candidates-list{display:flex;flex-wrap:wrap;gap:6px}
+    .auto-switch-cand-chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 6px;border-radius:4px;background:var(--ag-bg-card);border:1px solid var(--ag-border-card);cursor:pointer}
+    .quota-muted-note{font-size:10px;line-height:1.4;color:var(--ag-text-muted);overflow-wrap:anywhere}
+    @media (max-width:440px){
+      .auto-switch-grid{grid-template-columns:1fr}
+    }
+
+    /* 订阅设置表单统一聚焦样式与自定义日期选择器（对齐 .ag-dropdown 设计语言） */
+    .ag-sub-input{
+      outline:none !important;
+      transition:border-color 0.15s cubic-bezier(0.16,1,0.3,1),box-shadow 0.15s cubic-bezier(0.16,1,0.3,1),background 0.15s ease;
+    }
+    .ag-sub-input:hover:not(:disabled){
+      border-color:rgba(255,255,255,0.22) !important;
+    }
+    :host([data-theme="light"]) .ag-sub-input:hover:not(:disabled){
+      border-color:rgba(0,0,0,0.22) !important;
+    }
+    .ag-sub-input:focus,.ag-sub-input:focus-visible{
+      outline:none !important;
+      border-color:#a78bfa !important;
+      box-shadow:0 0 0 2px rgba(139,92,246,0.28) !important;
+    }
+    .quota-compact-input:focus,.quota-compact-input:focus-visible{
+      outline:none;
+      border-color:#a78bfa;
+      box-shadow:0 0 0 2px rgba(139,92,246,0.25);
+    }
+
+    .ag-datepicker-wrapper{
+      position:relative;width:100%;box-sizing:border-box;min-width:0;
+    }
+    .ag-datepicker-trigger{
+      padding:3.5px 8px;font-size:11px;min-height:24px;border-radius:5px;
+    }
+    .ag-datepicker-label.is-placeholder{
+      color:var(--ag-text-muted);
+    }
+    .ag-datepicker-icon{
+      display:inline-flex;align-items:center;justify-content:center;
+      color:var(--ag-text-muted);flex-shrink:0;opacity:0.8;
+    }
+    .ag-datepicker-trigger:hover .ag-datepicker-icon,
+    .ag-datepicker-wrapper.is-open .ag-datepicker-icon{
+      color:#a78bfa;opacity:1;
+    }
+    .ag-datepicker-popover{
+      position:absolute;top:calc(100% + 4px);right:0;left:auto;
+      width:236px;max-width:calc(100vw - 24px);max-height:none;overflow:visible;
+      padding:10px;border-radius:8px;
+      background:var(--ag-unified-bg,#1e1e24);
+      border:1px solid var(--ag-float-border,rgba(255,255,255,0.14));
+      box-shadow:0 16px 40px rgba(0,0,0,0.65),0 4px 12px rgba(0,0,0,0.4);
+      z-index:2147483647 !important;
+      user-select:none;
+    }
+    .ag-datepicker-wrapper.open-up .ag-datepicker-popover{
+      top:auto;bottom:calc(100% + 4px);
+    }
+    .ag-dp-header{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;
+    }
+    .ag-dp-nav-btn{
+      width:24px;height:24px;border-radius:5px;border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-input);color:var(--ag-text-secondary);
+      display:inline-flex;align-items:center;justify-content:center;
+      cursor:pointer;font-size:12px;line-height:1;padding:0;
+      transition:border-color .14s ease,background .14s ease,color .14s ease;
+    }
+    .ag-dp-nav-btn:hover{
+      border-color:rgba(167,139,250,0.55);color:var(--ag-text-primary);
+      background:rgba(139,92,246,0.14);
+    }
+    .ag-dp-nav-btn:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
+    .ag-dp-month-title{
+      font-size:11.5px;font-weight:600;color:var(--ag-text-primary);text-align:center;flex:1;
+    }
+    .ag-dp-weekdays{
+      display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px;
+    }
+    .ag-dp-weekday{
+      font-size:9.5px;font-weight:600;color:var(--ag-text-muted);text-align:center;padding:2px 0;
+    }
+    .ag-dp-grid{
+      display:grid;grid-template-columns:repeat(7,1fr);gap:2px;
+    }
+    .ag-dp-day{
+      height:26px;border-radius:6px;border:1px solid transparent;
+      background:transparent;color:var(--ag-text-primary);font-size:10.5px;
+      display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+      transition:background .12s ease,border-color .12s ease,color .12s ease;
+    }
+    .ag-dp-day.is-outside{
+      color:var(--ag-text-muted);opacity:0.45;
+    }
+    .ag-dp-day:hover{
+      background:rgba(167,139,250,0.16);color:var(--ag-text-primary);
+    }
+    .ag-dp-day.is-today:not(.is-selected){
+      border-color:#a855f7;color:#c4b5fd;font-weight:600;
+    }
+    :host([data-theme="light"]) .ag-dp-day.is-today:not(.is-selected){
+      color:#7c3aed;border-color:#8b5cf6;
+    }
+    .ag-dp-day.is-selected{
+      background:linear-gradient(135deg,#8b5cf6,#a855f7);
+      border-color:#a855f7;color:#ffffff;font-weight:600;
+      box-shadow:0 2px 8px rgba(139,92,246,0.35);
+    }
+    .ag-dp-day:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
+    .ag-dp-footer{
+      display:flex;align-items:center;justify-content:space-between;gap:6px;
+      margin-top:8px;padding-top:7px;border-top:1px solid var(--ag-border-subcard);
+    }
+    .ag-dp-action-btn{
+      font-size:10.5px;padding:3px 9px;border-radius:5px;border:1px solid var(--ag-border-subcard);
+      background:var(--ag-bg-input);color:var(--ag-text-secondary);cursor:pointer;
+      transition:border-color .14s ease,color .14s ease,background .14s ease;
+    }
+    .ag-dp-action-btn:hover{
+      border-color:rgba(167,139,250,0.55);color:var(--ag-text-primary);
+      background:rgba(139,92,246,0.12);
+    }
+    .ag-dp-action-btn.is-today-btn{
+      color:#c4b5fd;border-color:rgba(139,92,246,0.38);
+    }
+    :host([data-theme="light"]) .ag-dp-action-btn.is-today-btn{
+      color:#7c3aed;
+    }
+    .ag-dp-action-btn:focus-visible{
+      outline:none;border-color:#a78bfa;box-shadow:0 0 0 2px rgba(139,92,246,0.28);
+    }
   </style>
 
   <!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
 <button id="badge-quota" class="ag-unit ag-unit-quota" type="button" aria-label="模型剩余额度与重置状态"
-  data-i18n-aria="badge.quota.aria" aria-expanded="false" data-quota-state="unknown" title="模型额度看板">
+  data-i18n-aria="badge.quota.aria" aria-expanded="false" data-quota-state="unknown" title="模型额度看板" data-i18n-title="quota.panel.aria">
   <svg id="quota-ring-svg" class="quota-ring-svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
     <circle id="quota-ring-track" class="quota-ring-track" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1">
     </circle>
     <circle id="quota-ring-fill" class="quota-ring-fill" cx="9" cy="9" r="6.5" fill="none" stroke-width="2.1"
       stroke-linecap="round" transform="rotate(-90 9 9)" stroke-dasharray="10 30.84" stroke-dashoffset="0"></circle>
   </svg>
-  <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
-  <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+  <span class="quota-badge-metric">
+    <span id="quota-badge-val" class="quota-badge-val" data-i18n="quota.state.unknown">未知</span>
+    <span id="quota-badge-tag" class="quota-badge-tag" hidden></span>
+  </span>
 </button>
 
 <!-- 顶部基本单元 1: 上下文小圆环（与速度入口紧邻） -->
@@ -1995,7 +2623,7 @@
 <!-- 顶部基本单元 2: 输出速度 (tok/s) -->
 <button id="badge-speed" class="ag-unit" type="button" aria-label="模型输出速度与耗时统计" data-i18n-aria="badge.speed.aria"
   aria-expanded="false">
-  <span class="speed-icon" aria-hidden="true">⚡</span>
+  <span id="badge-speed-icon" class="speed-icon" aria-hidden="true">⚡</span>
   <span id="speed-amount">-- tok/s</span>
   <span id="speed-hover-extra" class="sr-only"></span>
 </button>
@@ -2065,8 +2693,9 @@
   <div class="panel-header-bar">
     <div class="panel-title">
       <span class="panel-title-text" style="font-size:13px;font-weight:600;color:var(--ag-text-primary)"
-        data-i18n="panel.ctx.title">💬 当前会话上下文</span>
-      <span id="v">v0.8.7-2</span>
+        data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
+        aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
+      <span id="v">v0.8.8-1</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -2154,17 +2783,23 @@
         <div id="key-takeaway" class="key-takeaway" data-i18n="session.keyTakeaway.loading">正在计算核心指标…</div>
       </div>
 
-      <!-- 卡片 2: 输出速度与延迟速览 -->
+      <!-- 卡片 2: 生成体验、纯流式速度与 E 评分速览 -->
       <div id="speed-summary"
         style="background:var(--ag-bg-card);border:1px solid var(--ag-border-card);border-radius:8px;padding:11px 12px;margin:8px 0 10px;">
         <div class="key-header">
-          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));"
-            data-i18n="session.speedSummary.title">⚡ 最新生成速度与耗时</span>
-          <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
+          <span class="key-title" style="color:var(--ag-custom-speed,var(--ag-text-primary));">
+            <span id="speed-summary-bolt" class="speed-bolt-icon" aria-hidden="true">⚡</span>
+            <span data-i18n="session.speedSummary.titleNoBolt">最新生成体验与速度</span>
+          </span>
+          <div class="speed-badge-group">
+            <span id="speed-mock-tag" class="key-pill pill-warn" hidden style="font-size:9.5px;padding:1px 5px;" data-i18n="session.speed.mockTag">模拟验收</span>
+            <span id="speed-badge" class="key-pill pill-muted" data-i18n="session.speed.pending">待生成</span>
+            <button id="btn-speed-breakdown-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" hidden data-i18n="session.speed.details">拆解</button>
+          </div>
         </div>
         <div class="key-stats" style="grid-template-columns:repeat(4,1fr);">
           <div class="key-stat">
-            <div class="key-stat-label" data-i18n="session.speed.rate">输出速度</div>
+            <div class="key-stat-label" id="speed-val-label" data-i18n="session.speed.streamRate">纯流式速度</div>
             <div id="speed-val" class="key-stat-val" style="color:var(--ag-custom-speed,var(--ag-text-primary));">—
             </div>
           </div>
@@ -2181,7 +2816,58 @@
             <div id="speed-tokens" class="key-stat-val">—</div>
           </div>
         </div>
+        <div id="speed-sub-label" class="speed-sub-label" hidden></div>
         <div id="speed-takeaway" class="key-takeaway" data-i18n="session.speed.wait">等待首次模型输出产生速度统计…</div>
+        <div id="speed-breakdown-details" class="speed-breakdown-details" style="display:none;">
+          <div class="call-detail-grid" id="speed-breakdown-grid"></div>
+        </div>
+      </div>
+
+      <!-- 最新模型调用与当前会话请求时间线 -->
+      <div id="latest-call-card" class="latest-call-card" hidden>
+        <div class="latest-call-header">
+          <div class="latest-call-title-wrap">
+            <span class="latest-call-title" data-i18n="session.latestCall.title">最新调用</span>
+            <span id="latest-call-status-pill" class="key-pill pill-muted">--</span>
+            <span id="latest-call-agent-pill" class="call-agent-badge" hidden data-i18n="session.latestCall.agentMain">主代理</span>
+          </div>
+          <div class="latest-call-actions">
+            <span id="latest-call-time" class="latest-call-time">—</span>
+            <button id="btn-session-history-toggle" class="latest-call-link-btn" type="button" aria-expanded="false" data-i18n="session.timeline.viewHistory">查看历史</button>
+          </div>
+        </div>
+
+        <button id="latest-call-new-banner" class="latest-call-new-banner" type="button" hidden data-i18n="session.latestCall.newAvailable">有新调用完成 · 点击查看最新</button>
+
+        <div id="latest-call-body" class="latest-call-body">
+          <div id="latest-call-summary-row" class="latest-call-summary-row" role="button" tabindex="0" aria-expanded="false">
+            <div class="latest-call-model-wrap">
+              <span id="latest-call-model" class="latest-call-model">—</span>
+              <span id="latest-call-effort" class="call-effort-tag" hidden>—</span>
+            </div>
+            <div class="latest-call-metrics">
+              <span id="latest-call-score-inline" class="call-score-badge" hidden>—</span>
+              <span id="latest-call-tokens-inline" class="latest-call-metric-item">—</span>
+              <span id="latest-call-cache-inline" class="latest-call-metric-item">—</span>
+              <span id="latest-call-duration-inline" class="latest-call-metric-item">—</span>
+            </div>
+            <span id="btn-latest-call-toggle" class="latest-call-expand-caret" aria-hidden="true">▾</span>
+          </div>
+
+          <div id="latest-call-details" class="latest-call-details" style="display:none;">
+            <div class="call-detail-grid" id="latest-call-detail-grid"></div>
+            <div id="latest-call-error-box" class="call-detail-error" hidden></div>
+          </div>
+        </div>
+
+        <div id="session-timeline-drawer" class="session-timeline-drawer" style="display:none;">
+          <div id="session-timeline-summary" class="session-timeline-summary"></div>
+          <div id="session-timeline-list" class="session-timeline-list"></div>
+          <div id="session-timeline-unlinked" class="session-timeline-unlinked" hidden></div>
+          <div id="session-timeline-more-wrap" class="session-timeline-more-wrap" hidden>
+            <button id="btn-timeline-load-more" class="ctx-compact-link-btn" type="button" data-i18n="session.timeline.loadMore">加载更多轮次</button>
+          </div>
+        </div>
       </div>
 
       <!-- 紧凑上下文设置入口卡片 -->
@@ -2190,9 +2876,9 @@
           <div class="ctx-compact-title" data-i18n="session.compact.title">上下文设置</div>
           <div class="ctx-compact-meta">
             <span><span data-i18n="session.compact.savedLabel">本模型已保存：</span><strong
-                id="ctx-compact-saved">未单独设置（使用默认）</strong></span>
+                id="ctx-compact-saved" data-i18n="status.savedDefault">未单独设置（使用默认）</strong></span>
             <span><span data-i18n="session.compact.clientLabel">客户端当前使用：</span><strong
-                id="ctx-compact-client">状态读取中…</strong></span>
+                id="ctx-compact-client" data-i18n="status.badge.reading">状态读取中…</strong></span>
           </div>
         </div>
         <button id="btn-goto-model-settings" class="ctx-compact-link-btn" type="button"
@@ -2374,7 +3060,7 @@
             <div class="ctx-summary-length-row">
               <span class="ctx-summary-value ctx-length-val" id="ctx-summary-length"
                 data-i18n="models.summary.modelDefault">使用模型默认值</span>
-              <span class="key-pill pill-muted" id="ctx-summary-status-pill" hidden>待重启生效</span>
+              <span class="key-pill pill-muted" id="ctx-summary-status-pill" hidden data-i18n="models.summary.pendingRestart">待重启生效</span>
             </div>
           </div>
         </div>
@@ -2408,16 +3094,16 @@
             </div>
             <div class="ctx-cap-item ctx-cap-item-wide">
               <span class="ctx-cap-lbl" data-i18n="models.cap.formulaLbl">来源与计算说明</span>
-              <span class="ctx-cap-sub" id="ctx-cap-formula">等待读取模型元数据…</span>
+              <span class="ctx-cap-sub" id="ctx-cap-formula">—</span>
             </div>
           </div>
           <div class="ctx-cap-verify-strip" id="ctx-cap-verify-strip">
             <span class="ctx-cap-v-cell"><em data-i18n="models.cap.saved">已保存</em> <strong
                 id="ctx-ref-saved">—</strong></span>
             <span class="ctx-cap-v-cell"><em data-i18n="models.cap.sent">最近请求携带</em> <strong
-                id="ctx-ref-sent">尚无本次验证</strong></span>
+                id="ctx-ref-sent" data-i18n="models.cap.noneVerified">尚无本次验证</strong></span>
             <span class="ctx-cap-v-cell"><em data-i18n="models.cap.adopted">后端实际采用</em> <strong
-                id="ctx-ref-adopted">尚无本次验证</strong></span>
+                id="ctx-ref-adopted" data-i18n="models.cap.noneVerified">尚无本次验证</strong></span>
           </div>
           <div class="ctx-unified-proj" id="ctx-unified-projection" hidden></div>
         </div>
@@ -2438,7 +3124,7 @@
               </div>
               <div class="ctx-metric-row ctx-metric-request">
                 <span class="ctx-metric-label" data-i18n="models.card.request">请求携带</span>
-                <span class="ctx-metric-value" id="ctx-card-request">默认透传</span>
+                <span class="ctx-metric-value" id="ctx-card-request" data-i18n="models.card.requestDefault">默认透传</span>
                 <span class="ctx-metric-side" data-i18n="models.card.requestSide">本次请求发送给底座的参数</span>
               </div>
               <div class="ctx-metric-row ctx-metric-client">
@@ -2463,12 +3149,12 @@
               <div class="ctx-metric-row ctx-metric-convo">
                 <span class="ctx-metric-label" data-i18n="models.card.convoIdTitle">对应会话</span>
                 <span class="ctx-metric-value" id="ctx-card-convo">—</span>
-                <span class="ctx-metric-side">发生调用的会话标识</span>
+                <span class="ctx-metric-side" data-i18n="models.card.convoIdSide">发生调用的会话标识</span>
               </div>
               <div class="ctx-metric-row ctx-metric-diagnosis">
                 <span class="ctx-metric-label" data-i18n="models.card.diagnosisTitle">生效诊断</span>
                 <span class="ctx-metric-value" id="ctx-card-diagnosis">—</span>
-                <span class="ctx-metric-side">目标值与观测值比对结果</span>
+                <span class="ctx-metric-side" data-i18n="models.card.diagnosisSide">目标值与观测值比对结果</span>
               </div>
               <div class="ctx-metric-row ctx-metric-observed">
                 <span class="ctx-metric-label" data-i18n="models.card.observedSpeed">实测速度</span>
@@ -2619,9 +3305,9 @@
                 <span class="unlock-credit-lbl" data-i18n="models.credit.source">方案来源：</span>
                 <a id="link-unlock-author" href="https://linux.do/t/topic/3117832" target="_blank"
                   rel="noopener noreferrer" class="unlock-author-link" role="link" tabindex="0"
-                  title="点击在系统默认浏览器中打开原作者帖子" data-i18n="models.credit.author">原作者帖子 (Linux.do @23375) ↗</a>
+                  title="点击在系统默认浏览器中打开原作者帖子" data-i18n-title="models.credit.authorTitle" data-i18n="models.credit.author">原作者帖子 (Linux.do @23375) ↗</a>
                 <button id="btn-copy-unlock-link" class="unlock-copy-link-btn" type="button" title="复制原作者帖子链接"
-                  data-i18n="models.credit.copy">📋 复制链接</button>
+                  data-i18n-title="models.credit.copyTitle" data-i18n="models.credit.copy">📋 复制链接</button>
               </div>
               <span class="unlock-adapter-note" data-i18n="models.credit.adapter">本项目负责 Node.js 适配与集成</span>
             </div>
@@ -2992,27 +3678,27 @@
   <div class="tech-drawer" id="display-settings-drawer">
     <button id="btn-toggle-display-settings" class="drawer-trigger" aria-expanded="false" type="button">
       <span class="drawer-trigger-left">
-        <span>⚙️ 顶栏功能与显示设置</span>
-        <span id="cli-visibility-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;">CLI 已隐藏</span>
+        <span data-i18n="settings.display.title">⚙️ 顶栏功能与显示设置</span>
+        <span id="cli-visibility-badge" class="key-pill pill-muted" style="margin-left:6px;font-size:10.5px;" data-i18n="settings.display.cliHidden">CLI 已隐藏</span>
       </span>
-      <span id="display-settings-drawer-arrow" class="drawer-arrow">▼ 展开设置</span>
+      <span id="display-settings-drawer-arrow" class="drawer-arrow" data-i18n="drawer.expand">▼ 展开设置</span>
     </button>
     <div id="display-settings-drawer-body" class="drawer-body" style="display:none;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 2px;font-size:11px;">
         <label for="check-live-chinese" style="display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--ag-text-primary);font-weight:500;">
           <input id="check-live-chinese" type="checkbox" checked>
-          <span>启用客户端界面汉化（免改盘热注入，关闭后重载恢复英文）</span>
+          <span data-i18n="settings.display.liveChineseLabel">启用客户端界面汉化（免改盘热注入，关闭后重载恢复英文）</span>
         </label>
-        <span style="color:var(--ag-text-muted);font-size:10.5px;white-space:nowrap;">默认开启</span>
+        <span style="color:var(--ag-text-muted);font-size:10.5px;white-space:nowrap;" data-i18n="settings.display.defaultOn">默认开启</span>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 2px;font-size:11px;border-top:1px dashed var(--ag-border-subcard);">
         <label for="check-show-cli" style="display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--ag-text-primary);font-weight:500;">
           <input id="check-show-cli" type="checkbox">
-          <span>在顶栏显示 <code>&gt;_ CLI</code> 快捷启动按钮</span>
+          <span data-i18n-html="settings.display.showCliLabel">在顶栏显示 <code>&gt;_ CLI</code> 快捷启动按钮</span>
         </label>
-        <span style="color:var(--ag-text-muted);font-size:10.5px;white-space:nowrap;">默认关闭</span>
+        <span style="color:var(--ag-text-muted);font-size:10.5px;white-space:nowrap;" data-i18n="settings.display.defaultOff">默认关闭</span>
       </div>
-      <div style="font-size:10.5px;color:var(--ag-text-muted);line-height:1.45;padding:2px 2px 2px;">
+      <div style="font-size:10.5px;color:var(--ag-text-muted);line-height:1.45;padding:2px 2px 2px;" data-i18n="settings.display.footnote">
         配置保存于宿主独立设置文件（跨插件版本与客户端更新自动保留）。
       </div>
     </div>
@@ -3187,8 +3873,28 @@
       <div class="view-switch-bar">
         <button id="tok-view-tokens" class="switch-pill-btn active" type="button" data-i18n="tokens.view.tokens">Token
           统计</button>
+        <button id="tok-view-models" class="switch-pill-btn" type="button" data-i18n="tokens.view.models">按模型</button>
         <button id="tok-view-cost" class="switch-pill-btn" type="button" data-i18n="tokens.view.cost">API 参考金额</button>
       </div>
+    </div>
+
+    <!-- 分账号账本筛选条（ELV-89：严格隔离各账号及未归属历史，不重复堆叠刷新入口） -->
+    <div id="token-account-bar" class="token-account-bar">
+      <span class="token-account-lbl" data-i18n="accounts.filterLabel">账本范围:</span>
+      <select id="token-account-select" class="token-account-select" aria-label="按账号筛选统计账本" data-i18n-aria="accounts.filterAria" style="display:none">
+        <option value="all" data-i18n="accounts.filterAll">全部已记用量（含未归属）</option>
+        <option value="unattributed" data-i18n="accounts.filterUnattributed">历史未归属（无可靠账号依据）</option>
+      </select>
+      <div id="token-account-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact token-account-dropdown">
+        <div id="token-account-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+          <span id="token-account-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.filterAll">全部已记用量（含未归属）</span>
+          <div class="ag-dropdown-arrow">
+            <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+          </div>
+        </div>
+        <div id="token-account-dropdown-menu" class="ag-dropdown-menu"></div>
+      </div>
+      <span id="token-account-scope-note" class="token-account-note"></span>
     </div>
 
     <!-- 账号套餐状态摘要行 -->
@@ -3198,10 +3904,10 @@
         <span id="plan-summary-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pro · ...</span>
       </div>
       <!-- 黄框位置：实时联动的订阅费与汇率胶囊 -->
-      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前地区订阅费与最新汇率折算 (点击展开/收起详情)"
+      <div id="plan-summary-price-badge" class="plan-summary-price-badge" title="当前订阅费用与最新汇率折算 (点击展开/收起详情)"
         data-i18n-title="plan.summary.priceBadgeTitle">
-        <span id="plan-summary-price-val">$19.99/月</span>
-        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400">(≈ ¥134.3 CNY)</span>
+        <span id="plan-summary-price-val" data-i18n="plan.summary.priceUnsetShort">待设置月费</span>
+        <span id="plan-summary-price-cny" style="font-size:9.5px;opacity:0.85;font-weight:400"></span>
       </div>
       <button id="btn-plan-detail-toggle" class="switch-pill-btn" type="button" style="padding:2px 6px;flex-shrink:0"
         data-i18n="plan.detail.toggleOpen">详情 ▼</button>
@@ -3227,7 +3933,7 @@
         <dt data-i18n="plan.dt.country">账号所在地区：</dt>
         <dd style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
           <span id="p-det-country" style="display:none">未知</span>
-          <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" style="display:none">
+          <select id="direct-country-select" aria-label="账号所在地区 (仅本地记录)" data-i18n-aria="plan.form.countryLabel" style="display:none">
             <option value="未知">🌐 未设置 / 自动</option>
             <option value="美国 (US)">🇺🇸 美国 (US)</option>
             <option value="日本 (JP)">🇯🇵 日本 (JP)</option>
@@ -3378,11 +4084,10 @@
           设置当前账号订阅信息
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqLabel">获取方式 / 活动来源</label>
-            <select id="select-custom-acq"
-              style="width:100%;font-size:11px;padding:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-acq" aria-label="获取方式 / 活动来源" data-i18n-aria="plan.form.acqLabel" style="display:none">
               <option value="normal_paid" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</option>
               <option value="student_offer" data-i18n="plan.acqOpt.student_offer">学生认证优惠</option>
               <option value="pixel_bundle" data-i18n="plan.acqOpt.pixel_bundle">Google Pixel 设备赠送</option>
@@ -3394,11 +4099,20 @@
               <option value="official_promo" data-i18n="plan.acqOpt.official_promo">官方限时试用 / 促销活动</option>
               <option value="custom_source" data-i18n="plan.acqOpt.custom_source">其他 / 自由命名</option>
             </select>
+            <div id="select-custom-acq-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="select-custom-acq-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="select-custom-acq-dropdown-label" class="ag-dropdown-label" data-i18n="plan.acqOpt.normal_paid">正常付费订阅</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="select-custom-acq-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.acqCustomLabel">自定义活动 / 合作方名称</label>
-            <input id="input-custom-acq-name" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
+            <input id="input-custom-acq-name" class="ag-sub-input" type="text" placeholder="选填，如 Pixel 11 Pro 赠送"
               data-i18n-placeholder="plan.form.acqCustomPh"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
@@ -3416,8 +4130,7 @@
               (可选快捷套用)</label>
             <span id="region-cny-preview" style="font-size:9.5px;color:var(--ag-text-secondary)"></span>
           </div>
-          <select id="select-custom-region-preset"
-            style="width:100%;font-size:11px;padding:4px;margin-bottom:4px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+          <select id="select-custom-region-preset" aria-label="预设订阅国家与汇率" data-i18n-aria="plan.form.presetLabel" style="display:none">
             <option value="" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</option>
             <option value="US">🇺🇸 美国 (US) · $19.99/月 (折合 ≈ ¥134.3)</option>
             <option value="KR">🇰🇷 韩国 (KR) · ₩29,000/月 (折合 ≈ ¥147.9)</option>
@@ -3438,29 +4151,37 @@
             <option value="CN">🇨🇳 中国大陆/自定义 (CNY) · ¥140/月</option>
             <option value="custom" data-i18n="plan.form.presetCustom">✎ 自定义输入地区</option>
           </select>
+          <div id="select-custom-region-preset-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact" style="margin-bottom:4px">
+            <div id="select-custom-region-preset-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+              <span id="select-custom-region-preset-dropdown-label" class="ag-dropdown-label" data-i18n="plan.form.presetPlaceholder">-- 选择预设地区 (自动填入价格与汇率) --</span>
+              <div class="ag-dropdown-arrow">
+                <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+              </div>
+            </div>
+            <div id="select-custom-region-preset-dropdown-menu" class="ag-dropdown-menu"></div>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.countryLabel">账号所在地区 (仅本地记录)</label>
-            <input id="input-custom-country" type="text" placeholder="例如：美国 (US)"
+            <input id="input-custom-country" class="ag-sub-input" type="text" placeholder="例如：美国 (US)"
               data-i18n-placeholder="plan.form.countryPh" title="仅作为本地显示记录，不修改实际 Google 账号"
               data-i18n-title="plan.country.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.regionLabel">订阅国家 (购买/结算地区)</label>
-            <input id="input-custom-region" type="text" placeholder="例如：韩国 / 澳大利亚"
+            <input id="input-custom-region" class="ag-sub-input" type="text" placeholder="例如：韩国 / 澳大利亚"
               data-i18n-placeholder="plan.form.regionPh" title="实际购买或支付订阅所在的国家或地区" data-i18n-title="plan.region.title"
               style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
           </div>
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.currencyLabel">订阅币种与实付金额</label>
-            <div style="display:flex;gap:4px">
-              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title"
-                style="font-size:11px;padding:3px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <div style="display:flex;gap:4px;align-items:center">
+              <select id="select-custom-currency" title="订阅计价/结算币种" data-i18n-title="plan.currency.title" aria-label="订阅币种" data-i18n-aria="plan.currency.aria" style="display:none">
                 <option value="USD">USD</option>
                 <option value="KRW">KRW</option>
                 <option value="HKD">HKD</option>
@@ -3479,36 +4200,64 @@
                 <option value="AUD">AUD</option>
                 <option value="MYR">MYR</option>
               </select>
-              <input id="input-custom-paid" type="number" step="0.01" placeholder="实付金额"
+              <div id="select-custom-currency-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact" style="flex:0 0 82px;min-width:72px">
+                <div id="select-custom-currency-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                  <span id="select-custom-currency-dropdown-label" class="ag-dropdown-label">USD</span>
+                  <div class="ag-dropdown-arrow">
+                    <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                  </div>
+                </div>
+                <div id="select-custom-currency-dropdown-menu" class="ag-dropdown-menu"></div>
+              </div>
+              <input id="input-custom-paid" class="ag-sub-input" type="number" step="0.01" placeholder="实付金额"
                 data-i18n-placeholder="plan.form.paidPh"
-                style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+                style="flex:1;min-width:0;width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
             </div>
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
-          <div>
+          <div style="min-width:0">
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.cycleLabel">计费周期</label>
-            <select id="select-custom-cycle"
-              style="width:100%;font-size:11px;padding:4px 6px;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <select id="select-custom-cycle" aria-label="计费周期" data-i18n-aria="plan.form.cycleLabel" style="display:none">
               <option value="月付" data-i18n="plan.cycleOpt.monthly">月付</option>
               <option value="年付" data-i18n="plan.cycleOpt.yearly">年付</option>
               <option value="免费/赠送" data-i18n="plan.cycleOpt.free">免费 / 促销赠送</option>
               <option value="随套餐包含" data-i18n="plan.cycleOpt.included">随套餐包含</option>
               <option value="其他周期" data-i18n="plan.cycleOpt.other">其他周期</option>
             </select>
+            <div id="select-custom-cycle-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="select-custom-cycle-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="select-custom-cycle-dropdown-label" class="ag-dropdown-label" data-i18n="plan.cycleOpt.monthly">月付</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="select-custom-cycle-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
           </div>
           <div>
             <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
               data-i18n="plan.form.validEndLabel">权益到期日</label>
-            <input id="input-valid-end" type="date"
-              style="width:100%;font-size:11px;padding:3px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
+            <input id="input-valid-end" type="hidden" value="">
+            <div id="valid-end-picker-wrap" class="ag-dropdown-wrapper ag-datepicker-wrapper">
+              <div id="valid-end-trigger" class="ag-dropdown-trigger ag-datepicker-trigger" tabindex="0" role="button" aria-haspopup="dialog" aria-expanded="false">
+                <span id="valid-end-label" class="ag-dropdown-label ag-datepicker-label is-placeholder" data-i18n="datePicker.placeholder">年 / 月 / 日</span>
+                <span class="ag-datepicker-icon" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="12" height="11" rx="2" />
+                    <path d="M5 1.8v2.4M11 1.8v2.4M2 6.5h12" />
+                  </svg>
+                </span>
+              </div>
+              <div id="valid-end-popover" class="ag-datepicker-popover" style="display:none" role="dialog"></div>
+            </div>
           </div>
         </div>
         <div style="margin-bottom:6px">
           <label style="font-size:10px;color:var(--ag-text-muted);display:block;margin-bottom:2px"
             data-i18n="plan.form.noteLabel">补充说明备注</label>
-          <input id="input-custom-note" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车"
+          <input id="input-custom-note" class="ag-sub-input" type="text" placeholder="例如：Pixel 11 Pro 赠送 6 个月 / 家庭拼车"
             data-i18n-placeholder="plan.form.notePh"
             style="width:100%;font-size:11px;padding:4px 6px;box-sizing:border-box;background:var(--ag-bg-input);border:1px solid var(--ag-border-subcard);border-radius:4px;color:var(--ag-text-primary)">
         </div>
@@ -3607,24 +4356,36 @@
         <!-- 分类单价与公式明细卡片（输入、缓存读取、输出） -->
         <div id="ref-cost-breakdown-cards"
           style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.input">输入 Token</span>
               ($0.75/M)</div>
             <div id="ref-cost-input-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-            <div id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-input-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-input-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-input-bar" class="ref-cost-share-fill ref-cost-fill-input" style="width:0%"></div></div>
           </div>
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.cache">缓存读取 (优惠)</span>
               ($0.075/M)</div>
             <div id="ref-cost-cache-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00</div>
-            <div id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-cache-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-cache-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-cache-bar" class="ref-cost-share-fill ref-cost-fill-cache" style="width:0%"></div></div>
           </div>
-          <div class="t-card" style="padding:6px">
+          <div class="t-card ref-cost-card" style="padding:6px">
             <div style="font-size:10px;color:var(--ag-text-muted)"><span data-i18n="cost.card.output">输出 Token</span>
               ($3.75/M)</div>
             <div id="ref-cost-output-val" style="font-size:12px;font-weight:600;color:var(--ag-text-primary)">$0.00
             </div>
-            <div id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:4px">
+              <span id="ref-cost-output-tok" style="font-size:9.5px;color:var(--ag-text-muted)">0 tok</span>
+              <span id="ref-cost-output-share" class="ref-cost-share-lbl">0%</span>
+            </div>
+            <div class="ref-cost-share-track"><div id="ref-cost-output-bar" class="ref-cost-share-fill ref-cost-fill-output" style="width:0%"></div></div>
           </div>
         </div>
 
@@ -3651,11 +4412,68 @@
       <!-- 隐藏辅助兼容层 -->
       <div id="ref-cost-drawer-body" style="display:none">
         <span id="ref-cost-grand-val">$0.00</span>
-        <span id="ref-cost-mode-label">参考模型折算</span>
+        <span id="ref-cost-mode-label" data-i18n="cost.modeRef">参考模型估算</span>
         <button id="btn-toggle-ref-cost-drawer" type="button" style="display:none"></button>
         <button id="btn-ref-mode-all" type="button" style="display:none"></button>
         <button id="btn-ref-mode-hybrid" type="button" style="display:none"></button>
       </div>
+    </div>
+
+    <!-- 按模型 Token 用量分布视图（支持 7d/30d 堆叠柱图、模型/档位粒度与占比图例） -->
+    <div id="model-usage-view" class="model-usage-card" style="display:none">
+      <div class="model-usage-header">
+        <div>
+          <div class="model-usage-title" data-i18n="modelsUsage.title">按模型 Token 用量</div>
+          <div id="model-usage-subtitle" class="model-usage-subtitle" data-i18n="modelsUsage.subtitle">查看桌面端与 CLI 各模型每日 Token 消耗及占比分布。</div>
+        </div>
+      </div>
+
+      <div class="model-usage-controls">
+        <div class="source-switch-bar">
+          <button id="model-period-7d" class="switch-pill-btn active" type="button">7d</button>
+          <button id="model-period-30d" class="switch-pill-btn" type="button">30d</button>
+        </div>
+        <div class="model-usage-right-ctrls">
+          <div class="source-switch-bar">
+            <button id="model-group-model" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.groupModel">按模型</button>
+            <button id="model-group-variant" class="switch-pill-btn" type="button" data-i18n="modelsUsage.groupVariant">按档位</button>
+          </div>
+          <div class="source-switch-bar">
+            <button id="model-metric-total" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.metricTotal">含缓存</button>
+            <button id="model-metric-nocache" class="switch-pill-btn" type="button" data-i18n="modelsUsage.metricNoCache">不含缓存</button>
+          </div>
+          <div class="source-switch-bar">
+            <button id="model-scale-mixed" class="switch-pill-btn active" type="button" data-i18n="modelsUsage.scaleMixed">量级刻度</button>
+            <button id="model-scale-linear" class="switch-pill-btn" type="button" data-i18n="modelsUsage.scaleLinear">线性比例</button>
+          </div>
+          <button id="model-toggle-unattr" class="switch-pill-btn model-unattr-btn" type="button" style="display:none" data-i18n="modelsUsage.hideUnattr">隐藏未标明</button>
+        </div>
+      </div>
+
+      <div class="model-usage-nav-row">
+        <div class="model-usage-range-wrap">
+          <span id="model-usage-range-label" class="model-usage-range-lbl">--</span>
+          <span id="model-usage-window-total" class="key-pill pill-muted" style="font-size:10px;padding:1px 6px">--</span>
+        </div>
+        <div class="model-usage-nav-btns">
+          <button id="btn-model-win-prev" class="heat-nav-btn" type="button" title="查看更早区间" data-i18n-title="modelsUsage.prevTitle">‹</button>
+          <button id="btn-model-win-next" class="heat-nav-btn" type="button" title="查看更新区间" data-i18n-title="modelsUsage.nextTitle" disabled>›</button>
+        </div>
+      </div>
+
+      <div id="model-usage-chart-wrap" class="model-usage-chart-wrap">
+        <div id="model-usage-gridlines" class="model-usage-gridlines" aria-hidden="true">
+          <div class="model-usage-gridline"><span id="model-chart-max-lbl" class="model-chart-max-lbl"></span></div>
+          <div class="model-usage-gridline"></div>
+          <div class="model-usage-gridline"></div>
+          <div class="model-usage-gridline"></div>
+        </div>
+        <div id="model-usage-bars" class="model-usage-bars"></div>
+        <div id="model-usage-xaxis" class="model-usage-xaxis"></div>
+      </div>
+
+      <div id="model-usage-empty" class="model-usage-empty" style="display:none" data-i18n="modelsUsage.empty">当前时间窗暂无 Token 用量记录</div>
+      <div id="model-usage-legend" class="model-usage-legend"></div>
     </div>
 
     <!-- 专属 Token 统计页（包含卡片统计、热力图与调色抽屉，费用模式下完全不渲染） -->
@@ -3696,6 +4514,34 @@
         </div>
       </div>
 
+      <!-- 按当前来源汇总的输入/输出/缓存读取占比明细条 -->
+      <div id="token-cache-breakdown" class="token-cache-breakdown">
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.uncachedInput">输入</span>
+          <strong class="tcb-val" id="tcb-input-val">--</strong>
+        </div>
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.cacheRead">缓存读取</span>
+          <strong class="tcb-val" id="tcb-cache-val">--</strong>
+        </div>
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.totalInput">总输入(输入+缓存)</span>
+          <strong class="tcb-val" id="tcb-total-input-val">--</strong>
+        </div>
+        <div class="tcb-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.output">输出</span>
+          <strong class="tcb-val" id="tcb-output-val">--</strong>
+        </div>
+        <div class="tcb-item tcb-ratio-item">
+          <span class="tcb-lbl" data-i18n="tokens.cache.ratio">缓存读取占比</span>
+          <strong class="tcb-val tcb-ratio-val" id="tcb-ratio-val">--</strong>
+        </div>
+        <div class="tcb-ratio-bar-track" id="tcb-ratio-bar-track" aria-hidden="true">
+          <div class="tcb-ratio-bar-fill" id="tcb-ratio-bar-fill" style="width:0%"></div>
+        </div>
+        <div class="tcb-note" id="tcb-note" hidden></div>
+      </div>
+
       <div class="heatmap-section">
         <div class="heat-header">
           <div class="heat-header-left">
@@ -3733,18 +4579,16 @@
           <div id="h-weekly-box" style="display:none"></div>
           <div id="h-monthly-box" style="display:none"></div>
           <div id="h-yearly-box" style="display:none"></div>
-          <div id="h-cum-box" style="display:none">
-            <canvas id="h-cum-canvas"></canvas>
-          </div>
+          <div id="h-cum-box" style="display:none"></div>
         </div>
         <div id="h-summary-bar" class="heat-summary-bar">
-          <div class="heat-sum-item">
+          <div id="h-sum-tokens-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumTokens">区间合计:</span>
             <span id="h-sum-tokens" class="heat-sum-val">-- Tokens</span>
           </div>
-          <div class="heat-sum-item">
+          <div id="h-sum-cost-wrap" class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumCost">预估费用:</span>
-            <span id="h-sum-cost" class="heat-sum-val">≈ $0.00 (¥0.00)</span>
+            <span id="h-sum-cost" class="heat-sum-val" data-i18n="tokens.heat.costPlaceholder">≈ $0.00 (¥0.00)</span>
           </div>
           <div class="heat-sum-item">
             <span class="heat-sum-label" data-i18n="tokens.heat.sumDailyAvg">折合每天:</span>
@@ -3951,18 +4795,18 @@
 
           <div
             style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
-            <span style="color:var(--ag-text-primary);font-weight:500">界面汉化</span>
+            <span style="color:var(--ag-text-primary);font-weight:500" data-i18n="settings.display.langTitle">界面汉化</span>
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
               <input id="check-live-chinese-tokens" type="checkbox" checked>
-              <span>启用客户端界面汉化（默认开启）</span>
+              <span data-i18n="settings.display.liveChineseShort">启用客户端界面汉化（默认开启）</span>
             </label>
           </div>
           <div
             style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px dashed var(--ag-border-subcard);font-size:11px">
-            <span style="color:var(--ag-text-primary);font-weight:500">顶栏功能</span>
+            <span style="color:var(--ag-text-primary);font-weight:500" data-i18n="settings.display.toolbarTitle">顶栏功能</span>
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--ag-text-secondary)">
               <input id="check-show-cli-tokens" type="checkbox">
-              <span>在顶栏显示 &gt;_ CLI 按钮（默认关闭）</span>
+              <span data-i18n="settings.display.showCliShort">在顶栏显示 &gt;_ CLI 按钮（默认关闭）</span>
             </label>
           </div>
           <div
@@ -4059,7 +4903,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.7-2</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.8.8-1</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -4081,8 +4925,8 @@
 
 <!-- 热力图浮动 Tooltip -->
 <div class="heat-popover" id="heat-pop">
-  <div class="pop-date" id="heat-pop-date">10月24日</div>
-  <div class="pop-val" id="heat-pop-val">2.47亿 个 Token</div>
+  <div class="pop-date" id="heat-pop-date">--</div>
+  <div class="pop-val" id="heat-pop-val">0 Tokens</div>
   <div class="pop-det" id="heat-pop-det"></div>
 </div>
 
@@ -4139,7 +4983,7 @@
           <div id="quota-cur-pool" class="quota-cur-pool-sub"></div>
           <div id="quota-cur-est" class="quota-cur-est" hidden></div>
         </div>
-        <span id="quota-cur-status" class="key-pill pill-muted">未知</span>
+        <span id="quota-cur-status" class="key-pill pill-muted" data-i18n="quota.state.unknown">未知</span>
       </div>
       <div id="quota-cur-alert" class="quota-cur-alert" hidden></div>
       <div id="quota-cur-buckets" class="quota-buckets-list"></div>
@@ -4158,6 +5002,131 @@
       Token」按本机输入+缓存+输出原始 Token 统计，受服务端计费权重、同池模型混用、他端消耗及周期采样覆盖度影响；校准过期或样本不足时不按有效推算展示。</div>
     <div id="quota-usage-tip" class="quota-usage-tip" data-i18n="quota.usageTip">💡
       用量提示：使用前可先查看各池剩余额度，优先选择余量充足且适合当前任务的模型。</div>
+
+    <!-- 统一多账号切换、自动切号、共享额度对照(ELV-57)与缓存保活保障(ELV-52) -->
+    <div id="quota-accounts-section" class="quota-accounts-section">
+      <div class="quota-subsec-header">
+        <span class="quota-subsec-title" data-i18n="accounts.panelTitle">👤 多账号切换与阈值自动切号</span>
+        <div class="quota-subsec-actions">
+          <button id="btn-acct-import-current" class="switch-pill-btn" type="button" data-i18n="accounts.importCurrent">导入当前</button>
+          <button id="btn-acct-import-tools" class="switch-pill-btn" type="button" hidden data-i18n="accounts.importTools">导入 Tools</button>
+          <button id="btn-acct-oauth-add" class="switch-pill-btn active" type="button" data-i18n="accounts.oauthAdd">+ 登录添加</button>
+        </div>
+      </div>
+      <div id="quota-acct-feedback" class="quota-acct-feedback" hidden></div>
+      <div id="quota-accounts-list" class="quota-accounts-list"></div>
+
+      <!-- 阈值自动切号配置 -->
+      <div class="quota-subcard">
+        <div class="quota-subcard-row">
+          <label class="quota-switch-lbl">
+            <input id="chk-auto-switch-enabled" type="checkbox" />
+            <span data-i18n="accounts.autoSwitchEnable">启用阈值自动切号（默认关闭）</span>
+          </label>
+          <span id="auto-switch-status-pill" class="key-pill pill-muted" data-i18n="accounts.status.disabled">已关闭</span>
+        </div>
+        <div id="auto-switch-config-body" class="auto-switch-grid">
+          <div class="quota-field-lbl"><span data-i18n="accounts.poolLabel">监控共享池</span>
+            <select id="sel-auto-switch-pool" class="quota-compact-select" aria-label="监控共享池" data-i18n-aria="accounts.poolLabel" style="display:none">
+              <option value="shared_gemini_main">Gemini 4 Hydrogen / 3.8 Flash</option>
+              <option value="shared_3p_pool">Claude 5.5 / GPT-OSS 120B</option>
+              <option value="shared_gemini_argon">Gemini 4 Argon / Orchestrator</option>
+              <option value="shared_gemini_carbon">Gemini 4 Carbon</option>
+            </select>
+            <div id="sel-auto-switch-pool-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-pool-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-pool-dropdown-label" class="ag-dropdown-label">Gemini 4 Hydrogen / 3.8 Flash</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-pool-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <div class="quota-field-lbl"><span data-i18n="accounts.metricLabel">判断口径</span>
+            <select id="sel-auto-switch-mode" class="quota-compact-select" aria-label="判断口径" data-i18n-aria="accounts.metricLabel" style="display:none">
+              <option value="remaining_pct" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</option>
+              <option value="used_pct" data-i18n="accounts.modeUsed">按累计已用 &gt;=</option>
+            </select>
+            <div id="sel-auto-switch-mode-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-mode-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-mode-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.modeRemaining">按剩余额度 &lt;=</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-mode-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <div class="quota-field-lbl"><span data-i18n="accounts.windowLabel">限额窗口</span>
+            <select id="sel-auto-switch-window" class="quota-compact-select" aria-label="限额窗口" data-i18n-aria="accounts.windowLabel" style="display:none">
+              <option value="primary" data-i18n="accounts.winPrimary">主窗口（最紧缩）</option>
+              <option value="5h">5h</option>
+              <option value="7d">7d</option>
+            </select>
+            <div id="sel-auto-switch-window-dropdown-wrap" class="ag-dropdown-wrapper ag-dropdown-compact">
+              <div id="sel-auto-switch-window-dropdown-trigger" class="ag-dropdown-trigger" tabindex="0">
+                <span id="sel-auto-switch-window-dropdown-label" class="ag-dropdown-label" data-i18n="accounts.winPrimary">主窗口（最紧缩）</span>
+                <div class="ag-dropdown-arrow">
+                  <svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4" /></svg>
+                </div>
+              </div>
+              <div id="sel-auto-switch-window-dropdown-menu" class="ag-dropdown-menu"></div>
+            </div>
+          </div>
+          <label class="quota-field-lbl"><span data-i18n="accounts.thresholdLabel">阈值 (%)</span>
+            <input id="inp-auto-switch-threshold" class="quota-compact-input" type="number" min="1" max="95" value="10" />
+          </label>
+          <div class="auto-switch-candidates-wrap">
+            <div class="quota-field-k" data-i18n="accounts.candidatesLabel">允许切入的候选账号：</div>
+            <div id="auto-switch-candidates-list" class="auto-switch-candidates-list"></div>
+          </div>
+          <div class="auto-switch-save-row">
+            <button id="btn-save-auto-switch" class="switch-pill-btn active" type="button" data-i18n="accounts.saveRule">保存切号规则</button>
+            <span id="auto-switch-last-note" class="quota-muted-note"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 本机消耗与共享账号额度变化对照 -->
+      <div class="quota-subsec-header" style="margin-top:10px">
+        <span class="quota-subsec-title" data-i18n="quota.compareTitle">📊 本机消耗与共享账号额度对照</span>
+      </div>
+      <div id="quota-compare-note" class="quota-muted-note" style="margin-bottom:5px" data-i18n="quota.compareDisclaimer">
+        按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。
+      </div>
+      <div id="quota-compare-list" class="quota-compare-list"></div>
+
+      <!-- 模型 Prompt Cache 保活协议与保障 -->
+      <div class="quota-subsec-header" style="margin-top:10px">
+        <span class="quota-subsec-title" data-i18n="keepalive.title">🧊 模型缓存保活状态与协议核查</span>
+        <span id="keepalive-status-pill" class="key-pill pill-muted" data-i18n="accounts.keepaliveOff">默认关闭</span>
+      </div>
+      <div class="quota-subcard">
+        <div id="keepalive-protocol-summary" class="quota-muted-note"></div>
+        <div id="keepalive-experiment-summary" class="quota-muted-note" style="margin-top:4px"></div>
+        <div class="quota-subcard-row" style="margin-top:6px">
+          <span id="keepalive-runtime-note" class="quota-muted-note"></span>
+          <button id="btn-keepalive-stop" class="switch-pill-btn" type="button" hidden data-i18n="keepalive.stopBtn">立即停止保活</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移除账号二次确认模态弹窗（移除插件凭证与切号候选，保留历史本地用量与归属） -->
+  <div id="account-remove-modal" class="ag-modal-overlay" hidden role="dialog" aria-modal="true"
+    aria-labelledby="modal-account-remove-title">
+    <div class="ag-modal-card">
+      <div id="modal-account-remove-title" class="ag-modal-title" data-i18n="accounts.removeModal.title">移除账号</div>
+      <div id="modal-account-remove-text" class="ag-modal-body"></div>
+      <div id="modal-account-remove-feedback" class="ag-modal-feedback" hidden></div>
+      <div class="ag-modal-actions">
+        <button id="btn-modal-account-remove-cancel" class="unlock-btn unlock-btn-secondary" type="button"
+          data-i18n="accounts.removeModal.cancel">取消</button>
+        <button id="btn-modal-account-remove-confirm" class="unlock-btn unlock-btn-danger" type="button"
+          data-i18n="accounts.removeModal.confirm">确认移除</button>
+      </div>
+    </div>
   </div>
 </section>`;
 
@@ -4206,7 +5175,8 @@ const PANEL_I18N = {
 
   // 上下文面板头部与分页
   'panel.ctx.aria': { 'zh-CN': '会话与上下文详情', 'zh-TW': '對話與 Context 詳細資訊', en: 'Session & Context Details' },
-  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: '💬 Current Session Context' },
+  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: 'ACM' },
+  'panel.ctx.fullName': { 'zh-CN': 'Antigravity Context Meter', 'zh-TW': 'Antigravity Context Meter', en: 'Antigravity Context Meter' },
   'panel.ctx.viewModel': { 'zh-CN': '查看模型', 'zh-TW': '檢視模型', en: 'Model' },
   'panel.ctx.viewModelTitle': { 'zh-CN': '按厂商查看不同模型的上下文设置', 'zh-TW': '依廠商檢視不同模型的上下文設定', en: 'Inspect context settings by vendor and model' },
   'panel.ctx.loadingModels': { 'zh-CN': '正在读取模型…', 'zh-TW': '正在讀取模型…', en: 'Loading models…' },
@@ -4282,6 +5252,7 @@ const PANEL_I18N = {
   'models.list.aria': { 'zh-CN': '按厂商分组的模型产品列表', 'zh-TW': '依廠商分組的模型產品清單', en: 'Models grouped by vendor' },
   'models.list.empty': { 'zh-CN': '暂无已知模型，发一条消息或等待模型列表加载后显示。', 'zh-TW': '暫無已知模型，發送一則訊息或等待模型清單載入後顯示。', en: 'No models detected yet. Send a message or wait for the model list to load.' },
   'models.restartBtn': { 'zh-CN': '重启客户端使设置生效', 'zh-TW': '重新啟動用戶端使設定生效', en: 'Restart client to apply' },
+  'models.btnRestartHost': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'models.manualRestart': { 'zh-CN': '请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。', 'zh-TW': '請手動重新啟動：關閉所有 Antigravity 視窗（包含系統匣圖示中的「結束」），再重新開啟 Antigravity。', en: 'Please restart manually: close all Antigravity windows (including Quit from the tray icon) and reopen Antigravity.' },
   'models.restartConfirm.text': { 'zh-CN': '重启会中断正在运行的任务。请先保存未保存的内容。', 'zh-TW': '重新啟動會中斷正在執行的任務。請先儲存未儲存的內容。', en: 'Restarting will interrupt active tasks. Please save any unsaved work first.' },
   'models.restartConfirm.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
@@ -4297,6 +5268,7 @@ const PANEL_I18N = {
   'models.card.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
   'models.card.savedSide': { 'zh-CN': '为这个模型记下的长度', 'zh-TW': '為此模型記下的長度', en: 'Saved limit for this model' },
   'models.card.request': { 'zh-CN': '请求携带', 'zh-TW': '請求攜帶', en: 'Request Attached' },
+  'models.card.requestDefault': { 'zh-CN': '恢复客户端默认', 'zh-TW': '還原用戶端預設', en: 'Client Default' },
   'models.mode.aria': { 'zh-CN': '上下文设置模式', 'zh-TW': '上下文設定模式', en: 'Context setting mode' },
   'models.mode.unifiedTitle': { 'zh-CN': '所有模型统一设置', 'zh-TW': '所有模型統一設定', en: 'Unified for All Models' },
   'models.mode.unifiedDesc': { 'zh-CN': '设置一次，所有模型使用相同的上下文长度。', 'zh-TW': '設定一次，所有模型使用相同的上下文長度。', en: 'Set once; all models use the same context length.' },
@@ -4313,11 +5285,14 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.summary.unconfirmed': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
   'models.summary.pendingRestart': { 'zh-CN': '待重启生效', 'zh-TW': '待重啟生效', en: 'Pending Restart' },
+  'models.status.pendingRestart': { 'zh-CN': '待重启生效', 'zh-TW': '待重啟生效', en: 'Pending Restart' },
   'models.summary.modelDefault': { 'zh-CN': '使用模型默认值', 'zh-TW': '使用模型預設值', en: 'Use model default' },
   'models.summary.unifiedTarget': { 'zh-CN': '所有模型（统一生效）', 'zh-TW': '所有模型（統一生效）', en: 'All models (unified)' },
   'models.card.detailsToggle': { 'zh-CN': '详细信息（配置来源、请求参数与预算验证）', 'zh-TW': '詳細資訊（設定來源、請求參數與預算驗證）', en: 'Details (Source, request params & budget)' },
@@ -4385,7 +5360,9 @@ const PANEL_I18N = {
   'models.meta.backup': { 'zh-CN': '原版备份状态', 'zh-TW': '原版備份狀態', en: 'Original Backup' },
   'models.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
   'models.credit.author': { 'zh-CN': '原作者帖子 (Linux.do @23375) ↗', 'zh-TW': '原作者文章 (Linux.do @23375) ↗', en: 'Original Post (Linux.do @23375) ↗' },
+  'models.credit.authorTitle': { 'zh-CN': '点击在系统默认浏览器中打开原作者帖子', 'zh-TW': '點擊在系統預設瀏覽器中開啟原作者文章', en: 'Open original post in default browser' },
   'models.credit.copy': { 'zh-CN': '📋 复制链接', 'zh-TW': '📋 複製連結', en: '📋 Copy Link' },
+  'models.credit.copyTitle': { 'zh-CN': '复制原作者帖子链接', 'zh-TW': '複製原作者文章連結', en: 'Copy original post link' },
   'models.credit.adapter': { 'zh-CN': '本项目负责 Node.js 适配与集成', 'zh-TW': '本專案負責 Node.js 適配與整合', en: 'Node.js adaptation & integration by this project' },
 
   // 状态与反馈通用
@@ -4498,12 +5475,108 @@ const PANEL_I18N = {
   'tokens.src.desktop': { 'zh-CN': '桌面端', 'zh-TW': '桌面端', en: 'Desktop' },
   'tokens.src.cli': { 'zh-CN': 'CLI', 'zh-TW': 'CLI', en: 'CLI' },
   'tokens.view.tokens': { 'zh-CN': 'Token 统计', 'zh-TW': 'Token 統計', en: 'Token Stats' },
+  'tokens.view.models': { 'zh-CN': '按模型', 'zh-TW': '依模型', en: 'By Model' },
   'tokens.view.cost': { 'zh-CN': 'API 参考金额', 'zh-TW': 'API 參考金額', en: 'API Est. Cost' },
+  'tokens.titleModels': { 'zh-CN': '按模型 Token 用量', 'zh-TW': '依模型 Token 用量', en: 'Model Usage History' },
+  'modelsUsage.title': { 'zh-CN': '按模型 Token 用量', 'zh-TW': '依模型 Token 用量', en: 'Usage history' },
+  'modelsUsage.subtitle': { 'zh-CN': '查看桌面端与 CLI 各模型每日 Token 消耗及占比分布。', 'zh-TW': '檢視桌面端與 CLI 各模型每日 Token 消耗及佔比分布。', en: 'Daily token consumption and share by model across Desktop and CLI.' },
+  'modelsUsage.groupModel': { 'zh-CN': '按模型', 'zh-TW': '依模型', en: 'By model' },
+  'modelsUsage.groupVariant': { 'zh-CN': '按档位', 'zh-TW': '依檔位', en: 'By variant' },
+  'modelsUsage.metricTotal': { 'zh-CN': '含缓存', 'zh-TW': '含快取', en: 'All tokens' },
+  'modelsUsage.metricNoCache': { 'zh-CN': '不含缓存', 'zh-TW': '不含快取', en: 'Excl. cache' },
+  'modelsUsage.hideUnattr': { 'zh-CN': '隐藏未标明', 'zh-TW': '隱藏未標明', en: 'Hide unattributed' },
+  'modelsUsage.showUnattr': { 'zh-CN': '仅已标明 ✓', 'zh-TW': '僅已標明 ✓', en: 'Attributed only ✓' },
+  'modelsUsage.unattributed': { 'zh-CN': '未标明模型', 'zh-TW': '未標明模型', en: 'Unattributed' },
+  'modelsUsage.prevTitle': { 'zh-CN': '查看更早时间段', 'zh-TW': '檢視更早時段', en: 'Previous period' },
+  'modelsUsage.nextTitle': { 'zh-CN': '查看更新时间段', 'zh-TW': '檢視更新時段', en: 'Next period' },
+  'modelsUsage.empty': { 'zh-CN': '当前时间窗暂无 Token 用量记录', 'zh-TW': '目前時間窗尚無 Token 用量紀錄', en: 'No token usage recorded in this period' },
+  'modelsUsage.stepsSuffix': { 'zh-CN': '{n} 次', 'zh-TW': '{n} 次', en: '{n} reqs' },
+  'modelsUsage.scaleMixed': { 'zh-CN': '量级刻度', 'zh-TW': '量級刻度', en: 'Log-Pow Scale' },
+  'modelsUsage.scaleLinear': { 'zh-CN': '线性比例', 'zh-TW': '線性比例', en: 'Linear Scale' },
+  'modelsUsage.otherSeries': { 'zh-CN': '其他模型/档位', 'zh-TW': '其他模型/檔位', en: 'Other' },
+  'cost.card.shareFmt': { 'zh-CN': '占总费用 {pct}%', 'zh-TW': '佔總費用 {pct}%', en: '{pct}% of cost' },
   'tokens.card.total': { 'zh-CN': '累计处理 Token', 'zh-TW': '累計處理 Token', en: 'Total Tokens' },
   'tokens.card.includeCache': { 'zh-CN': '含缓存读取', 'zh-TW': '含快取讀取', en: 'Incl. cache reads' },
   'tokens.card.today': { 'zh-CN': '今日使用', 'zh-TW': '今日使用', en: 'Today' },
   'tokens.card.month': { 'zh-CN': '本月使用', 'zh-TW': '本月使用', en: 'This Month' },
   'tokens.card.year': { 'zh-CN': '年度使用', 'zh-TW': '年度使用', en: 'This Year' },
+  'tokens.cache.uncachedInput': { 'zh-CN': '输入(未缓存)', 'zh-TW': '輸入(未快取)', en: 'Uncached In' },
+  'tokens.cache.cacheRead': { 'zh-CN': '缓存读取', 'zh-TW': '快取讀取', en: 'Cache Read' },
+  'tokens.cache.totalInput': { 'zh-CN': '总输入(输入+缓存)', 'zh-TW': '總輸入(輸入+快取)', en: 'Total In (In+Cache)' },
+  'tokens.cache.output': { 'zh-CN': '输出', 'zh-TW': '輸出', en: 'Output' },
+  'tokens.cache.ratio': { 'zh-CN': '缓存读取占比', 'zh-TW': '快取讀取佔比', en: 'Cache Read Ratio' },
+  'tokens.cache.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'tokens.cache.na': { 'zh-CN': '不适用', 'zh-TW': '不適用', en: 'N/A' },
+  'tokens.cache.partialNote': { 'zh-CN': '按可拆分输入/缓存读取的 Token 总量加权计算；{n} 条历史缺失细分未计入分母。', 'zh-TW': '依可拆分輸入/快取讀取的 Token 總量加權計算；{n} 筆歷史缺少細分未計入分母。', en: 'Token-weighted over records with split input/cache fields; {n} legacy record(s) without split excluded.' },
+  'tokens.cache.weightedNote': { 'zh-CN': '按当前来源总缓存读取 / 总输入（未命中缓存输入 + 缓存读取）加权计算。', 'zh-TW': '依目前來源總快取讀取 / 總輸入（未命中快取輸入 + 快取讀取）加權計算。', en: 'Token-weighted: cache read / total input (uncached input + cache read) for active source.' },
+  'tokens.cache.missingNote': { 'zh-CN': '当前来源记录缺少输入/缓存细分字段，不作零缓存推断。', 'zh-TW': '目前來源紀錄缺少輸入/快取細分欄位，不作零快取推論。', en: 'Input/cache split fields unavailable for active source; not assumed 0%.' },
+  'tokens.cache.zeroInputNote': { 'zh-CN': '当前来源总输入为 0，缓存读取占比不适用。', 'zh-TW': '目前來源總輸入為 0，快取讀取佔比不適用。', en: 'Total input is 0 for active source; cache ratio is N/A.' },
+
+  // 生成体验面板多语标签
+  'session.speedSummary.titleNoBolt': { 'zh-CN': '最新生成体验与速度', 'zh-TW': '最新生成體驗與速度', en: 'Latest Generation Experience' },
+  'session.speed.streamRate': { 'zh-CN': '纯流式速度', 'zh-TW': '純流式速度', en: 'Stream Speed' },
+  'session.speed.shortSampleBadge': { 'zh-CN': '短样本', 'zh-TW': '短樣本', en: 'Short sample' },
+  'session.speed.shortWindowEst': { 'zh-CN': '短窗口估算 (参考)', 'zh-TW': '短視窗估算 (參考)', en: 'Short-Window Est. (Ref)' },
+  'session.speed.shortWindowNote': { 'zh-CN': '流式窗口过短（可能包含思考 Token 集中吐出），未作主速度高亮展示。', 'zh-TW': '流式視窗過短（可能含思考 Token 集中吐出），未作主速度高亮展示。', en: 'Short streaming window (may include buffered thinking tokens); omitted from headline speed.' },
+  'session.speed.details': { 'zh-CN': '拆解', 'zh-TW': '拆解', en: 'Details' },
+  'session.speed.hideDetails': { 'zh-CN': '收起', 'zh-TW': '收起', en: 'Hide' },
+  'session.speed.breakdown.eScore': { 'zh-CN': '综合效率评分', 'zh-TW': '綜合效率評分', en: 'Efficiency E' },
+  'session.speed.breakdown.ttft': { 'zh-CN': '首字延迟档位', 'zh-TW': '首字延遲檔位', en: 'TTFT Tier' },
+  'session.speed.breakdown.stream': { 'zh-CN': '纯流式速度档位', 'zh-TW': '純流式速度檔位', en: 'Stream Speed Tier' },
+  'session.speed.breakdown.overall': { 'zh-CN': '整体平均速率 (对照)', 'zh-TW': '整體平均速率 (對照)', en: 'Overall Avg (Ref)' },
+  'session.speed.breakdown.duration': { 'zh-CN': '总生成耗时档位', 'zh-TW': '總生成耗時檔位', en: 'Total Duration Tier' },
+  'session.speed.breakdown.stability': { 'zh-CN': '流式稳定性评估', 'zh-TW': '流式穩定性評估', en: 'Stream Stability' },
+  'session.speed.breakdown.basis': { 'zh-CN': '体量调节依据', 'zh-TW': '體量調節依據', en: 'Scale Basis' },
+  'session.speed.stabilityOk': { 'zh-CN': '输出平稳 ({n} 块 · CV {cv})', 'zh-TW': '輸出平穩 ({n} 塊 · CV {cv})', en: 'Steady ({n} chunks · CV {cv})' },
+  'session.speed.stabilityHighVar': { 'zh-CN': '波动较大 ({n} 块 · CV {cv})', 'zh-TW': '波動較大 ({n} 塊 · CV {cv})', en: 'High variance ({n} chunks · CV {cv})' },
+  'session.speed.stabilityUnverified': { 'zh-CN': '暂无法评估 (未采集到足够真实流式分块间隔)', 'zh-TW': '暫無法評估 (未採集到足夠真實流式分塊間隔)', en: 'Unable to evaluate (insufficient real chunk intervals)' },
+  'session.speed.scoreSkippedSparse': { 'zh-CN': '样本不足 · 跳过综合评分', 'zh-TW': '樣本不足 · 略過綜合評分', en: 'Insufficient sample · Skipped' },
+  'session.speed.scoreSkippedMissing': { 'zh-CN': '指标缺失 · 不补造评分', 'zh-TW': '指標缺失 · 不補造評分', en: 'Missing metrics · Skipped' },
+  'session.speed.mockTag': { 'zh-CN': '模拟验收', 'zh-TW': '模擬驗收', en: 'Mock Verification' },
+  'session.latestCall.unknownMappedModel': { 'zh-CN': '未知模型 (无映射 · 原始 {id})', 'zh-TW': '未知模型 (無對映 · 原始 {id})', en: 'Unknown Model (Unmapped · {id})' },
+  'session.latestCall.rawIdNote': { 'zh-CN': '原始 ID: {id}', 'zh-TW': '原始 ID: {id}', en: 'Raw ID: {id}' },
+
+  // 最新调用卡片与会话时间线
+  'session.latestCall.title': { 'zh-CN': '最新调用', 'zh-TW': '最新呼叫', en: 'Latest Call' },
+  'session.latestCall.newAvailable': { 'zh-CN': '有新调用完成 · 点击查看最新', 'zh-TW': '有新呼叫完成 · 點擊檢視最新', en: 'New call available · Click to view latest' },
+  'session.latestCall.statusSuccess': { 'zh-CN': '成功', 'zh-TW': '成功', en: 'Done' },
+  'session.latestCall.statusStreaming': { 'zh-CN': '生成中', 'zh-TW': '產生中', en: 'Streaming' },
+  'session.latestCall.statusCanceled': { 'zh-CN': '已取消', 'zh-TW': '已取消', en: 'Canceled' },
+  'session.latestCall.statusFailed': { 'zh-CN': '失败', 'zh-TW': '失敗', en: 'Failed' },
+  'session.latestCall.statusUnknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'session.latestCall.agentMain': { 'zh-CN': '主代理', 'zh-TW': '主代理', en: 'Main' },
+  'session.latestCall.agentSub': { 'zh-CN': '子代理', 'zh-TW': '子代理', en: 'Subagent' },
+  'session.latestCall.agentUnknown': { 'zh-CN': '未知归属 (缺可靠身份字段)', 'zh-TW': '未知歸屬 (缺可靠身分欄位)', en: 'Unattributed (missing agent field)' },
+  'session.latestCall.missingParentStep': { 'zh-CN': '缺可靠父步骤字段', 'zh-TW': '缺可靠父步驟欄位', en: 'missing parent step field' },
+  'session.latestCall.inlineTokens': { 'zh-CN': '入 {inp} · 出 {out}', 'zh-TW': '入 {inp} · 出 {out}', en: 'In {inp} · Out {out}' },
+  'session.latestCall.inlineCache': { 'zh-CN': '缓存 {val}', 'zh-TW': '快取 {val}', en: 'Cache {val}' },
+  'session.latestCall.fieldTime': { 'zh-CN': '调用时间', 'zh-TW': '呼叫時間', en: 'Call Time' },
+  'session.latestCall.fieldModelId': { 'zh-CN': '稳定模型标识', 'zh-TW': '穩定模型識別碼', en: 'Model ID' },
+  'session.latestCall.fieldModelLabel': { 'zh-CN': '展示名与档位', 'zh-TW': '顯示名稱與檔位', en: 'Display & Effort' },
+  'session.latestCall.fieldInput': { 'zh-CN': '输入 (未缓存)', 'zh-TW': '輸入 (未快取)', en: 'Input (Uncached)' },
+  'session.latestCall.fieldCacheRead': { 'zh-CN': '缓存读取', 'zh-TW': '快取讀取', en: 'Cache Read' },
+  'session.latestCall.fieldTotalInput': { 'zh-CN': '总输入 (输入+缓存)', 'zh-TW': '總輸入 (輸入+快取)', en: 'Total Input' },
+  'session.latestCall.fieldOutput': { 'zh-CN': '输出 (含思考)', 'zh-TW': '輸出 (含思考)', en: 'Output (incl. think)' },
+  'session.latestCall.fieldCacheRatio': { 'zh-CN': '缓存读取占比', 'zh-TW': '快取讀取佔比', en: 'Cache Read Ratio' },
+  'session.latestCall.fieldTtft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
+  'session.latestCall.fieldDuration': { 'zh-CN': '总耗时', 'zh-TW': '總耗時', en: 'Duration' },
+  'session.latestCall.fieldSpeed': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Speed' },
+  'session.latestCall.fieldAgent': { 'zh-CN': '代理归属', 'zh-TW': '代理歸屬', en: 'Agent Attribution' },
+  'session.latestCall.fieldStatus': { 'zh-CN': '调用状态', 'zh-TW': '呼叫狀態', en: 'Status' },
+  'session.latestCall.unknownVal': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'session.latestCall.naVal': { 'zh-CN': '不适用', 'zh-TW': '不適用', en: 'N/A' },
+  'session.timeline.viewHistory': { 'zh-CN': '查看历史', 'zh-TW': '檢視歷史', en: 'History' },
+  'session.timeline.hideHistory': { 'zh-CN': '收起历史', 'zh-TW': '收合歷史', en: 'Hide History' },
+  'session.timeline.loading': { 'zh-CN': '正在读取当前会话请求时间线…', 'zh-TW': '正在讀取目前工作階段請求時間線…', en: 'Loading session timeline…' },
+  'session.timeline.empty': { 'zh-CN': '当前会话暂无可展示的历史请求记录。', 'zh-TW': '目前工作階段尚無可顯示的歷史請求紀錄。', en: 'No recorded calls found in this session yet.' },
+  'session.timeline.loadMore': { 'zh-CN': '加载更早轮次 ({n})', 'zh-TW': '載入更早輪次 ({n})', en: 'Load earlier turns ({n})' },
+  'session.timeline.summary': { 'zh-CN': '{turns} 轮 · {calls} 次调用（主 {main} / 子 {sub}） · 会话缓存占比 {cache}', 'zh-TW': '{turns} 輪 · {calls} 次呼叫（主 {main} / 子 {sub}） · 工作階段快取佔比 {cache}', en: '{turns} turn(s) · {calls} call(s) (main {main} / sub {sub}) · Session cache {cache}' },
+  'session.timeline.windowNote': { 'zh-CN': '注：单次与整轮累计 Token 为处理量统计，不等同于当前上下文窗口占用。', 'zh-TW': '註：單次與整輪累計 Token 為處理量統計，不等同於目前上下文視窗佔用。', en: 'Note: Per-call & turn cumulative tokens measure usage, not active context window occupancy.' },
+  'session.timeline.turnLabel': { 'zh-CN': '第 {n} 轮', 'zh-TW': '第 {n} 輪', en: 'Turn {n}' },
+  'session.timeline.turnNoPrompt': { 'zh-CN': '（用户轮次记录）', 'zh-TW': '（使用者輪次紀錄）', en: '(User turn)' },
+  'session.timeline.turnSummary': { 'zh-CN': '{calls} 次 · 入 {inp} / 缓 {cap} / 出 {out}', 'zh-TW': '{calls} 次 · 入 {inp} / 快 {cap} / 出 {out}', en: '{calls} · In {inp} / Cache {cap} / Out {out}' },
+  'session.timeline.unlinkedTitle': { 'zh-CN': '未归属到具体轮次的调用 / 子代理 ({n})', 'zh-TW': '未歸屬至具體輪次的呼叫 / 子代理 ({n})', en: 'Unlinked / Unattributed Calls ({n})' },
+  'session.timeline.dbMissingNote': { 'zh-CN': '缺可靠子代理库字段（{reason}），仅展示已确认调用。', 'zh-TW': '缺可靠子代理庫欄位（{reason}），僅顯示已確認呼叫。', en: 'Missing subagent DB evidence ({reason}); showing confirmed calls only.' },
   'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
   'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
   'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
@@ -4519,6 +5592,33 @@ const PANEL_I18N = {
   'tokens.heat.tip': { 'zh-CN': '点击或悬浮格子查看当日详细 Token 构成', 'zh-TW': '點擊或懸停格子查看當日詳細 Token 結構', en: 'Click or hover a cell to view daily token breakdown' },
   'tokens.heat.less': { 'zh-CN': '少', 'zh-TW': '少', en: 'Less' },
   'tokens.heat.more': { 'zh-CN': '多', 'zh-TW': '多', en: 'More' },
+  'tokens.heat.unactivatedTip': { 'zh-CN': '未开启记录', 'zh-TW': '未開啟紀錄', en: 'Before first record' },
+  'tokens.heat.futureTip': { 'zh-CN': '未来日期', 'zh-TW': '未來日期', en: 'Future' },
+  'tokens.heat.peakBadge': { 'zh-CN': '峰值', 'zh-TW': '峰值', en: 'Peak' },
+  'tokens.heat.cumDeltaLbl': { 'zh-CN': '当日增量', 'zh-TW': '當日增量', en: 'Daily' },
+  'tokens.heat.cumTotalLbl': { 'zh-CN': '截止累计', 'zh-TW': '截止累計', en: 'Cumulative' },
+  'tokens.cum.daysMeta': { 'zh-CN': '{start} – {end} · {total} 天', 'zh-TW': '{start} – {end} · {total} 天', en: '{start} – {end} · {total}d' },
+  'tokens.cum.activeMeta': { 'zh-CN': '活跃 {active} 天 · 0 用量 {zero} 天', 'zh-TW': '活躍 {active} 天 · 0 用量 {zero} 天', en: '{active} active · {zero} zero' },
+  'tokens.cum.recordDaysShort': { 'zh-CN': '记录 {total} 天', 'zh-TW': '紀錄 {total} 天', en: 'Recorded {total}d' },
+  'tokens.cum.rulerLabel': { 'zh-CN': '跨账号量级尺', 'zh-TW': '跨帳號量級尺', en: 'Magnitude' },
+  'tokens.cum.belowMin': { 'zh-CN': '<10M ({val})', 'zh-TW': '<10M ({val})', en: '<10M ({val})' },
+  'tokens.cum.aboveMax': { 'zh-CN': '>100B ({val})', 'zh-TW': '>100B ({val})', en: '>100B ({val})' },
+  'tokens.cum.zeroVal': { 'zh-CN': '0 用量', 'zh-TW': '0 用量', en: '0 Tokens' },
+  'tokens.cum.zeroDayBadge': { 'zh-CN': '0 用量', 'zh-TW': '0 用量', en: '0 Tokens' },
+  'tokens.cum.peakSpanFmt': { 'zh-CN': '高峰 {range} 占 {pct}%', 'zh-TW': '高峰 {range} 佔 {pct}%', en: 'Peak {range} ({pct}%)' },
+  'tokens.cum.concLine': { 'zh-CN': '50% 用量集中在 {start} – {end}（{n} 天 · 占 {pct}%）', 'zh-TW': '50% 用量集中在 {start} – {end}（{n} 天 · 佔 {pct}%）', en: '50% usage in {start} – {end} ({n}d · {pct}%)' },
+  'tokens.cum.concInsufficient': { 'zh-CN': '记录不足 7 天，暂不计算集中度', 'zh-TW': '紀錄不足 7 天，暫不計算集中度', en: 'Under 7 days; concentration omitted' },
+  'tokens.cum.peakDayFmt': { 'zh-CN': '峰值 {date} {val} ({pct}%)', 'zh-TW': '峰值 {date} {val} ({pct}%)', en: 'Peak {date} {val} ({pct}%)' },
+  'tokens.cum.peakWeekFmt': { 'zh-CN': '峰值周 {range} {val} ({pct}%)', 'zh-TW': '峰值週 {range} {val} ({pct}%)', en: 'Peak wk {range} {val} ({pct}%)' },
+  'tokens.cum.emptyTitle': { 'zh-CN': '当前区间暂无 Token 用量记录', 'zh-TW': '目前區間尚無 Token 用量紀錄', en: 'No token usage in this interval' },
+  'tokens.cum.emptySub': { 'zh-CN': '共 {days} 天 · 0 用量 {days} 天', 'zh-TW': '共 {days} 天 · 0 用量 {days} 天', en: '{days} days · {days} zero' },
+  'tokens.cum.shareLbl': { 'zh-CN': '占比', 'zh-TW': '佔比', en: 'Share' },
+  'tokens.cum.locateDaily': { 'zh-CN': '定位到「每天」', 'zh-TW': '定位至「每天」', en: 'Locate in Daily' },
+  'tokens.cum.clearLock': { 'zh-CN': '取消 (Esc)', 'zh-TW': '取消 (Esc)', en: 'Clear (Esc)' },
+  'tokens.cum.expandDays': { 'zh-CN': '展开日明细 ({n}天)', 'zh-TW': '展開日明細 ({n}天)', en: 'Show {n} days' },
+  'tokens.cum.collapseDays': { 'zh-CN': '收起日明细', 'zh-TW': '收合日明細', en: 'Hide days' },
+  'tokens.cum.weekGroupHint': { 'zh-CN': '按 7 天分组 ({n} 段)', 'zh-TW': '依 7 天分組 ({n} 段)', en: 'Grouped 7d ({n} segs)' },
+  'tokens.cum.weekSumLbl': { 'zh-CN': '周增量', 'zh-TW': '週增量', en: 'Weekly' },
   'tokens.colors.title': { 'zh-CN': '🎨 热力图色阶与面板外观自定义（默认跟随主题）', 'zh-TW': '🎨 熱力圖色階與面板外觀自訂（預設跟隨佈景主題）', en: '🎨 Heatmap Palette & Panel Appearance' },
   'tokens.update.title': { 'zh-CN': '更新设置', 'zh-TW': '更新設定', en: 'Update Settings' },
   'tokens.update.auto': { 'zh-CN': '启动时自动检查更新（不自动安装）', 'zh-TW': '啟動時自動檢查更新（不自動安裝）', en: 'Check for updates on startup (manual install)' },
@@ -4566,7 +5666,7 @@ const PANEL_I18N = {
   'mod.zh.descActive': { 'zh-CN': '客户端简体中文运行中：DOM 监听器正常工作，左侧边栏与核心菜单已翻译。', 'zh-TW': '用戶端簡體中文執行中：DOM 監聽器正常運作，左側邊欄與核心選單已翻譯。', en: 'Client zh-CN localization is active.' },
   'mod.zh.descNeedInject': { 'zh-CN': '配置已开启简体中文，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。', 'zh-TW': '設定已開啟簡體中文，但目前磁碟 ASAR 未注入中文化資源；需結束用戶端後執行 node cli.js chinese:enable 完成注入。', en: 'zh-CN is enabled in config, but ASAR lacks localization injection. Quit Antigravity and run: node cli.js chinese:enable' },
   'mod.zh.descPendingRestart': { 'zh-CN': '简体中文代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。', 'zh-TW': '簡體中文程式碼已注入且設定已開啟；需完全結束並重新開啟 Antigravity 用戶端載入生效。', en: 'zh-CN localization is injected and enabled; quit and reopen Antigravity to take effect.' },
-  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js chinese:enable 补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js chinese:enable 補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js chinese:enable from the package directory.' },
+  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js chinese:enable）补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js chinese:enable）補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js chinese:enable on macOS/Linux) from the package directory.' },
   'mod.zh.savedEnableRestart': { 'zh-CN': '✔ 已开启客户端简体中文并保存配置，完全退出并重启 Antigravity 后生效。', 'zh-TW': '✔ 已開啟用戶端簡體中文並儲存設定，完全結束並重啟 Antigravity 後生效。', en: '✔ Simplified Chinese saved; quit and restart Antigravity to apply.' },
   'mod.zh.savedDisableRestart': { 'zh-CN': '✔ 已切换为官方英文并保存配置，完全退出并重启 Antigravity 后恢复英文。', 'zh-TW': '✔ 已切換為官方英文並儲存設定，完全結束並重啟 Antigravity 後恢復英文。', en: '✔ Native English saved; quit and restart Antigravity to restore English.' },
   'mod.zh.btnDisable': { 'zh-CN': '切换为官方英文 (需重启)', 'zh-TW': '切換為官方英文 (需重啟)', en: 'Switch to English (Restart)' },
@@ -4579,7 +5679,7 @@ const PANEL_I18N = {
   'mod.proxy.badgeOff': { 'zh-CN': '⚪ 未启用', 'zh-TW': '⚪ 未啟用', en: '⚪ Disabled' },
   'mod.proxy.descOn': { 'zh-CN': '已启用本地网络直连（代理: {url}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。', 'zh-TW': '已啟用本機網路直連（代理: {url}）。注意：模型請求連通性待實際線上對話驗證。', en: 'Local proxy enabled ({url}). Connectivity should be verified with a live chat request.' },
   'mod.proxy.descNeedInject': { 'zh-CN': '配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。', 'zh-TW': '設定已開啟代理，但目前磁碟 ASAR 未注入代理攔截邏輯；需結束用戶端後執行 node cli.js proxy:enable 完成注入。', en: 'Proxy enabled in config, but ASAR lacks proxy hook. Quit Antigravity and run: node cli.js proxy:enable' },
-  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js proxy:enable 补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js proxy:enable 補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js proxy:enable from the package directory.' },
+  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js proxy:enable）补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js proxy:enable）補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js proxy:enable on macOS/Linux) from the package directory.' },
   'mod.proxy.descOff': { 'zh-CN': '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。', 'zh-TW': '未啟用本機網路直連，網路請求跟隨系統預設/TUN 設定。', en: 'Local proxy disabled; requests follow system/TUN settings.' },
   'mod.proxy.btnDisable': { 'zh-CN': '关闭免 TUN 直连', 'zh-TW': '關閉免 TUN 直連', en: 'Disable Local Proxy' },
   'mod.proxy.btnEnable': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable Local Proxy' },
@@ -4707,17 +5807,17 @@ const PANEL_I18N = {
   'update.applyNow': { 'zh-CN': '立即更新', 'zh-TW': '立即更新', en: 'Update Now' },
   'update.connecting': { 'zh-CN': '正在连接 GitHub 检测最新版本…', 'zh-TW': '正在連接 GitHub 檢測最新版本…', en: 'Connecting to GitHub to check for updates…' },
   'update.failedTitle': { 'zh-CN': '⚠️ 检查更新失败', 'zh-TW': '⚠️ 檢查更新失敗', en: '⚠️ Update Check Failed' },
-  'update.failedVer': { 'zh-CN': 'v{ver} (检查失败)', 'zh-TW': 'v{ver} (檢查失敗)', en: 'v{ver} (Check failed)' },
+  'update.failedVer': { 'zh-CN': '{ver} (检查失败)', 'zh-TW': '{ver} (檢查失敗)', en: '{ver} (Check failed)' },
   'update.failedFetch': { 'zh-CN': '未能获取有效的版本数据', 'zh-TW': '未能取得有效的版本資料', en: 'Failed to retrieve valid release metadata' },
   'update.failedBody': { 'zh-CN': '检查更新失败: {err}。请检查网络代理设置或前往 GitHub 查看。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路代理設定或前往 GitHub 檢視。', en: 'Update check failed: {err}. Please check your proxy or visit GitHub.' },
   'update.failedNetBody': { 'zh-CN': '检查更新失败: {err}。请检查网络连接或稍后重试。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路連線或稍後重試。', en: 'Update check failed: {err}. Please check your network and try again.' },
   'update.foundTitle': { 'zh-CN': '🚀 发现新版本', 'zh-TW': '🚀 發現新版本', en: '🚀 Update Available' },
-  'update.foundBody': { 'zh-CN': '发现新版本 v{ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 v{ver}！\n\n更新說明：\n{notes}', en: 'Version v{ver} is available!\n\nRelease notes:\n{notes}' },
+  'update.foundBody': { 'zh-CN': '发现新版本 {ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 {ver}！\n\n更新說明：\n{notes}', en: 'Version {ver} is available!\n\nRelease notes:\n{notes}' },
   'update.defaultNotes': { 'zh-CN': '性能优化与体验改进', 'zh-TW': '效能最佳化與體驗改進', en: 'Performance and usability improvements' },
   'update.latestTitle': { 'zh-CN': '✅ 已是最新版本', 'zh-TW': '✅ 已是最新版本', en: '✅ Up to Date' },
-  'update.latestVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Latest)' },
-  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 (v{ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 (v{ver})，待重新啟動用戶端後主行程完整生效。', en: 'v{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
-  'update.latestBody': { 'zh-CN': '当前已是最新版本 (v{ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 (v{ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version (v{ver}), verified via GitHub Releases.' },
+  'update.latestVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Latest)' },
+  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 ({ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 ({ver})，待重新啟動用戶端後主行程完整生效。', en: '{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
+  'update.latestBody': { 'zh-CN': '当前已是最新版本 ({ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 ({ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version ({ver}), verified via GitHub Releases.' },
   'update.updatingBtn': { 'zh-CN': '正在更新...', 'zh-TW': '正在更新...', en: 'Updating…' },
   'update.downloading': { 'zh-CN': '正在下载安装包并校验 SHA-256...', 'zh-TW': '正在下載安裝套件並校驗 SHA-256...', en: 'Downloading package and verifying SHA-256…' },
   'update.noApi': { 'zh-CN': '更新接口不可用', 'zh-TW': '更新介面無法使用', en: 'Update API unavailable' },
@@ -4838,6 +5938,9 @@ const PANEL_I18N = {
   'plan.summary.justNow': { 'zh-CN': '刚刚更新', 'zh-TW': '剛剛更新', en: 'Just now' },
   'plan.summary.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
   'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
+  'plan.summary.priceUnsetShort': { 'zh-CN': '待设置月费', 'zh-TW': '待設定月費', en: 'Fee unset' },
+  'plan.summary.priceUnsetCny': { 'zh-CN': '(待填写实付)', 'zh-TW': '(待填寫實付)', en: '(not set)' },
+  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率换算参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算參考 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
   'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
   'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
   'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
@@ -4861,6 +5964,9 @@ const PANEL_I18N = {
   'plan.tag.official': { 'zh-CN': '官方定价', 'zh-TW': '官方定價', en: 'Official price' },
   'plan.tag.publicRef': { 'zh-CN': '公开参考价', 'zh-TW': '公開參考價', en: 'Public ref' },
   'plan.tag.regionRef': { 'zh-CN': '地区参考价', 'zh-TW': '地區參考價', en: 'Regional ref' },
+  'plan.tag.unset': { 'zh-CN': '待设置', 'zh-TW': '待設定', en: 'Unset' },
+  'plan.priceUnsetNote': { 'zh-CN': '待设置实付月费（不套用 Pro $19.99）', 'zh-TW': '待設定實付月費（不套用 Pro $19.99）', en: 'Monthly fee unset (Pro $19.99 ref not applied)' },
+  'plan.ultraSubtierUnknown': { 'zh-CN': 'Google AI Ultra（子档未知）', 'zh-TW': 'Google AI Ultra（子檔未知）', en: 'Google AI Ultra (Sub-tier unknown)' },
   'plan.acq.normal': { 'zh-CN': '正常付费订阅', 'zh-TW': '正常付費訂閱', en: 'Standard Paid Plan' },
   'plan.cycle.monthly': { 'zh-CN': '月付', 'zh-TW': '月繳', en: 'Monthly' },
   'plan.cycle.yearly': { 'zh-CN': '年付', 'zh-TW': '年繳', en: 'Yearly' },
@@ -4894,6 +6000,8 @@ const PANEL_I18N = {
   // API 参考金额与展开详情
   'cost.title': { 'zh-CN': '💰 本期 API 参考金额', 'zh-TW': '💰 本期 API 參考金額', en: '💰 Period API Reference Cost' },
   'cost.periodTag': { 'zh-CN': '本月自然月', 'zh-TW': '本月自然月', en: 'This Calendar Month' },
+  'cost.calendarMonth': { 'zh-CN': '自然月', 'zh-TW': '自然月', en: 'Calendar Month' },
+  'cost.periodTagFmt': { 'zh-CN': '{ym} (自然月)', 'zh-TW': '{ym} (自然月)', en: '{ym} (Calendar Month)' },
   'cost.nonPaidBadge': { 'zh-CN': 'API折算 · 非实付', 'zh-TW': 'API換算 · 非實付', en: 'API Est. · Not Billed' },
   'cost.subUnknown': { 'zh-CN': '订阅实付：未填写', 'zh-TW': '訂閱實付：未填寫', en: 'Plan paid: Not set' },
   'cost.btnFill': { 'zh-CN': '补充', 'zh-TW': '補充', en: 'Edit' },
@@ -4977,7 +6085,9 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.pref.none': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
@@ -5091,7 +6201,8 @@ const PANEL_I18N = {
   'common.notProvided': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
   'common.loading': { 'zh-CN': '读取中...', 'zh-TW': '讀取中...', en: 'Loading...' },
   'tokens.heat.firstUsePlaceholder': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
-  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (¥0.00) · 日均 $0.00', en: '≈ $0.00 (¥0.00) · $0.00/d' },
+  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (HK$0 / NT$0) · 日均 $0.00', en: '≈ $0.00 · Avg $0.00/d' },
+  'tokens.heat.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00)', 'zh-TW': '≈ $0.00 (HK$0 / NT$0)', en: '≈ $0.00' },
   'tokens.heat.activeAvgPlaceholder': { 'zh-CN': '$0.00 (0天)', 'zh-TW': '$0.00 (0天)', en: '$0.00 (0d)' },
   'tokens.card.todaySub': { 'zh-CN': '{n} 会话实时累加', 'zh-TW': '{n} 會話即時累加', en: '{n} chat(s) live' },
   'tokens.card.monthSub': { 'zh-CN': '日均约 {val}', 'zh-TW': '日均約 {val}', en: '~{val}/day avg' },
@@ -5170,15 +6281,15 @@ const PANEL_I18N = {
   'settings.proxy.resModel': { 'zh-CN': '模型请求', 'zh-TW': '模型請求', en: 'Model request' },
 
   'update.unavailableTitle': { 'zh-CN': 'ℹ️ 更新不可用', 'zh-TW': 'ℹ️ 更新不可用', en: 'ℹ️ Update Unavailable' },
-  'update.unavailableVer': { 'zh-CN': 'v{ver} (更新不可用)', 'zh-TW': 'v{ver} (更新不可用)', en: 'v{ver} (Unavailable)' },
+  'update.unavailableVer': { 'zh-CN': '{ver} (更新不可用)', 'zh-TW': '{ver} (更新不可用)', en: '{ver} (Unavailable)' },
   'update.unavailableBody': { 'zh-CN': '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。', 'zh-TW': '目前環境未提供更新橋接介面（如純前端除錯或免安裝熱掛載模式），無法線上檢查更新。請前往 GitHub Releases 頁面查看最新發布。', en: 'Update bridge unavailable in this mode. Check GitHub Releases for the latest version.' },
   'update.checkingTitle': { 'zh-CN': '🔄 检查更新中', 'zh-TW': '🔄 檢查更新中', en: '🔄 Checking for Updates' },
-  'update.checkingVer': { 'zh-CN': 'v{ver} (正在检查…)', 'zh-TW': 'v{ver} (正在檢查…)', en: 'v{ver} (Checking…)' },
+  'update.checkingVer': { 'zh-CN': '{ver} (正在检查…)', 'zh-TW': '{ver} (正在檢查…)', en: '{ver} (Checking…)' },
   'update.doneTitle': { 'zh-CN': '🎉 更新已完成', 'zh-TW': '🎉 更新已完成', en: '🎉 Update Complete' },
-  'update.doneVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Up to date)' },
-  'update.doneHot': { 'zh-CN': '已成功在线更新至 v{ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 v{ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to v{ver}. UI hot-injected immediately; restart client for main-process changes.' },
-  'update.doneHotFull': { 'zh-CN': '已成功在线更新至 v{ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 v{ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to v{ver}. Both UI and backend service hot-reloaded and verified without restart.' },
-  'update.doneDisk': { 'zh-CN': '已成功完成 v{ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 v{ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to v{ver} complete. Restart Antigravity to apply.' },
+  'update.doneVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Up to date)' },
+  'update.doneHot': { 'zh-CN': '已成功在线更新至 {ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 {ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to {ver}. UI hot-injected immediately; restart client for main-process changes.' },
+  'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
+  'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
   'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
@@ -5335,16 +6446,25 @@ const PANEL_I18N = {
   'cp.copyHsl': { 'zh-CN': '复制 HSL', 'zh-TW': '複製 HSL', en: 'Copy HSL' },
   'update.dialogAria': { 'zh-CN': '软件更新', 'zh-TW': '軟體更新', en: 'Software Update' },
 
-  // 订阅表单与热力图补充
-  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅月费及人民币折合汇率参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱月費及人民幣折合匯率參考 (點擊展開/收起詳情)', en: 'Current monthly fee & CNY estimate (click to toggle details)' },
+  // 订阅表单、自定义日期选择器与热力图补充
   'plan.country.title': { 'zh-CN': '仅作为本地显示记录，不修改实际 Google 账号', 'zh-TW': '僅作為本機顯示記錄，不修改實際 Google 帳號', en: 'Local display record only; does not change your Google account' },
   'plan.region.title': { 'zh-CN': '实际购买或支付订阅所在的国家或地区', 'zh-TW': '實際購買或支付訂閱所在的國家或地區', en: 'Country/region where the subscription is billed' },
   'plan.currency.aria': { 'zh-CN': '选择订阅币种', 'zh-TW': '選擇訂閱幣別', en: 'Select subscription currency' },
   'plan.currency.title': { 'zh-CN': '订阅计价/结算币种', 'zh-TW': '訂閱計價/結算幣別', en: 'Subscription billing currency' },
   'plan.country.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
   'plan.region.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '折合 ≈ ¥{val} CNY/月', en: '≈ ¥{val} CNY/mo' },
-  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '≈ ¥{val} CNY', en: '≈ ¥{val} CNY' },
+  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '約合 ≈ ¥{val} CNY/月', en: '≈ ${val}/mo' },
+  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '約 ¥{val} CNY', en: 'approx. ${val} USD' },
+  'plan.usdApprox': { 'zh-CN': '折合 ≈ ${val} USD', 'zh-TW': '約合 ≈ ${val} USD', en: 'approx. ${val} USD' },
+  'plan.usdApproxMo': { 'zh-CN': '折合 ≈ ${val} USD/月', 'zh-TW': '約合 ≈ ${val} USD/月', en: 'approx. ${val} USD/mo' },
+  'datePicker.placeholder': { 'zh-CN': '年 / 月 / 日', 'zh-TW': '年 / 月 / 日', en: 'YYYY-MM-DD' },
+  'datePicker.clear': { 'zh-CN': '清除', 'zh-TW': '清除', en: 'Clear' },
+  'datePicker.today': { 'zh-CN': '今天', 'zh-TW': '今天', en: 'Today' },
+  'datePicker.prevMonth': { 'zh-CN': '上个月', 'zh-TW': '上個月', en: 'Previous month' },
+  'datePicker.nextMonth': { 'zh-CN': '下个月', 'zh-TW': '下個月', en: 'Next month' },
+  'datePicker.weekdays': { 'zh-CN': '日,一,二,三,四,五,六', 'zh-TW': '日,一,二,三,四,五,六', en: 'Su,Mo,Tu,We,Th,Fr,Sa' },
+  'datePicker.monthTitle': { 'zh-CN': '{y}年{m}月', 'zh-TW': '{y}年{m}月', en: '{monthEn} {y}' },
+  'datePicker.ariaLabel': { 'zh-CN': '选择权益到期日期', 'zh-TW': '選擇權益到期日期', en: 'Choose expiration date' },
   'plan.acqOpt.normal_paid': { 'zh-CN': '正常官方付费订阅', 'zh-TW': '正常官方付費訂閱', en: 'Standard paid subscription' },
   'plan.acqOpt.student_offer': { 'zh-CN': '学生教育优惠 (Google AI Pro 学生方案)', 'zh-TW': '學生教育優惠 (Google AI Pro 學生方案)', en: 'Student discount (Google AI Pro)' },
   'plan.acqOpt.pixel_bundle': { 'zh-CN': 'Pixel 手机购机赠送权益', 'zh-TW': 'Pixel 手機購機贈送權益', en: 'Pixel phone bundle perk' },
@@ -5359,8 +6479,8 @@ const PANEL_I18N = {
   'plan.form.presetCustom': { 'zh-CN': '✎ 自定义输入地区', 'zh-TW': '✎ 自訂輸入地區', en: '✎ Custom region' },
   'plan.form.countryPh': { 'zh-CN': '例如：美国 (US)', 'zh-TW': '例如：美國 (US)', en: 'e.g. United States (US)' },
   'plan.form.regionPh': { 'zh-CN': '例如：韩国 / 澳大利亚', 'zh-TW': '例如：韓國 / 澳洲', en: 'e.g. South Korea / Australia' },
-  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', en: '{flag} {name} ({id}) · {sym}{price}/mo (≈ ¥{cny})' },
-  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月', en: '{flag} {name} (CNY) · ¥{price}/mo' },
+  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月{conv}', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月{conv}', en: '{flag} {name} ({id}) · {sym}{price}/mo{conv}' },
+  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月{conv}', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月{conv}', en: '{flag} {name} (CNY) · ¥{price}/mo{conv}' },
   'plan.cycleOpt.monthly': { 'zh-CN': '月付', 'zh-TW': '月付', en: 'Monthly' },
   'plan.cycleOpt.yearly': { 'zh-CN': '年付', 'zh-TW': '年付', en: 'Yearly' },
   'plan.cycleOpt.free': { 'zh-CN': '免费 / 促销赠送', 'zh-TW': '免費 / 促銷贈送', en: 'Free / Promo' },
@@ -5390,6 +6510,32 @@ const PANEL_I18N = {
   // 其余散落文案
   'drawer.shortExpand': { 'zh-CN': '▼ 展开', 'zh-TW': '▼ 展開', en: '▼ Expand' },
   'drawer.shortCollapse': { 'zh-CN': '▲ 收起', 'zh-TW': '▲ 收起', en: '▲ Collapse' },
+  'badge.clickOpenDetails': { 'zh-CN': ' · 点击查看统计明细', 'zh-TW': ' · 點擊檢視統計明細', en: ' · Click to view details' },
+  'settings.display.title': { 'zh-CN': '⚙️ 顶栏功能与显示设置', 'zh-TW': '⚙️ 頂欄功能與顯示設定', en: '⚙️ Toolbar & Display Settings' },
+  'settings.display.cliVisible': { 'zh-CN': 'CLI 已显示', 'zh-TW': 'CLI 已顯示', en: 'CLI Visible' },
+  'settings.display.cliHidden': { 'zh-CN': 'CLI 已隐藏', 'zh-TW': 'CLI 已隱藏', en: 'CLI Hidden' },
+  'settings.display.liveChineseLabel': { 'zh-CN': '启用客户端界面汉化（免改盘热注入，关闭后重载恢复英文）', 'zh-TW': '啟用用戶端介面中文化（免改磁碟熱注入，關閉後重載恢復英文）', en: 'Enable client zh-CN localization (patchless hot-inject; reload for English)' },
+  'settings.display.defaultOn': { 'zh-CN': '默认开启', 'zh-TW': '預設開啟', en: 'Default On' },
+  'settings.display.defaultOff': { 'zh-CN': '默认关闭', 'zh-TW': '預設關閉', en: 'Default Off' },
+  'settings.display.showCliLabel': { 'zh-CN': '在顶栏显示 <code>&gt;_ CLI</code> 快捷启动按钮', 'zh-TW': '在頂欄顯示 <code>&gt;_ CLI</code> 快捷啟動按鈕', en: 'Show <code>&gt;_ CLI</code> quick launch button in toolbar' },
+  'settings.display.footnote': { 'zh-CN': '配置保存于宿主独立设置文件（跨插件版本与客户端更新自动保留）。', 'zh-TW': '設定儲存於宿主獨立設定檔（跨外掛版本與用戶端更新自動保留）。', en: 'Saved to standalone host preferences (persists across plugin & client updates).' },
+  'settings.display.langTitle': { 'zh-CN': '界面汉化', 'zh-TW': '介面中文化', en: 'Client UI Language' },
+  'settings.display.liveChineseShort': { 'zh-CN': '启用客户端界面汉化（默认开启）', 'zh-TW': '啟用用戶端介面中文化（預設開啟）', en: 'Enable client zh-CN UI (default on)' },
+  'settings.display.toolbarTitle': { 'zh-CN': '顶栏功能', 'zh-TW': '頂欄功能', en: 'Toolbar Features' },
+  'settings.display.showCliShort': { 'zh-CN': '在顶栏显示 >_ CLI 按钮（默认关闭）', 'zh-TW': '在頂欄顯示 >_ CLI 按鈕（預設關閉）', en: 'Show >_ CLI button in toolbar (default off)' },
+  'mod.zh.liveBadgeOk': { 'zh-CN': '🟢 已翻译生效', 'zh-TW': '🟢 已翻譯生效', en: '🟢 Translation Active' },
+  'mod.zh.liveBadgeLoading': { 'zh-CN': '⏳ 正在加载汉化…', 'zh-TW': '⏳ 正在載入中文化…', en: '⏳ Loading Translation…' },
+  'mod.zh.liveBadgeRestartEn': { 'zh-CN': '⏳ 需重启恢复英文', 'zh-TW': '⏳ 需重啟恢復英文', en: '⏳ Restart for English' },
+  'mod.zh.liveBadgeOff': { 'zh-CN': '⚪ 已关闭', 'zh-TW': '⚪ 已關閉', en: '⚪ Disabled' },
+  'mod.zh.liveDescOk': { 'zh-CN': 'Sidecar 免改盘汉化运行中：DOM 实时翻译已生效（默认开启，不修改 app.asar）。', 'zh-TW': 'Sidecar 免改磁碟中文化執行中：DOM 即時翻譯已生效（預設開啟，不修改 app.asar）。', en: 'Sidecar patchless translation is active (app.asar untouched).' },
+  'mod.zh.liveDescLoading': { 'zh-CN': '已开启 Sidecar 免改盘汉化（默认开启），等待本地桥接注入词库…', 'zh-TW': '已開啟 Sidecar 免改磁碟中文化（預設開啟），等待本機橋接注入詞庫…', en: 'Sidecar patchless translation enabled; waiting for dictionary injection…' },
+  'mod.zh.liveDescRestartEn': { 'zh-CN': '已在插件设置中关闭客户端汉化；当前窗口仍保留中文 DOM 缓存，重载或重启 Antigravity 后恢复纯净原生英文。', 'zh-TW': '已在外掛設定中關閉用戶端中文化；目前視窗仍保留中文 DOM 快取，重載或重啟 Antigravity 後恢復原生英文。', en: 'Client translation disabled in settings; reload or restart Antigravity to restore native English.' },
+  'mod.zh.liveDescOff': { 'zh-CN': '客户端汉化已关闭，当前保持官方原生英文界面（开启后免重启即时生效）。', 'zh-TW': '用戶端中文化已關閉，目前保持官方原生英文介面（開啟後免重啟即時生效）。', en: 'Client translation disabled; native English UI is active.' },
+  'mod.zh.liveBtnOff': { 'zh-CN': '关闭客户端汉化', 'zh-TW': '關閉用戶端中文化', en: 'Disable Client zh-CN' },
+  'mod.zh.liveBtnOn': { 'zh-CN': '开启客户端汉化', 'zh-TW': '開啟用戶端中文化', en: 'Enable Client zh-CN' },
+  'mod.proxy.liveBadgeOff': { 'zh-CN': '⚪ 免改盘未启用', 'zh-TW': '⚪ 免改磁碟未啟用', en: '⚪ Patchless Disabled' },
+  'mod.proxy.liveDescOff': { 'zh-CN': '当前为 Sidecar 免侵入运行模式，未向 app.asar 注入代理模块，网络请求跟随系统默认设置。', 'zh-TW': '目前為 Sidecar 免侵入執行模式，未向 app.asar 注入代理模組，網路請求跟隨系統預設設定。', en: 'Running in patchless Sidecar mode; app.asar proxy hook not injected.' },
+  'mod.proxy.liveBtnUnsupported': { 'zh-CN': '免改盘模式不支持', 'zh-TW': '免改磁碟模式不支援', en: 'Unavailable in Patchless Mode' },
   'scan.failPrefix': { 'zh-CN': '读取会话失败：{err}', 'zh-TW': '讀取工作階段失敗：{err}', en: 'Failed to read session: {err}' },
   'scan.notLoadedPrefix': { 'zh-CN': '无法读取全量会话：{err}', 'zh-TW': '無法讀取全量工作階段：{err}', en: 'Failed to scan session: {err}' },
   'mod.proxy.emptyErr': { 'zh-CN': '请输入有效的代理地址', 'zh-TW': '請輸入有效的代理位址', en: 'Enter a valid proxy URL' },
@@ -5430,6 +6576,34 @@ const PANEL_I18N = {
   'quota.est.basisCycle': { 'zh-CN': '本周期实耗推算 · 估算值', 'zh-TW': '本週期實耗推算 · 估算值', en: 'Cycle usage est. · estimate' },
   'quota.est.basisCached': { 'zh-CN': '沿用上周期校准参考（待本周期复核）', 'zh-TW': '沿用上週期校準參考（待本週期覆核）', en: 'Prior-cycle calibration ref. (unverified)' },
   'quota.est.basisStaleDivergence': { 'zh-CN': '历史校准不可靠（检测到未采集消耗）', 'zh-TW': '歷史校準不可靠（偵測到未採集消耗）', en: 'Stale calibration unreliable (external usage detected)' },
+
+  // 多账号、自动切号、ELV-57 配额对照与 ELV-52 保活
+  'accounts.filterLabel': { 'zh-CN': '账本范围:', 'zh-TW': '帳本範圍:', en: 'Account Scope:' },
+  'accounts.filterAria': { 'zh-CN': '按账号筛选统计账本', 'zh-TW': '依帳號篩選統計帳本', en: 'Filter ledger by account' },
+  'accounts.filterAll': { 'zh-CN': '全部已记用量（含未归属）', 'zh-TW': '全部已記用量（含未歸屬）', en: 'All Recorded (incl. Unattributed)' },
+  'accounts.filterUnattributed': { 'zh-CN': '历史未归属（无可靠账号依据）', 'zh-TW': '歷史未歸屬（無可靠帳號依據）', en: 'Unattributed History (No Verified Account)' },
+  'accounts.panelTitle': { 'zh-CN': '👤 多账号切换与阈值自动切号', 'zh-TW': '👤 多帳號切換與閾值自動切號', en: '👤 Accounts & Threshold Auto-Switch' },
+  'accounts.importCurrent': { 'zh-CN': '导入当前', 'zh-TW': '匯入目前帳號', en: 'Import Current' },
+  'accounts.importTools': { 'zh-CN': '导入 Tools', 'zh-TW': '匯入 Tools', en: 'Import Tools' },
+  'accounts.oauthAdd': { 'zh-CN': '+ 登录添加', 'zh-TW': '+ 登入新增', en: '+ Google Sign-In' },
+  'accounts.switchBtn': { 'zh-CN': '切号', 'zh-TW': '切號', en: 'Switch' },
+  'accounts.activeTag': { 'zh-CN': '当前', 'zh-TW': '目前', en: 'Active' },
+  'accounts.empty': { 'zh-CN': '暂无已登记账号，可点击“导入当前”或“登录添加”。', 'zh-TW': '暫無已登記帳號，可點擊「匯入目前帳號」或「登入新增」。', en: 'No accounts saved yet. Click Import Current or Google Sign-In.' },
+  'accounts.autoSwitchEnable': { 'zh-CN': '启用阈值自动切号（默认关闭）', 'zh-TW': '啟用閾值自動切號（預設關閉）', en: 'Enable threshold auto-switch (Off by default)' },
+  'accounts.poolLabel': { 'zh-CN': '监控共享池', 'zh-TW': '監控共享池', en: 'Target Pool' },
+  'accounts.metricLabel': { 'zh-CN': '判断口径', 'zh-TW': '判斷口徑', en: 'Trigger Metric' },
+  'accounts.modeRemaining': { 'zh-CN': '按剩余额度 <=', 'zh-TW': '依剩餘額度 <=', en: 'Remaining <=' },
+  'accounts.modeUsed': { 'zh-CN': '按累计已用 >=', 'zh-TW': '依累計已用 >=', en: 'Used >=' },
+  'accounts.windowLabel': { 'zh-CN': '限额窗口', 'zh-TW': '限額視窗', en: 'Window' },
+  'accounts.winPrimary': { 'zh-CN': '主窗口（最紧缩）', 'zh-TW': '主視窗（最緊縮）', en: 'Primary (Tightest)' },
+  'accounts.thresholdLabel': { 'zh-CN': '阈值 (%)', 'zh-TW': '閾值 (%)', en: 'Threshold (%)' },
+  'accounts.candidatesLabel': { 'zh-CN': '允许切入的候选账号：', 'zh-TW': '允許切入的候選帳號：', en: 'Candidate accounts allowed:' },
+  'accounts.saveRule': { 'zh-CN': '保存切号规则', 'zh-TW': '儲存切號規則', en: 'Save Rule' },
+  'quota.compareTitle': { 'zh-CN': '📊 本机消耗与共享账号额度对照', 'zh-TW': '📊 本機消耗與共享帳號額度對照', en: '📊 Local Usage vs. Shared Quota Deltas' },
+  'quota.compareDisclaimer': { 'zh-CN': '按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。', 'zh-TW': '依同一帳號與共享池統計。帳面百分點下降受多裝置使用、取整、重置與滾動恢復影響，不等同於本機單獨消耗佔比。', en: 'Scoped per account & pool. Quota percentage-point changes reflect shared multi-device usage, rounding, resets, and rolling recovery — not solely local consumption.' },
+  'quota.compareEmpty': { 'zh-CN': '暂未累积同一账号前后两次配额采样对照区间（刷新配额后自动对比）。', 'zh-TW': '暫未累積同一帳號前後兩次配額採樣對照區間（重新整理配額後自動對比）。', en: 'No completed quota comparison intervals yet. Refresh quota to capture baseline & delta.' },
+  'keepalive.title': { 'zh-CN': '🧊 模型缓存保活状态与协议核查', 'zh-TW': '🧊 模型快取保活狀態與協定核查', en: '🧊 Prompt Cache Keepalive & Protocol Check' },
+  'keepalive.stopBtn': { 'zh-CN': '立即停止保活', 'zh-TW': '立即停止保活', en: 'Stop Keepalive Now' },
   'quota.est.mixedModels': { 'zh-CN': '同池混用模型', 'zh-TW': '同池混用模型', en: 'mixed pool models' },
   'quota.est.cycleUsed': { 'zh-CN': '本周期已记 {used}', 'zh-TW': '本週期已記 {used}', en: 'Cycle used {used}' },
   'quota.state.available': { 'zh-CN': '正常可用', 'zh-TW': '正常可用', en: 'Available' },
@@ -5455,7 +6629,93 @@ const PANEL_I18N = {
   'quota.modelChip.tooltip': { 'zh-CN': '{model} · 池: {pool} · {status} ({value})', 'zh-TW': '{model} · 池: {pool} · {status} ({value})', en: '{model} · Pool: {pool} · {status} ({value})' },
   'quota.modelChip.unpooled': { 'zh-CN': '未归属当前账号额度池', 'zh-TW': '未歸屬目前帳號額度池', en: 'Not in active quota pools' },
   'quota.modelChip.resetPart': { 'zh-CN': '重置: {reset}', 'zh-TW': '重設: {reset}', en: 'Reset: {reset}' },
-  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' }
+  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' },
+  'accounts.poolNoAccess': { 'zh-CN': '无模型权限', 'zh-TW': '無模型權限', en: 'No model access' },
+  'accounts.poolUnknown': { 'zh-CN': '权限/额度未知', 'zh-TW': '權限/額度未知', en: 'Quota unknown' },
+  'accounts.poolPending': { 'zh-CN': '额度暂不可用', 'zh-TW': '額度暫不可用', en: 'Quota unavailable' },
+  'accounts.retryQuota': { 'zh-CN': '刷新/重试额度', 'zh-TW': '重試額度', en: 'Retry quota' },
+  'accounts.reauthRequired': { 'zh-CN': '需重登授权', 'zh-TW': '需重新登入授權', en: 'Re-auth required' },
+  'accounts.removeBtn': { 'zh-CN': '移除账号', 'zh-TW': '移除帳號', en: 'Remove' },
+  'accounts.removeModal.title': { 'zh-CN': '移除账号', 'zh-TW': '移除帳號', en: 'Remove account' },
+  'accounts.removeModal.body': {
+    'zh-CN': '确定移除 {email} 吗？这会移除插件保存的登录凭据和自动切号候选，本机历史用量与原有账号归属会保留。',
+    'zh-TW': '確定移除 {email} 嗎？這會移除外掛儲存的登入憑證與自動切號候選，本機歷史用量與原有帳號歸屬會保留。',
+    en: 'Remove {email}? Stored plugin credentials and auto-switch candidacy will be removed. Local usage history and existing attribution are preserved.'
+  },
+  'accounts.removeModal.bodyActive': {
+    'zh-CN': '确定移除当前活跃账号 {email} 吗？这会移除插件保存的登录凭据和自动切号候选，本机历史用量与原有账号归属会保留，不会自动切换其他账号。',
+    'zh-TW': '確定移除目前使用中的帳號 {email} 嗎？這會移除外掛儲存的登入憑證與自動切號候選，本機歷史用量與原有帳號歸屬會保留，不會自動切換其他帳號。',
+    en: 'Remove currently active account {email}? Stored plugin credentials and auto-switch candidacy will be removed. Local usage history and existing attribution are preserved without switching accounts.'
+  },
+  'accounts.removeModal.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'accounts.removeModal.confirm': { 'zh-CN': '确认移除', 'zh-TW': '確認移除', en: 'Confirm Remove' },
+  'accounts.removeModal.removing': { 'zh-CN': '移除中…', 'zh-TW': '移除中…', en: 'Removing…' },
+  'accounts.removeModal.failed': { 'zh-CN': '移除失败：{detail}', 'zh-TW': '移除失敗：{detail}', en: 'Remove failed: {detail}' },
+  'accounts.removeSuccess': { 'zh-CN': '已移除 {email}（历史用量及归属已保留）。', 'zh-TW': '已移除 {email}（歷史用量與歸屬已保留）。', en: 'Removed {email} (historical usage and attribution preserved).' },
+  'accounts.quotaStageErr': { 'zh-CN': '本次刷新失败（上次快照已保留）：{detail}', 'zh-TW': '本次重新整理失敗（上次快照已保留）：{detail}', en: 'Quota fetch failed (previous snapshot kept): {detail}' },
+  'accounts.lastSnapshotTime': { 'zh-CN': '上次快照 {time}', 'zh-TW': '上次快照 {time}', en: 'Last snapshot {time}' },
+  'accounts.status.disabled': { 'zh-CN': '已关闭', 'zh-TW': '已關閉', en: 'Off' },
+  'accounts.status.watching': { 'zh-CN': '监控中', 'zh-TW': '監控中', en: 'Watching' },
+  'accounts.status.pending_debounce': { 'zh-CN': '防抖确认中', 'zh-TW': '防抖確認中', en: 'Debouncing' },
+  'accounts.status.waiting_idle': { 'zh-CN': '等待当前生成完成', 'zh-TW': '等待目前生成完成', en: 'Waiting idle' },
+  'accounts.status.cooldown': { 'zh-CN': '冷却保护中', 'zh-TW': '冷卻保護中', en: 'Cooldown' },
+  'accounts.status.switching': { 'zh-CN': '切号中', 'zh-TW': '切號中', en: 'Switching' },
+  'accounts.status.all_candidates_exhausted': { 'zh-CN': '备选账号均不足', 'zh-TW': '備選帳號皆不足', en: 'All candidates exhausted' },
+  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped (Stale/Error)' },
+  'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted (Error)' },
+  'accounts.lastSwitchedTo': { 'zh-CN': '上次切至 {email}', 'zh-TW': '上次切至 {email}', en: 'Last switched to {email}' },
+  'accounts.lastSwitchRolledBack': { 'zh-CN': '已自动回滚：{detail}', 'zh-TW': '已自動回滾：{detail}', en: 'Rolled back: {detail}' },
+  'accounts.actionBusy': { 'zh-CN': '正在处理…', 'zh-TW': '處理中…', en: 'Processing…' },
+  'accounts.actionDone': { 'zh-CN': '操作已完成', 'zh-TW': '操作已完成', en: 'Completed' },
+  'accounts.actionFail': { 'zh-CN': '操作失败', 'zh-TW': '操作失敗', en: 'Operation failed' },
+  'accounts.filterNoData': { 'zh-CN': '该账号在本机尚无已归属 Token 记录。', 'zh-TW': '此帳號在本機尚無已歸屬 Token 記錄。', en: 'No attributed local usage records for this account.' },
+  'accounts.keepaliveOff': { 'zh-CN': '默认关闭', 'zh-TW': '預設關閉', en: 'Off' },
+  'accounts.filterKeepaliveNote': { 'zh-CN': '含独立保活消耗 {reqs} 次 ({tok})。', 'zh-TW': '含獨立保活消耗 {reqs} 次 ({tok})。', en: 'Includes {reqs} keepalive reqs ({tok}) tracked separately.' },
+  'tokens.noAccountCost': { 'zh-CN': '暂无此账号记录', 'zh-TW': '暫無此帳號記錄', en: 'No records for account' },
+  'quota.split.account_switched': { 'zh-CN': '已切号分段', 'zh-TW': '已切號分段', en: 'Account switched' },
+  'quota.split.quota_reset': { 'zh-CN': '额度重置', 'zh-TW': '額度重設', en: 'Quota reset' },
+  'quota.split.rolling_recovery': { 'zh-CN': '滚动恢复', 'zh-TW': '滾動恢復', en: 'Rolling recovery' },
+  'quota.split.sampling_gap': { 'zh-CN': '采样缺口切分', 'zh-TW': '採樣缺口切分', en: 'Sampling gap' },
+  'keepalive.protocolSummary': { 'zh-CN': '协议核查（Antigravity {ver}，已检查 {rpcs} 个 RPC）：在已检查的 RPC 与响应中未发现明确的服务端缓存续期或 TTL 接口，响应亦未见 cacheWriteTokens / cacheTtl；因此不展示虚构到期倒计时，缓存保活保持待验证与默认关闭。', 'zh-TW': '協定核查（Antigravity {ver}，已檢查 {rpcs} 個 RPC）：在已檢查的 RPC 與回應中未發現明確的伺服器端快取續期或 TTL 介面，回應亦未見 cacheWriteTokens / cacheTtl；因此不顯示虛構到期倒數，快取保活維持待驗證與預設關閉。', en: 'Protocol check (Antigravity {ver}, {rpcs} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.' },
+  'keepalive.experimentSummary': { 'zh-CN': '待确认最小对照实验（{model}，合计 {reqs} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次（0m / 6m）对比实验组 3 次（0m / 4m 仅发 "ok" / 6m），预计总输出 60~150 tok；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。', 'zh-TW': '待確認最小對照實驗（{model}，合計 {reqs} 次請求，相同約 20K 唯讀無工具前綴）：對照組 2 次（0m / 6m）對比實驗組 3 次（0m / 4m 僅發 "ok" / 6m），預計總輸出 60~150 tok；逐次採集 cacheReadTokens 並於異常/限流/切號/達上限時終止，等待維護者確認。', en: 'Pending A/B plan ({reqs} total reqs on {model}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.' },
+  'keepalive.blockedReason': { 'zh-CN': '拦截保护：{reason}', 'zh-TW': '攔截保護：{reason}', en: 'Blocked: {reason}' },
+  'keepalive.stopReason': { 'zh-CN': '最近状态：{reason}', 'zh-TW': '最近狀態：{reason}', en: 'Last state: {reason}' },
+  'keepalive.defaultNote': { 'zh-CN': '保活默认关闭，且切换账号/退出/达上限时自动终止。', 'zh-TW': '保活預設關閉，且切換帳號/結束/達上限時自動終止。', en: 'Keepalive disabled by default; stops on account switch, exit, or limit.' },
+  'models.summary.pendingConfirm': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
+  'models.cap.metaUnknown': { 'zh-CN': '未知（待获取元数据）', 'zh-TW': '未知（待取得中繼資料）', en: 'Unknown (pending metadata)' },
+  'models.cap.policyUnknown': { 'zh-CN': '未知（待读取运行策略）', 'zh-TW': '未知（待讀取執行策略）', en: 'Unknown (pending policy)' },
+  'models.cap.policyPendingRestart': { 'zh-CN': '待重启（磁盘={disk}）', 'zh-TW': '待重啟（磁碟={disk}）', en: 'Restart needed (disk={disk})' },
+  'models.cap.policyUnconfirmed': { 'zh-CN': '进程未确认（磁盘={disk}）', 'zh-TW': '程序未確認（磁碟={disk}）', en: 'Unconfirmed (disk={disk})' },
+  'models.cap.policyPartial': { 'zh-CN': '部分异常（运行限制未知）', 'zh-TW': '部分異常（執行限制未知）', en: 'Partial error (limit unknown)' },
+  'models.cap.policyDynamic': { 'zh-CN': 'Dynamic 动态跟随（按模型上限）', 'zh-TW': 'Dynamic 動態跟隨（依模型上限）', en: 'Dynamic (follows model limit)' },
+  'models.cap.policyFixed': { 'zh-CN': '固定限制 {limit} tokens', 'zh-TW': '固定限制 {limit} tokens', en: 'Fixed {limit} tokens' },
+  'models.cap.policyDefault': { 'zh-CN': '默认限制 256,000 tokens', 'zh-TW': '預設限制 256,000 tokens', en: 'Default limit 256,000 tokens' },
+  'models.cap.stratDynamic': { 'zh-CN': '（Dynamic 默认）', 'zh-TW': '（Dynamic 預設）', en: ' (Dynamic default)' },
+  'models.cap.stratFixed': { 'zh-CN': '（受固定限制 {limit} 约束）', 'zh-TW': '（受固定限制 {limit} 約束）', en: ' (capped by fixed {limit})' },
+  'models.cap.stratDefault': { 'zh-CN': '（受默认 256,000 约束）', 'zh-TW': '（受預設 256,000 約束）', en: ' (capped by 256,000 default)' },
+  'models.cap.defaultUnknownPolicy': { 'zh-CN': '未知（运行策略待确认）', 'zh-TW': '未知（執行策略待確認）', en: 'Unknown (policy unconfirmed)' },
+  'models.cap.rangeUnknownPolicyMax': { 'zh-CN': '运行策略未知（模型理论上限 {max}）', 'zh-TW': '執行策略未知（模型理論上限 {max}）', en: 'Policy unknown (model max {max})' },
+  'models.cap.rangeUnknownPolicyEng': { 'zh-CN': '运行策略未知（工程范围 {min} – {max}）', 'zh-TW': '執行策略未知（工程範圍 {min} – {max}）', en: 'Policy unknown (range {min} – {max})' },
+  'models.cap.rangeUnknownModelMax': { 'zh-CN': '{min} – {max}（模型上限未知）', 'zh-TW': '{min} – {max}（模型上限未知）', en: '{min} – {max} (model max unknown)' },
+  'models.cap.noneVerified': { 'zh-CN': '尚无本次验证', 'zh-TW': '尚無本次驗證', en: 'Not verified yet' },
+  'models.cap.clientPartialAlert': { 'zh-CN': '部分异常（请核对客户端状态）', 'zh-TW': '部分異常（請核對用戶端狀態）', en: 'Partial anomaly (check client state)' },
+  'models.cap.clientDynamicOk': { 'zh-CN': '动态跟随已确认运行（各模型独立）', 'zh-TW': '動態跟隨已確認執行（各模型獨立）', en: 'Dynamic mode active (per model)' },
+  'models.preset.unifiedDisabled': { 'zh-CN': '统一模式下各模型不同（已禁用）', 'zh-TW': '統一模式下各模型不同（已停用）', en: 'Varies by model in unified mode (disabled)' },
+  'models.preset.envMax': { 'zh-CN': '当前环境最大可采纳：{val} tokens', 'zh-TW': '目前環境最大可採納：{val} tokens', en: 'Max effective here: {val} tokens' },
+  'models.preset.policyUnconfirmed': { 'zh-CN': '运行策略未确认（模型理论上限 {val}，暂不可用）', 'zh-TW': '執行策略未確認（模型理論上限 {val}，暫不可用）', en: 'Policy unconfirmed (model max {val}, unavailable)' },
+  'models.preset.metaPending': { 'zh-CN': '模型元数据待获取（暂不可用）', 'zh-TW': '模型中繼資料待取得（暫不可用）', en: 'Pending model metadata (unavailable)' },
+  'models.validation.defaultDesc': { 'zh-CN': '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。', 'zh-TW': '還原用戶端預設：請求將清除 maxTokenLimit 覆寫，由目前語言服務全域模式決定（若已開 Dynamic 則依動態預設）。', en: 'Restore client default: clears maxTokenLimit override and defers to global language-server policy (Dynamic default if unlocked).' },
+  'models.unified.projTitle': { 'zh-CN': '统一模式各模型预计采用预算（预测值，非实机已确认）：', 'zh-TW': '統一模式各模型預計採用預算（預測值，非實機已確認）：', en: 'Projected per-model budgets in Unified mode (estimated, unverified):' },
+  'models.cap.tierStandard': { 'zh-CN': '标准', 'zh-TW': '標準', en: 'Standard' },
+  'models.cap.tierWin': { 'zh-CN': '窗口 {val}', 'zh-TW': '視窗 {val}', en: 'Window {val}' },
+  'models.cap.tierWinUnk': { 'zh-CN': '窗口未知', 'zh-TW': '視窗未知', en: 'Window unknown' },
+  'models.cap.tierOut': { 'zh-CN': '最大输出 {val}', 'zh-TW': '最大輸出 {val}', en: 'Max output {val}' },
+  'models.cap.tierOutUnk': { 'zh-CN': '输出未知', 'zh-TW': '輸出未知', en: 'Output unknown' },
+  'models.cap.tierAdj': { 'zh-CN': '可调上限 {val}', 'zh-TW': '可調上限 {val}', en: 'Max limit {val}' },
+  'models.cap.tierAdjUnk': { 'zh-CN': '上限未知', 'zh-TW': '上限未知', en: 'Cap unknown' },
+  'models.cap.diskPending': { 'zh-CN': '磁盘为 {disk}（待重启生效）', 'zh-TW': '磁碟為 {disk}（待重啟生效）', en: 'Disk: {disk} (restart pending)' },
+  'models.cap.diskUnconfirmed': { 'zh-CN': '磁盘为 {disk}（运行态未确认）', 'zh-TW': '磁碟為 {disk}（執行態未確認）', en: 'Disk: {disk} (runtime unconfirmed)' },
+  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' }
 };
 
 function t(key, vars = null) {
@@ -5681,17 +6941,323 @@ function translateBackendText(text) {
       return `${prefixHit[currentPanelLanguage]}${sep}${translateBackendText(rest)}`;
     }
   }
+  // 模式化翻译：账号切换成功、验证未生效/回滚、刷新额度与客户端限制明细
+  const switchOkMatch = trimmed.match(/^已切换至\s+(\S+?)，语言服务已重启并通过 GetUserStatus 核验生效。$/);
+  if (switchOkMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Switched to ${switchOkMatch[1]}; language server restarted and verified via GetUserStatus.`
+      : `已切換至 ${switchOkMatch[1]}，語言服務已重啟並通過 GetUserStatus 核驗生效。`;
+  }
+  const switchCredMatch = trimmed.match(/^已写入\s+(\S+?)\s+凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。$/);
+  if (switchCredMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Credentials for ${switchCredMatch[1]} applied and verified (reload window if extensions still cache previous state).`
+      : `已寫入 ${switchCredMatch[1]} 憑據並通過生效校驗（部分桌面擴充若仍顯示舊快取，建議重載視窗）。`;
+  }
+  const switchFailMatch = trimmed.match(/^凭据验证未生效，宿主暂未切换至\s+(\S+?)(?:（当前仍回报\s+(.+?)）)?(，已自动回滚原凭据)?。请重载或重启 Antigravity 客户端后重试。$/);
+  if (switchFailMatch) {
+    const targetEm = switchFailMatch[1];
+    const obsEm = switchFailMatch[2];
+    const hasRb = Boolean(switchFailMatch[3]);
+    if (currentPanelLanguage === 'en') {
+      return `Credential verification failed: host has not switched to ${targetEm}${obsEm ? ` (still reports ${obsEm})` : ''}${hasRb ? '; rolled back automatically' : ''}. Reload or restart Antigravity and retry.`;
+    }
+    return `憑據驗證未生效，宿主暫未切換至 ${targetEm}${obsEm ? `（目前仍回報 ${obsEm}）` : ''}${hasRb ? '，已自動回滾原憑據' : ''}。請重載或重啟 Antigravity 用戶端後重試。`;
+  }
+  const refreshAllMatch = trimmed.match(/^已刷新全部\s+(\d+)\s+个账号最新额度快照。$/);
+  if (refreshAllMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshots for all ${refreshAllMatch[1]} account(s).`
+      : `已重新整理全部 ${refreshAllMatch[1]} 個帳號最新額度快照。`;
+  }
+  const refreshOneMatch = trimmed.match(/^已刷新\s+(\S+?)\s+最新额度快照。$/);
+  if (refreshOneMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshot for ${refreshOneMatch[1]}.`
+      : `已重新整理 ${refreshOneMatch[1]} 最新額度快照。`;
+  }
+  const quotaRefreshPartialMatch = trimmed.match(/^额度刷新部分或全部失败（成功\s+(\d+)\s+\/\s+失败\s+(\d+)）：(.+)$/);
+  if (quotaRefreshPartialMatch) {
+    const [, okN, failN, detail] = quotaRefreshPartialMatch;
+    const translatedDetail = translateBackendText(detail);
+    return currentPanelLanguage === 'en'
+      ? `Quota refresh failed (${okN} ok / ${failN} failed): ${translatedDetail}`
+      : `額度重新整理部分或全部失敗（成功 ${okN} / 失敗 ${failN}）：${translatedDetail}`;
+  }
   // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
   if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
-    return 'Backend operation failed (check desktop log for details)';
+    return 'Backend operation failed (see desktop log for details)';
   }
   return str;
 }
 
+function localizePlanTierName(name) {
+  if (!name) return t('speed.unknown');
+  const s = String(name).trim();
+  if (s === 'Google AI Ultra（子档未知）' || s === 'Google AI Ultra (子档未知)') {
+    return t('plan.ultraSubtierUnknown');
+  }
+  if (s === '未知') return t('speed.unknown');
+  return s;
+}
+
 function formatVendorLabel(vendor) {
-  if (!vendor) return currentPanelLanguage === 'en' ? 'Other' : '其他';
-  if (vendor === '其他') return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  if (!vendor || vendor === '其他' || vendor === 'Other') {
+    return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  }
   return vendor;
+}
+
+// =========================================================================
+// 全局货币换算与三语差异化格式化中心 + 预设地区本地化映射
+// =========================================================================
+const FALLBACK_RATES_TO_CNY = {
+  CNY: 1.0,
+  USD: 6.72,
+  HKD: 0.857,
+  TWD: 0.21,
+  NTD: 0.21,
+  JPY: 0.0425,
+  KRW: 0.0051,
+  EUR: 7.52,
+  GBP: 8.75,
+  AUD: 4.45,
+  CAD: 4.88,
+  SGD: 5.12,
+  MYR: 1.55,
+  INR: 0.076,
+  PHP: 0.117,
+  TRY: 0.133,
+  NGN: 0.0042,
+  BRL: 1.18
+};
+
+const EXTRA_COUNTRY_LOCALES = {
+  DE: { name: '德国', nameTw: '德國', nameEn: 'Germany' },
+  UK: { name: '英国', nameTw: '英國', nameEn: 'United Kingdom' },
+  CN: { name: '中国大陆', nameTw: '中國大陸', nameEn: 'China Mainland' },
+  EU: { name: '欧洲/欧盟', nameTw: '歐洲/歐盟', nameEn: 'Europe / EU' },
+  AU: { name: '澳大利亚', nameTw: '澳洲', nameEn: 'Australia' }
+};
+
+function convertCurrencyUi(amount, fromCurrency, toCurrency, regionQuery = null) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
+  const num = Number(amount);
+  if (num === 0) return 0;
+  let from = String(fromCurrency || 'USD').trim().toUpperCase();
+  let to = String(toCurrency || 'USD').trim().toUpperCase();
+  if (from === 'NTD') from = 'TWD';
+  if (to === 'NTD') to = 'TWD';
+  if (from === to) return Number(num.toFixed(2));
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  if (core && typeof core.convertCurrency === 'function') {
+    const res = core.convertCurrency(num, from, to, regionQuery);
+    if (res !== null && Number.isFinite(res)) return res;
+  }
+  const fromRate = FALLBACK_RATES_TO_CNY[from];
+  const toRate = FALLBACK_RATES_TO_CNY[to];
+  if (!fromRate || !toRate) return null;
+  return Number(((num * fromRate) / toRate).toFixed(2));
+}
+
+function formatCompactRefNum(val, cur) {
+  const num = Number(val || 0);
+  if (!Number.isFinite(num)) return '0';
+  if (cur === 'CNY') return num.toFixed(2);
+  if (num === 0) return '0';
+  if (Math.abs(num) < 10) return num.toFixed(2);
+  if (Math.abs(num) < 100) return num.toFixed(1);
+  return String(Math.round(num));
+}
+
+/**
+ * 统一格式化 USD API 估算费用（三语差异化规则）：
+ * - en: 纯 USD（不含任何 ¥ / CNY）
+ * - zh-CN: USD + CNY（≈ $618.53 (¥4156.54)）
+ * - zh-TW: 紧凑单行模式 USD + HKD/TWD（≈ $618.53 (HK$4850 / NT$19793)）；detail=true 完整四币种 USD+HKD+TWD+CNY
+ */
+function formatUsdMetricDisplay(usdAmount, options = {}) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  const prefix = options.withPrefix === false ? '' : '≈ ';
+  const usdStr = `${prefix}$${safeUsd.toFixed(2)}`;
+  const lang = options.lang || currentPanelLanguage;
+  if (lang === 'en') {
+    return usdStr;
+  }
+  if (lang === 'zh-TW') {
+    const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+    const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+    const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+    if (options.detail) {
+      return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} · NT$${formatCompactRefNum(twd, 'TWD')} · ¥${cny.toFixed(2)} CNY)`;
+    }
+    return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} / NT$${formatCompactRefNum(twd, 'TWD')})`;
+  }
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  return `${usdStr} (¥${cny.toFixed(2)})`;
+}
+
+function formatUsdMetricTooltip(usdAmount) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  if (currentPanelLanguage === 'en') {
+    return `USD $${safeUsd.toFixed(2)}`;
+  }
+  const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+  const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  if (currentPanelLanguage === 'zh-TW') {
+    return `USD $${safeUsd.toFixed(2)} · HKD HK$${hkd.toFixed(1)} · TWD NT$${Math.round(twd)} · CNY ¥${cny.toFixed(2)}`;
+  }
+  return `USD $${safeUsd.toFixed(2)} · CNY ¥${cny.toFixed(2)}`;
+}
+
+/**
+ * 统一格式化订阅价格的辅助换算文本（不含外层括号）：
+ * - en: 默认 USD 返回 ''；非 USD 返回 "approx. $X.XX USD"（或带 /mo）
+ * - zh-CN: CNY 返回 ''；非 CNY 返回 "折合 ≈ ¥X.X CNY" / "≈ ¥X.X CNY"
+ * - zh-TW: detail=true 时返回完整四币种（跳过自身）对照；紧凑模式返回紧凑多币参考
+ */
+function formatSubscriptionSecondaryConversion(amount, currency, regionQuery = null, options = {}) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount)) || Number(amount) === 0) return '';
+  let cur = String(currency || 'USD').trim().toUpperCase();
+  if (cur === 'NTD') cur = 'TWD';
+  const lang = options.lang || currentPanelLanguage;
+  const suffixMo = options.perMonth ? t('plan.summary.perMonth') : '';
+
+  if (lang === 'en') {
+    if (cur === 'USD') return '';
+    const usd = convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    if (usd === null) return '';
+    return `approx. $${usd.toFixed(2)} USD${suffixMo}`;
+  }
+
+  if (lang === 'zh-TW') {
+    const usd = cur === 'USD' ? Number(amount) : convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    const hkd = cur === 'HKD' ? Number(amount) : convertCurrencyUi(amount, cur, 'HKD', regionQuery);
+    const twd = cur === 'TWD' ? Number(amount) : convertCurrencyUi(amount, cur, 'TWD', regionQuery);
+    const cny = cur === 'CNY' ? Number(amount) : convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+    const parts = [];
+    if (cur !== 'USD' && usd !== null) parts.push(`US$${usd.toFixed(2)}`);
+    if (cur !== 'HKD' && hkd !== null) parts.push(`HK$${formatCompactRefNum(hkd, 'HKD')}`);
+    if (cur !== 'TWD' && twd !== null) parts.push(`NT$${formatCompactRefNum(twd, 'TWD')}`);
+    if (options.detail && cur !== 'CNY' && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    else if (!options.detail && cur !== 'CNY' && parts.length < 2 && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    if (!parts.length) return '';
+    const joined = parts.join(' · ');
+    return options.short ? `≈ ${joined}${suffixMo}` : `約合 ≈ ${joined}${suffixMo}`;
+  }
+
+  // zh-CN: USD + CNY 双币参考
+  if (cur === 'CNY') return '';
+  const cny = convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+  if (cny === null) return '';
+  const cnyTxt = `${Number(cny).toFixed(1)} CNY`;
+  if (options.perMonth) return t('plan.cnyApprox', { val: Number(cny).toFixed(1) });
+  return options.short ? `≈ ¥${cnyTxt}` : `折合 ≈ ¥${cnyTxt}`;
+}
+
+function getLocalizedPresetName(presetOrCode, lang = currentPanelLanguage) {
+  if (!presetOrCode) return '';
+  const normLang = normalizePanelLanguage(lang);
+  if (typeof presetOrCode === 'string') {
+    const key = presetOrCode.trim().toUpperCase();
+    const extra = EXTRA_COUNTRY_LOCALES[key];
+    if (extra) {
+      return normLang === 'en' ? extra.nameEn : (normLang === 'zh-TW' ? extra.nameTw : extra.name);
+    }
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const matched = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === key);
+    if (matched) return getLocalizedPresetName(matched, normLang);
+    return presetOrCode;
+  }
+  if (normLang === 'en') return presetOrCode.nameEn || presetOrCode.id || presetOrCode.name || '';
+  if (normLang === 'zh-TW') return presetOrCode.nameTw || presetOrCode.name || '';
+  return presetOrCode.name || '';
+}
+
+/**
+ * 将任意已存储或输入框中的常见预设地区名称（含 "美国 (US)" / "美国 (USD)" / "澳大利亚" 等）
+ * 映射转换为当前面板语言对应的本地化地区文本；无法识别的纯自定义输入保持原样。
+ */
+function localizeRegionDisplayValue(raw, lang = currentPanelLanguage) {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '未知' || trimmed === 'Unknown' || trimmed.includes('未在当前会话中获取')) {
+    return '';
+  }
+  const normLang = normalizePanelLanguage(lang);
+  const parenMatch = trimmed.match(/^(.*?)\s*\(([A-Za-z0-9]{2,5})\)\s*$/);
+  const suffixCode = parenMatch ? parenMatch[2].toUpperCase() : '';
+  const baseText = parenMatch ? parenMatch[1].trim() : trimmed;
+  const baseLower = baseText.toLowerCase();
+
+  // 1. 优先查特例（含 "澳大利亚 (US)" / "英国 (UK)" / "德国 (DE)" / "中国大陆 (CN)" 等）
+  for (const [id, loc] of Object.entries(EXTRA_COUNTRY_LOCALES)) {
+    const names = [loc.name.toLowerCase(), loc.nameTw.toLowerCase(), loc.nameEn.toLowerCase()];
+    if (names.includes(baseLower) || (!parenMatch && id === trimmed.toUpperCase())) {
+      const targetName = normLang === 'en' ? loc.nameEn : (normLang === 'zh-TW' ? loc.nameTw : loc.name);
+      return suffixCode ? `${targetName} (${suffixCode})` : targetName;
+    }
+  }
+
+  // 2. 查询 SUBSCRIPTION_REGIONS_PRESET
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+  let matched = presets.find(p => {
+    const cleanCn = String(p.name || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanTw = String(p.nameTw || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanEn = String(p.nameEn || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    return (
+      p.name.toLowerCase() === baseLower ||
+      (p.nameTw && p.nameTw.toLowerCase() === baseLower) ||
+      (p.nameEn && p.nameEn.toLowerCase() === baseLower) ||
+      cleanCn === baseLower ||
+      cleanTw === baseLower ||
+      cleanEn === baseLower
+    );
+  });
+  if (!matched && core?.findRegionPreset) {
+    matched = core.findRegionPreset(baseText) || (suffixCode && ['US', 'JP', 'KR', 'TW', 'HK', 'AU', 'SG', 'CA', 'TR', 'NG', 'PH', 'IN', 'MY', 'BR', 'CN', 'GB', 'EU', 'UK'].includes(suffixCode)
+      ? core.findRegionPreset(suffixCode === 'UK' ? 'GB' : suffixCode)
+      : null);
+  }
+  if (matched) {
+    let targetName = normLang === 'en' ? (matched.nameEn || matched.id) : (normLang === 'zh-TW' ? (matched.nameTw || matched.name) : matched.name);
+    if (suffixCode) {
+      targetName = targetName.replace(/\s*\((?:CNY|澳区|澳區|德法[意義]西荷等)\)\s*/gi, '').trim();
+      return `${targetName} (${suffixCode})`;
+    }
+    return targetName;
+  }
+
+  return trimmed;
+}
+
+function formatPresetRegionLineParts(preset, lang = currentPanelLanguage) {
+  if (!preset) return { left: '', right: '', full: '' };
+  const curCode = preset.currency === 'TWD' ? 'NTD' : preset.currency;
+  const dispName = getLocalizedPresetName(preset, lang).replace(/\s*\(CNY\)\s*$/i, '').trim();
+  const left = `${preset.flag || '🌏'} ${dispName} (${curCode})`;
+  const priceText = preset.currency === 'CNY'
+    ? `¥${preset.monthlyPrice}${t('plan.summary.perMonth')}`
+    : `${preset.symbol}${preset.monthlyPrice}${t('plan.summary.perMonth')}`;
+  const sec = formatSubscriptionSecondaryConversion(preset.monthlyPrice, preset.currency, preset.name, { short: true, lang });
+  const right = sec ? `${priceText} · ${sec}` : priceText;
+  const full = sec ? `${left} · ${priceText} (${sec})` : `${left} · ${priceText}`;
+  return { left, right, full };
+}
+
+function formatPeriodCalendarLabel(currentPeriod) {
+  if (!currentPeriod) return t('cost.periodTag');
+  const raw = String(currentPeriod.periodKey || currentPeriod.key || currentPeriod.label || '').trim();
+  const ymMatch = raw.match(/^(\d{4}-\d{2})/);
+  if (ymMatch) {
+    return t('cost.periodTagFmt', { ym: ymMatch[1] });
+  }
+  if (!raw || raw.includes('自然月') || raw === '本月自然月') return t('cost.periodTag');
+  return raw;
 }
 (function (root) {
   'use strict';
@@ -7802,7 +9368,16 @@ function formatVendorLabel(vendor) {
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
     callsHydrated: false, syncedFinalMap: new Map(), pendingFinalCalls: new Map(),
     quarantinedOversizeMap: new Map(), flushFinalsBusy: false, pendingFlushForceSync: false,
-    nextFlushRetryAt: 0, nextOversizeRetryAt: 0
+    nextFlushRetryAt: 0, nextOversizeRetryAt: 0,
+    displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
+    pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
+    historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
+    timelineError: '', expandedTurnKeys: new Set(), timelinePageLimit: 10,
+    timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
+    lastTimelineFetchAt: 0, lastTimelineCallSig: '', callRenderTimer: null,
+    callEnterAnimTimer: null,
+    speedBreakdownOpen: false, livePendingRequest: null, liveWaitTickTimer: null,
+    streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
   };
   const route = () => location.pathname.match(/^\/c\/([a-f\d-]{36})(?:\/|$)/i)?.[1] || null;
   let activeHeatView = 'daily';
@@ -7815,7 +9390,13 @@ function formatVendorLabel(vendor) {
   let showCliButton = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8-1';
+  function formatDisplayVersion(rawVer) {
+    const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
+    if (!clean) return 'v0.8.8-1';
+    if (clean === '0.8.8') return '0.8.8 α';
+    return `v${clean}`;
+  }
   const backendStatus = {
     rendererVersion: METER_RENDERER_VERSION,
     backendSource: null,
@@ -7861,6 +9442,8 @@ function formatVendorLabel(vendor) {
       '/modules-status': 'modules',
       '/toggle-module': 'modules',
       '/test-proxy': 'modules',
+      '/accounts-overview': 'accounts',
+      '/accounts-action': 'accounts',
       '/check-update': 'checkUpdate',
       '/apply-update': 'applyUpdate'
     };
@@ -8410,6 +9993,60 @@ function formatVendorLabel(vendor) {
     }
   }
 
+  function getContinuousScaleStops() {
+    const scale = getEffectiveHeatmapScale();
+    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const hasCustomHeat = Boolean(
+      customColors.heatLow ||
+      customColors.heatHigh ||
+      customColors.heatLvl1 ||
+      customColors.heatLvl2 ||
+      customColors.heatLvl3 ||
+      customColors.heatLvl4
+    );
+    if (!isLight && heatPreset === 'purple' && !hasCustomHeat) {
+      return ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
+    }
+    return [scale[1], scale[2], scale[3], scale[4]].filter(Boolean);
+  }
+
+  function getContinuousHeatColor(value, modeOrAnchor = 'heat') {
+    const v = Number(value) || 0;
+    if (v <= 0) return null;
+    const core = globalThis.__AGContextMeterCore || {};
+    let resp = 0;
+    if (typeof modeOrAnchor === 'string') {
+      resp = typeof core.computeColorScaleResponse === 'function'
+        ? core.computeColorScaleResponse(v, modeOrAnchor)
+        : (typeof core.computeMixedScaleResponse === 'function' ? core.computeMixedScaleResponse(v, 100e6) : 0.5);
+    } else {
+      const anchor = Number(modeOrAnchor) || 100e6;
+      resp = typeof core.computeMixedScaleResponse === 'function'
+        ? core.computeMixedScaleResponse(v, anchor)
+        : Math.max(0, Math.min(1, Math.pow(Math.min(v, anchor) / anchor, 0.42)));
+    }
+    const stops = getContinuousScaleStops();
+    if (typeof core.interpolateScaleColorHsl === 'function') {
+      return core.interpolateScaleColorHsl(resp, stops);
+    }
+    return stops[stops.length - 1] || '#9333ea';
+  }
+
+  let __chartsReady = false;
+
+  function refreshActiveChartViews() {
+    if (!__chartsReady) return;
+    if (activeHeatView === 'daily' && typeof renderHeatmapGrid === 'function') renderHeatmapGrid(true);
+    else if (activeHeatView === 'weekly' && typeof renderHeatmapWeekly === 'function') renderHeatmapWeekly();
+    else if (activeHeatView === 'monthly' && typeof renderHeatmapMonthly === 'function') renderHeatmapMonthly();
+    else if (activeHeatView === 'yearly' && typeof renderHeatmapYearly === 'function') renderHeatmapYearly();
+    else if (activeHeatView === 'cum' && typeof renderHeatmapCum === 'function') renderHeatmapCum();
+    const modelViewEl = el('model-usage-view');
+    if (modelViewEl && modelViewEl.style && modelViewEl.style.display === 'block' && typeof renderModelUsageView === 'function') {
+      renderModelUsageView();
+    }
+  }
+
   function applyCustomColors() {
     for (const [key, cssVar] of Object.entries(COLOR_SLOTS)) {
       const val = customColors[key];
@@ -8431,8 +10068,7 @@ function formatVendorLabel(vendor) {
     }
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    refreshActiveChartViews();
   }
 
   function setCustomColor(key, value) {
@@ -8495,8 +10131,7 @@ function formatVendorLabel(vendor) {
     });
     applyHeatmapPalette();
     syncSwatchAndResetButtons();
-    if (activeHeatView === 'weekly') renderHeatmapWeekly();
-    else if (activeHeatView === 'cum') renderHeatmapCum();
+    refreshActiveChartViews();
     syncNativeOverlayTheme();
   }
 
@@ -9097,6 +10732,26 @@ function formatVendorLabel(vendor) {
         }
       }
 
+      // 主对话区顶栏若处于窗口最顶行（无独立菜单栏，top < 20）且靠最右边，需同步避让系统控制按钮及右侧独立浮动簇
+      let titlebarWcoPad = 0;
+      const titlebar = findHostTitlebar();
+      if (titlebar?.getBoundingClientRect) {
+        const tbRect = titlebar.getBoundingClientRect();
+        const vw = (typeof window !== 'undefined' && window.innerWidth) || 0;
+        if (tbRect.height > 0 && tbRect.top < 20 && (vw <= 0 || tbRect.right >= vw - 16)) {
+          const baseWco = computeWindowControlsWidth(titlebar);
+          if (baseWco > 0) {
+            titlebarWcoPad = baseWco;
+            if (topRight && topRight !== titlebar && !titlebar.contains?.(topRight) && topRight.getBoundingClientRect) {
+              const trRect = topRight.getBoundingClientRect();
+              if (trRect.width > 0 && trRect.top < 20 && vw > 0 && trRect.left < vw) {
+                titlebarWcoPad = Math.max(titlebarWcoPad, Math.ceil(vw - trRect.left) + 6);
+              }
+            }
+          }
+        }
+      }
+
       if (typeof document.head !== 'undefined' && document.head && typeof document.createElement === 'function') {
         let styleEl = typeof document.getElementById === 'function' ? document.getElementById('ag-topbar-host-fix') : null;
         if (!styleEl) {
@@ -9104,11 +10759,17 @@ function formatVendorLabel(vendor) {
           styleEl.id = 'ag-topbar-host-fix';
           document.head.appendChild(styleEl);
         }
+        const activeWco = wcoWidth > 0 || titlebarWcoPad > 0;
         const cssText = [
           '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id] {',
           '  padding-right: calc(var(--right-cluster-width, 140px) - 4px) !important;',
           '}',
-          wcoWidth > 0 ? [
+          titlebarWcoPad > 0 ? [
+            '[class*="@container/titlebar"] {',
+            `  padding-right: ${titlebarWcoPad}px !important;`,
+            '}'
+          ].join('\n') : '',
+          activeWco ? [
             '[class*="@container/titlebar"],',
             '[data-aux-pane-focus-scope="true"] > div[data-active-tab-id],',
             'div[role="navigation"][aria-label] > div.shrink-0:first-child {',
@@ -9328,9 +10989,15 @@ function formatVendorLabel(vendor) {
             ? Math.max(8, titleInner.getBoundingClientRect().left - tbRect.left)
             : (tbRect.left < 168 ? (168 - tbRect.left) : 12);
           const titleRealW = titleEl?.scrollWidth ? Math.min(320, titleEl.scrollWidth) : 160;
-          const minTitleWidth = Math.max(150, titleRealW);
+          const minTitleWidth = tbRect.width < 760
+            ? Math.max(96, Math.min(180, titleRealW))
+            : Math.max(150, titleRealW);
           let nativeButtonsWidth = 64;
           let rightPad = 8;
+          let titlebarOwnPadRight = 0;
+          if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+            titlebarOwnPadRight = parseFloat(window.getComputedStyle(titlebar).paddingRight) || 0;
+          }
           const rightGroup = host.parentElement;
           if (rightGroup && rightGroup !== titlebar) {
             const auxOpen = typeof document.querySelector === 'function' && Boolean(
@@ -9366,7 +11033,8 @@ function formatVendorLabel(vendor) {
               if (sum > 0) nativeButtonsWidth = sum + 6;
             }
           }
-          const avail = tbRect.width - contentStart - minTitleWidth - rightPad - nativeButtonsWidth;
+          const effectiveRightReserve = Math.max(rightPad, titlebarOwnPadRight);
+          const avail = tbRect.width - contentStart - minTitleWidth - effectiveRightReserve - nativeButtonsWidth;
           cachedMeasuredAvailWidth = avail;
           cachedMeasuredAvailAt = now;
           cachedMeasuredWinWidth = curWinW;
@@ -9422,7 +11090,7 @@ function formatVendorLabel(vendor) {
     state.layoutMode = nextMode;
     host.setAttribute('data-layout', nextMode);
     if (prev !== nextMode) {
-      if (nextMode !== 'minimal') {
+      if (nextMode !== 'minimal' && nextMode !== 'ring-only') {
         const om = el('overflow-menu');
         if (om) om.hidden = true;
         el('badge-overflow')?.setAttribute('aria-expanded', 'false');
@@ -9468,7 +11136,7 @@ function formatVendorLabel(vendor) {
     if (chk2) chk2.checked = showCliButton;
     const statusPill = el('cli-visibility-badge');
     if (statusPill) {
-      statusPill.textContent = showCliButton ? 'CLI 已显示' : 'CLI 已隐藏';
+      statusPill.textContent = showCliButton ? t('settings.display.cliVisible') : t('settings.display.cliHidden');
       statusPill.className = showCliButton ? 'key-pill pill-ok' : 'key-pill pill-muted';
     }
     try {
@@ -9684,7 +11352,10 @@ function formatVendorLabel(vendor) {
     }
   } catch { }
 
-  const onWindowResize = () => updateResponsiveLayout(true);
+  const onWindowResize = () => {
+    updateResponsiveLayout(true);
+    try { syncCumResponsiveNarrowState(); } catch { }
+  };
   const handleDpiOrZoomChange = () => {
     try {
       for (const id of ['panel', 'panel-quota', 'panel-tokens', 'overflow-menu']) {
@@ -9830,6 +11501,11 @@ function formatVendorLabel(vendor) {
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
         void syncTokenHistoryFromHost(false);
       }
+      if (!accountsUiState?.overview && typeof refreshAccountsOverview === 'function') {
+        void refreshAccountsOverview({ silent: true });
+      } else {
+        syncTokenAccountFilterOptions?.(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      }
     } else if (target === 'quota') {
       hideContextTooltip();
       closeColorPicker();
@@ -9845,6 +11521,8 @@ function formatVendorLabel(vendor) {
       if (pQuota) pQuota.hidden = false;
       if (typeof renderQuotaBoard === 'function') renderQuotaBoard();
       if (typeof maybeRefreshQuotaOnOpen === 'function') void maybeRefreshQuotaOnOpen();
+      if (typeof renderAccountsOverviewSection === 'function') renderAccountsOverviewSection();
+      if (typeof refreshAccountsOverview === 'function') void refreshAccountsOverview({ silent: true });
     } else if (target === 'context') {
       hideContextTooltip();
       closeColorPicker();
@@ -9989,25 +11667,14 @@ function formatVendorLabel(vendor) {
     if (!sel || !sel.options) return;
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+    const curLang = getPanelLanguage();
     for (let i = 0; i < sel.options.length; i++) {
       const opt = sel.options[i];
       if (!opt || opt.value === '' || opt.value === 'custom') continue;
       const p = presets.find(item => item.id === opt.value);
       if (!p) continue;
-      const dispName = getPanelLanguage() === 'en' ? (p.nameEn || p.id || p.name) : p.name;
-      if (p.currency === 'CNY') {
-        opt.textContent = t('plan.form.presetLineCny', { flag: p.flag || '🌏', name: dispName, price: p.monthlyPrice });
-      } else {
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        opt.textContent = t('plan.form.presetLine', {
-          flag: p.flag || '🌏',
-          name: dispName,
-          id: p.id,
-          sym: p.symbol,
-          price: p.monthlyPrice,
-          cny: Number(cny).toFixed(1)
-        });
-      }
+      const parts = formatPresetRegionLineParts(p, curLang);
+      opt.textContent = parts.full || '';
     }
   }
 
@@ -10052,9 +11719,18 @@ function closeAllDropdowns(exceptWrap = null) {
     const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
     try {
       rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
-        if (w !== exceptWrap) removeClass(w, 'is-open');
+        if (w !== exceptWrap) {
+          removeClass(w, 'is-open');
+          w.querySelector?.('.ag-dropdown-trigger')?.setAttribute?.('aria-expanded', 'false');
+        }
       });
     } catch {}
+    if (typeof closeValidEndDatePicker === 'function') {
+      const dpWrap = el('valid-end-picker-wrap');
+      if (!exceptWrap || exceptWrap !== dpWrap) {
+        closeValidEndDatePicker();
+      }
+    }
   }
 
   function initDropdownController(cfg) {
@@ -10066,6 +11742,13 @@ function closeAllDropdowns(exceptWrap = null) {
     if (!wrap || !trigger || !label || !menu) return null;
     if (trigger._bound) return wrap._controller || null;
     trigger._bound = true;
+
+    trigger.setAttribute?.('role', 'combobox');
+    trigger.setAttribute?.('aria-haspopup', 'listbox');
+    trigger.setAttribute?.('aria-expanded', 'false');
+    const ariaLbl = cfg.ariaLabel || linkedSelect?.getAttribute?.('aria-label');
+    if (ariaLbl) trigger.setAttribute?.('aria-label', ariaLbl);
+    menu.setAttribute?.('role', 'listbox');
 
     let keyboardFocusIndex = -1;
     let listScrollTimer = null;
@@ -10125,21 +11808,28 @@ function closeAllDropdowns(exceptWrap = null) {
       if (typeof menu.replaceChildren === 'function') menu.replaceChildren();
       keyboardFocusIndex = -1;
 
-      // 1. 搜索框
-      const searchWrap = document.createElement('div');
-      searchWrap.className = 'ag-dropdown-search-wrap';
-      const searchInput = document.createElement('input');
-      searchInput.type = 'text';
-      searchInput.className = 'ag-dropdown-search-input';
-      searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
-      searchInput.value = kw;
-      searchWrap.appendChild(searchInput);
-      menu.appendChild(searchWrap);
+      const allItemsForSearch = cfg.getOptions();
+      const selectableCount = allItemsForSearch.filter(x => x && !x.isGroupHeader).length;
+      const showSearch = cfg.searchable === true || (cfg.searchable !== false && selectableCount > 6);
 
-      searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
-      searchInput.addEventListener('input', (e) => {
-        renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
-      });
+      // 1. 搜索框（超过 6 项或显式启用时展示，短列表直接展示整洁选项）
+      let searchInput = null;
+      if (showSearch) {
+        const searchWrap = document.createElement('div');
+        searchWrap.className = 'ag-dropdown-search-wrap';
+        searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.className = 'ag-dropdown-search-input';
+        searchInput.placeholder = (typeof cfg.searchPlaceholder === 'function' ? cfg.searchPlaceholder() : cfg.searchPlaceholder) || t('dropdown.searchPlaceholder');
+        searchInput.value = kw;
+        searchWrap.appendChild(searchInput);
+        menu.appendChild(searchWrap);
+
+        searchInput.addEventListener('click', (e) => e?.stopPropagation?.());
+        searchInput.addEventListener('input', (e) => {
+          renderList(e.target.value.trim().toLowerCase(), { scrollSelected: false });
+        });
+      }
 
       // 2. 列表容器
       const listContainer = document.createElement('div');
@@ -10230,11 +11920,14 @@ function closeAllDropdowns(exceptWrap = null) {
           const itemEl = document.createElement('div');
           const isSelected = cfg.isItemSelected ? cfg.isItemSelected(opt, selectedVal) : (opt.value === selectedVal);
           itemEl.className = 'ag-dropdown-item' + (isSelected ? ' is-selected' : '');
+          itemEl.setAttribute?.('role', 'option');
+          itemEl.setAttribute?.('aria-selected', isSelected ? 'true' : 'false');
           itemEl.setAttribute?.('data-index', String(idx));
           itemEl.setAttribute?.('data-value', String(opt.value || ''));
-          if (opt.tooltip) itemEl.title = opt.tooltip;
+          itemEl.title = opt.tooltip || opt.displayLeft || opt.label || '';
 
           const leftSpan = document.createElement('span');
+          leftSpan.className = 'ag-dropdown-item-text';
           leftSpan.textContent = opt.displayLeft || opt.label;
           itemEl.appendChild(leftSpan);
 
@@ -10293,8 +11986,10 @@ function closeAllDropdowns(exceptWrap = null) {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
         const text = cfg.getLabelText ? cfg.getLabelText(opt) : (opt.label || opt.value);
         label.textContent = text;
+        label.title = text || '';
         if (linkedSelect) {
           runWithUiHydration(() => {
             linkedSelect.value = opt.value;
@@ -10327,12 +12022,14 @@ function closeAllDropdowns(exceptWrap = null) {
           clearListScrollTimer();
           clearInputFocusTimer();
           removeClass(wrap, 'is-open');
+          trigger.setAttribute?.('aria-expanded', 'false');
           focusNoScroll(trigger);
         }
       };
 
-      searchInput.addEventListener('keydown', keyHandler);
+      if (searchInput) searchInput.addEventListener('keydown', keyHandler);
       menu.addEventListener('keydown', keyHandler);
+      wrap._activeKeyHandler = keyHandler;
     }
 
     let inputFocusTimer = null;
@@ -10352,31 +12049,42 @@ function closeAllDropdowns(exceptWrap = null) {
         closeAllDropdowns(wrap);
         clearInputFocusTimer();
 
-        // 空间不足检测，自适应展开方向
+        // 上下空间与左右边缘防裁剪自适应展开方向
         try {
-          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0 };
+          const rect = trigger.getBoundingClientRect?.() || { bottom: 0, top: 0, left: 0, right: 0, width: 0 };
           const spaceBelow = (typeof window !== 'undefined' ? (window.innerHeight || 800) : 800) - rect.bottom;
           if (spaceBelow < 240 && rect.top > 240) {
             addClass(wrap, 'open-up');
           } else {
             removeClass(wrap, 'open-up');
           }
+          const containerEl = wrap.closest?.('#panel, #panel-tokens, #panel-quota, #panel-settings') || null;
+          const cRect = containerEl?.getBoundingClientRect?.() || { left: 8, right: (typeof window !== 'undefined' ? (window.innerWidth || 1000) : 1000) - 8 };
+          const estW = Math.max(rect.width || 0, cfg.minMenuWidth || 190);
+          if (rect.left + estW > cRect.right - 6 && (rect.right - estW) >= cRect.left - 6) {
+            addClass(wrap, 'align-right');
+          } else {
+            removeClass(wrap, 'align-right');
+          }
         } catch {
           removeClass(wrap, 'open-up');
+          removeClass(wrap, 'align-right');
         }
 
         addClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'true');
         renderMenu('', { scrollSelected: true });
         inputFocusTimer = setTimeout(() => {
           inputFocusTimer = null;
           if (!hasClass(wrap, 'is-open')) return;
           const input = menu.querySelector ? menu.querySelector('.ag-dropdown-search-input') : null;
-          focusNoScroll(input);
+          if (input) focusNoScroll(input);
         }, 50);
       } else {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       }
     }
 
@@ -10388,11 +12096,24 @@ function closeAllDropdowns(exceptWrap = null) {
     trigger.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault?.();
-        toggleOpen();
+        if (hasClass(wrap, 'is-open') && e.key === 'Enter' && typeof wrap._activeKeyHandler === 'function') {
+          wrap._activeKeyHandler(e);
+        } else {
+          toggleOpen();
+        }
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (!hasClass(wrap, 'is-open')) {
+          e.preventDefault?.();
+          toggleOpen();
+        }
+        if (typeof wrap._activeKeyHandler === 'function') {
+          wrap._activeKeyHandler(e);
+        }
       } else if (e.key === 'Escape') {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       }
     });
 
@@ -10407,9 +12128,13 @@ function closeAllDropdowns(exceptWrap = null) {
         if (nextText != null && label.textContent !== nextText) {
           label.textContent = nextText;
         }
+        label.title = label.textContent || '';
+        const nextAria = cfg.getAriaLabel ? cfg.getAriaLabel() : (linkedSelect?.getAttribute?.('aria-label') || cfg.ariaLabel);
+        if (nextAria) trigger.setAttribute?.('aria-label', nextAria);
         // 关闭态仅在选项结构/选中项变化时静态同步菜单（scrollSelected: false 绝不触发滚动），避免轮询无意义重建或抢滚动
         if (!hasClass(wrap, 'is-open')) {
-          const optsSig = `${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
+          const langTag = typeof currentPanelLanguage !== 'undefined' ? currentPanelLanguage : 'zh-CN';
+          const optsSig = `${langTag}|${val || ''}|` + opts.map(o => `${o.value || ''}:${o.label || ''}:${o.displayRight || ''}:${o.badgeText || ''}:${o.isGroupHeader ? 1 : 0}`).join(';');
           if (optsSig !== lastClosedMenuSig) {
             lastClosedMenuSig = optsSig;
             renderMenu('', { scrollSelected: false });
@@ -10427,8 +12152,10 @@ function closeAllDropdowns(exceptWrap = null) {
         clearListScrollTimer();
         clearInputFocusTimer();
         removeClass(wrap, 'is-open');
+        trigger.setAttribute?.('aria-expanded', 'false');
       },
-      open: () => toggleOpen()
+      open: () => toggleOpen(),
+      wrap
     };
     wrap._controller = controller;
     return controller;
@@ -10456,9 +12183,17 @@ function closeAllDropdowns(exceptWrap = null) {
   function refreshDirectCountryDisplay(currentCountryVal) {
     const label = el('direct-country-label');
     if (!label) return;
-    const val = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '未知';
-    const matched = COUNTRY_OPTIONS.find(o => o.value === val);
-    label.textContent = matched ? formatOptionLabelByLang(matched) : (val !== '未知' ? `🌐 ${val}` : t('plan.country.auto'));
+    const rawVal = currentCountryVal || ANTIGRAVITY_TOKEN_DATA.planStatus?.country || '';
+    const val = (!rawVal || rawVal === '未知' || rawVal === 'Unknown') ? '未知' : String(rawVal).trim();
+    const matched = COUNTRY_OPTIONS.find(o => o.value === val || o.label === val || o.labelTw === val || o.labelEn === val)
+      || (val !== '未知' ? COUNTRY_OPTIONS.find(o => o.value !== '未知' && localizeRegionDisplayValue(o.value, currentPanelLanguage) === localizeRegionDisplayValue(val, currentPanelLanguage)) : null);
+    if (matched) {
+      label.textContent = formatOptionLabelByLang(matched);
+    } else if (val !== '未知') {
+      label.textContent = `🌐 ${localizeRegionDisplayValue(val) || val}`;
+    } else {
+      label.textContent = t('plan.country.auto');
+    }
   }
 
   // 刷新订阅地区直接选择器显示
@@ -10468,18 +12203,14 @@ function closeAllDropdowns(exceptWrap = null) {
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
     const reg = currentRegionText || ANTIGRAVITY_TOKEN_DATA.planStatus?.region || '未知';
-    const matched = core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg);
+    const isUnk = !reg || reg === '未知' || reg === 'Unknown' || String(reg).includes('未在当前会话中获取');
+    const matched = !isUnk
+      ? (core?.findRegionPreset ? core.findRegionPreset(reg) : presets.find(p => p.id === reg || p.name === reg || p.nameTw === reg || p.nameEn === reg))
+      : null;
     if (matched) {
-      const curCode = matched.currency === 'TWD' ? 'NTD' : matched.currency;
-      const cny = core?.convertToCNY ? core.convertToCNY(matched.monthlyPrice, matched.currency, matched.name) : (matched.monthlyPrice * matched.rateToCNY);
-      const dispName = currentPanelLanguage === 'en' ? (matched.nameEn || matched.id || matched.name) : matched.name;
-      if (matched.currency === 'CNY') {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + matched.monthlyPrice + t('dropdown.perMonth');
-      } else {
-        directLabel.textContent = (matched.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + matched.symbol + matched.monthlyPrice + ' (' + t('plan.cnyShort', { val: Number(cny).toFixed(1) }) + ')';
-      }
-    } else if (reg && reg !== '未知') {
-      directLabel.textContent = '🌏 ' + reg;
+      directLabel.textContent = formatPresetRegionLineParts(matched, currentPanelLanguage).full;
+    } else if (!isUnk) {
+      directLabel.textContent = '🌏 ' + (localizeRegionDisplayValue(reg) || reg);
     } else {
       directLabel.textContent = t('dropdown.regionUnknownShort');
     }
@@ -10738,18 +12469,19 @@ function closeAllDropdowns(exceptWrap = null) {
       // 切换为「跟随订阅国家参考价」：实时根据当前订阅国家派生官方参考价与币种
       const currentReg = prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || ps.region || '';
       const matched = core?.findRegionPreset ? core.findRegionPreset(currentReg) : core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === currentReg || p.name === currentReg);
+      const isUltraTier = ps.tierKey === 'ultra';
       const curCode = matched ? matched.currency : (prevCustom.subscriptionCurrency || prevCustom.currency || 'USD');
       const curSymbol = matched ? matched.symbol : (core?.CURRENCY_SYMBOLS?.[curCode] || '$');
-      const paid = matched ? matched.monthlyPrice : null;
+      const paid = (matched && !isUltraTier) ? matched.monthlyPrice : null;
 
       customObj = {
         ...prevCustom,
         priceMode: 'preset',
-        priceSource: 'preset_region',
+        priceSource: (matched && !isUltraTier) ? 'preset_region' : 'unknown',
         actualPricePaid: paid,
         subscriptionCurrency: curCode,
         currency: curCode,
-        currencySource: 'preset_region',
+        currencySource: matched ? 'preset_region' : (prevCustom.currencySource || 'default'),
         currencySymbol: curSymbol,
         billingCycle: '月付',
         isZeroExtraCost: false,
@@ -10783,7 +12515,8 @@ function closeAllDropdowns(exceptWrap = null) {
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const regionName = regionItem.name + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
+    const localizedName = getLocalizedPresetName(regionItem, currentPanelLanguage).replace(/\s*\(CNY\)\s*$/i, '').trim();
+    const regionName = localizedName + ' (' + (regionItem.currency === 'TWD' ? 'NTD' : regionItem.currency) + ')';
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
 
     const hasExplicitCustomPaid = Boolean(prevCustom.isZeroExtraCost || (prevCustom.actualPricePaid !== null && prevCustom.actualPricePaid !== undefined && prevCustom.actualPricePaid !== ''));
@@ -10807,11 +12540,12 @@ function closeAllDropdowns(exceptWrap = null) {
       priceSource = 'custom';
       cycle = isZero ? '随套餐赠送/免费' : (prevCustom.billingCycle || '月付');
     } else {
-      // 跟随订阅国家参考价模式：实时从预设派生定价、币种与周期
+      // 跟随订阅国家参考价模式：仅 Pro 等有统一区域参考表时派生价格；Ultra 不套用 Pro 参考价
+      const isUltraTier = ps.tierKey === 'ultra';
       curCode = regionItem.currency;
       curSymbol = core?.CURRENCY_SYMBOLS?.[curCode] || regionItem.symbol || '$';
-      paid = regionItem.monthlyPrice;
-      priceSource = 'preset_region';
+      paid = isUltraTier ? null : regionItem.monthlyPrice;
+      priceSource = isUltraTier ? 'unknown' : 'preset_region';
       isZero = false;
       cycle = '月付';
     }
@@ -10852,7 +12586,7 @@ function closeAllDropdowns(exceptWrap = null) {
         const curSelect = el('select-custom-currency');
         const paidInput = el('input-custom-paid');
         const zeroCheck = el('check-zero-extra');
-        if (regInput) regInput.value = regionName;
+        if (regInput) regInput.value = localizeRegionDisplayValue(regionName) || regionName;
         if (curSelect) {
           curSelect.value = curCode;
           enhancedDropdowns.get('select-custom-currency')?.refresh?.();
@@ -10861,9 +12595,12 @@ function closeAllDropdowns(exceptWrap = null) {
           paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
         }
         const prevEl = el('region-cny-preview');
-        if (prevEl && paid !== null && regionItem.rateToCNY) {
-          const cny = (paid * regionItem.rateToCNY).toFixed(1);
-          prevEl.textContent = t('plan.cnyApprox', { val: cny });
+        if (prevEl) {
+          if (paid !== null && paid !== undefined && Number(paid) > 0) {
+            prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, regionItem.name, { perMonth: true, detail: true }) || '';
+          } else {
+            prevEl.textContent = '';
+          }
         }
       }
     });
@@ -10877,7 +12614,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
-    const cleanCountry = (newCountryVal && newCountryVal !== '未知') ? String(newCountryVal).trim() : '';
+    const cleanCountry = (newCountryVal && newCountryVal !== '未知' && newCountryVal !== 'Unknown') ? String(newCountryVal).trim() : '';
 
     const customObj = {
       ...prevCustom,
@@ -10894,7 +12631,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     runWithUiHydration(() => {
       const countryInput = el('input-custom-country');
-      if (countryInput) countryInput.value = cleanCountry;
+      if (countryInput) countryInput.value = cleanCountry ? (localizeRegionDisplayValue(cleanCountry) || cleanCountry) : '';
       const directCountrySel = el('direct-country-select');
       if (directCountrySel) directCountrySel.value = cleanCountry || '未知';
     });
@@ -10972,6 +12709,14 @@ function closeAllDropdowns(exceptWrap = null) {
       if (paidInput && !isZero) {
         paidInput.value = (paid !== null && paid !== undefined) ? paid : '';
       }
+      const prevEl = el('region-cny-preview');
+      if (prevEl) {
+        if (!isZero && paid !== null && paid !== undefined && Number(paid) > 0) {
+          prevEl.textContent = formatSubscriptionSecondaryConversion(paid, curCode, customObj.region, { perMonth: true, detail: true }) || '';
+        } else {
+          prevEl.textContent = '';
+        }
+      }
     });
 
     applyCustomPlanObjectLocally(customObj, email);
@@ -10996,6 +12741,7 @@ function closeAllDropdowns(exceptWrap = null) {
       labelId: 'direct-country-label',
       menuId: 'direct-country-menu',
       selectId: 'direct-country-select',
+      getAriaLabel: () => t('plan.form.countryLabel'),
       searchPlaceholder: () => t('dropdown.countrySearch'),
       getOptions: () => COUNTRY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
       getSelectedValue: () => {
@@ -11018,27 +12764,21 @@ function closeAllDropdowns(exceptWrap = null) {
       triggerId: 'direct-region-trigger',
       labelId: 'direct-region-label',
       menuId: 'direct-region-menu',
+      getAriaLabel: () => t('plan.form.regionLabel'),
       searchPlaceholder: () => t('dropdown.regionSearch'),
       getOptions: () => {
         return presets.map(p => {
           const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-          const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
-          let displayRight = '';
-          if (p.currency === 'CNY') {
-            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth');
-          } else {
-            const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-            displayRight = p.symbol + p.monthlyPrice + t('dropdown.perMonth') + ' · ≈ ¥' + Number(cny).toFixed(1) + ' CNY';
-          }
+          const parts = formatPresetRegionLineParts(p, currentPanelLanguage);
           return {
             value: p.id,
             rawItem: p,
-            label: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
-            displayLeft: (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ')',
-            displayRight,
+            label: parts.left,
+            displayLeft: parts.left,
+            displayRight: parts.right,
             code: p.id,
             currency: curCode,
-            aliases: p.aliases || []
+            aliases: [p.name, p.nameTw, p.nameEn, ...(p.aliases || [])].filter(Boolean)
           };
         });
       },
@@ -11057,13 +12797,7 @@ function closeAllDropdowns(exceptWrap = null) {
       getLabelText: (opt) => {
         const p = opt.rawItem;
         if (!p) return opt.label;
-        const curCode = p.currency === 'TWD' ? 'NTD' : p.currency;
-        const dispName = currentPanelLanguage === 'en' ? (p.id || p.name) : p.name;
-        if (p.currency === 'CNY') {
-          return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ¥' + p.monthlyPrice + t('dropdown.perMonth');
-        }
-        const cny = core?.convertToCNY ? core.convertToCNY(p.monthlyPrice, p.currency, p.name) : (p.monthlyPrice * p.rateToCNY);
-        return (p.flag || '🌏') + ' ' + dispName + ' (' + curCode + ') · ' + p.symbol + p.monthlyPrice + ' (≈ ¥' + Number(cny).toFixed(1) + ' CNY)';
+        return formatPresetRegionLineParts(p, currentPanelLanguage).full;
       },
       onSelect: (opt) => {
         if (opt.rawItem) applyDirectRegionSelection(opt.rawItem);
@@ -11079,6 +12813,7 @@ function closeAllDropdowns(exceptWrap = null) {
       labelId: 'direct-currency-label',
       menuId: 'direct-currency-menu',
       selectId: 'direct-currency-select',
+      getAriaLabel: () => String(t('plan.dt.currency') || 'Currency').replace(/[：:]\s*$/, ''),
       searchPlaceholder: () => t('dropdown.currencySearch'),
       getOptions: () => CURRENCY_OPTIONS.map(o => ({ ...o, label: formatOptionLabelByLang(o) })),
       getSelectedValue: () => {
@@ -11140,141 +12875,438 @@ function closeAllDropdowns(exceptWrap = null) {
     setPlanDetailExpanded(false);
   });
 
-  // 原生质感自定义下拉选择增强器
+  // 统一基于 initDropdownController 将原生 <select> 改造为高端自定义下拉组件（全界面风格与交互 100% 一致）
   const enhancedDropdowns = new Map();
-  function enhanceCustomSelect(selectId) {
+  const NATIVE_DROPDOWN_SPECS = [
+    { selectId: 'token-account-select', wrapId: 'token-account-dropdown-wrap', triggerId: 'token-account-dropdown-trigger', labelId: 'token-account-dropdown-label', menuId: 'token-account-dropdown-menu', compact: true },
+    { selectId: 'select-custom-acq', wrapId: 'select-custom-acq-dropdown-wrap', triggerId: 'select-custom-acq-dropdown-trigger', labelId: 'select-custom-acq-dropdown-label', menuId: 'select-custom-acq-dropdown-menu', compact: true },
+    { selectId: 'select-custom-region-preset', wrapId: 'select-custom-region-preset-dropdown-wrap', triggerId: 'select-custom-region-preset-dropdown-trigger', labelId: 'select-custom-region-preset-dropdown-label', menuId: 'select-custom-region-preset-dropdown-menu', compact: true, searchable: true },
+    { selectId: 'select-custom-currency', wrapId: 'select-custom-currency-dropdown-wrap', triggerId: 'select-custom-currency-dropdown-trigger', labelId: 'select-custom-currency-dropdown-label', menuId: 'select-custom-currency-dropdown-menu', compact: true, searchable: true, minMenuWidth: 130 },
+    { selectId: 'select-custom-cycle', wrapId: 'select-custom-cycle-dropdown-wrap', triggerId: 'select-custom-cycle-dropdown-trigger', labelId: 'select-custom-cycle-dropdown-label', menuId: 'select-custom-cycle-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-pool', wrapId: 'sel-auto-switch-pool-dropdown-wrap', triggerId: 'sel-auto-switch-pool-dropdown-trigger', labelId: 'sel-auto-switch-pool-dropdown-label', menuId: 'sel-auto-switch-pool-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-mode', wrapId: 'sel-auto-switch-mode-dropdown-wrap', triggerId: 'sel-auto-switch-mode-dropdown-trigger', labelId: 'sel-auto-switch-mode-dropdown-label', menuId: 'sel-auto-switch-mode-dropdown-menu', compact: true },
+    { selectId: 'sel-auto-switch-window', wrapId: 'sel-auto-switch-window-dropdown-wrap', triggerId: 'sel-auto-switch-window-dropdown-trigger', labelId: 'sel-auto-switch-window-dropdown-label', menuId: 'sel-auto-switch-window-dropdown-menu', compact: true }
+  ];
+
+  function initNativeSelectDropdown(selectId, opts = {}) {
     const sel = el(selectId);
-    if (!sel || !sel.parentNode) return null;
+    if (!sel) return null;
     if (enhancedDropdowns.has(selectId)) {
       const existing = enhancedDropdowns.get(selectId);
-      existing.refresh();
+      existing?.refresh?.();
       return existing;
     }
 
-    sel.style.display = 'none';
+    if (sel.style) sel.style.display = 'none';
+    sel.setAttribute?.('aria-hidden', 'true');
+    sel.setAttribute?.('tabindex', '-1');
 
-    const wrap = document.createElement('div');
-    wrap.className = 'ag-dropdown-wrapper';
-    wrap.setAttribute('data-target-select', selectId);
+    const preset = NATIVE_DROPDOWN_SPECS.find(s => s.selectId === selectId) || {};
+    const wrapId = opts.wrapId || preset.wrapId || `${selectId}-dropdown-wrap`;
+    const triggerId = opts.triggerId || preset.triggerId || `${selectId}-dropdown-trigger`;
+    const labelId = opts.labelId || preset.labelId || `${selectId}-dropdown-label`;
+    const menuId = opts.menuId || preset.menuId || `${selectId}-dropdown-menu`;
 
-    const trigger = document.createElement('div');
-    trigger.className = 'ag-dropdown-trigger';
-    trigger.setAttribute('tabindex', '0');
+    let wrap = el(wrapId);
+    if (!wrap && sel.parentNode && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      wrap = document.createElement('div');
+      wrap.id = wrapId;
+      wrap.className = `ag-dropdown-wrapper${opts.compact !== false && preset.compact !== false ? ' ag-dropdown-compact' : ''}`;
+      wrap.setAttribute?.('data-target-select', selectId);
 
-    const label = document.createElement('span');
-    label.className = 'ag-dropdown-label';
-    label.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1';
+      const trigger = document.createElement('div');
+      trigger.id = triggerId;
+      trigger.className = 'ag-dropdown-trigger';
+      trigger.setAttribute?.('tabindex', '0');
 
-    const arrow = document.createElement('div');
-    arrow.className = 'ag-dropdown-arrow';
-    arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
+      const label = document.createElement('span');
+      label.id = labelId;
+      label.className = 'ag-dropdown-label';
 
-    trigger.appendChild(label);
-    trigger.appendChild(arrow);
-    wrap.appendChild(trigger);
+      const arrow = document.createElement('div');
+      arrow.className = 'ag-dropdown-arrow';
+      arrow.innerHTML = '<svg viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l4 4 4-4"/></svg>';
 
-    const menu = document.createElement('div');
-    menu.className = 'ag-dropdown-menu';
-    wrap.appendChild(menu);
+      trigger.appendChild?.(label);
+      trigger.appendChild?.(arrow);
+      wrap.appendChild?.(trigger);
 
-    const renderOptions = () => {
-      menu.innerHTML = '';
-      const selectedVal = sel.value;
-      const opts = Array.from(sel.options);
-      let activeText = '';
+      const menu = document.createElement('div');
+      menu.id = menuId;
+      menu.className = 'ag-dropdown-menu';
+      wrap.appendChild?.(menu);
 
-      opts.forEach((opt) => {
-        const item = document.createElement('div');
-        item.className = 'ag-dropdown-item' + (opt.value === selectedVal ? ' is-selected' : '');
+      sel.parentNode.insertBefore?.(wrap, sel.nextSibling);
+    }
 
-        const textSpan = document.createElement('span');
-        if (opt.text.includes(' · ')) {
-          const parts = opt.text.split(' · ');
-          textSpan.textContent = parts[0];
-          const subSpan = document.createElement('span');
-          subSpan.className = 'ag-dropdown-item-sub';
-          subSpan.textContent = parts.slice(1).join(' · ');
-          item.appendChild(textSpan);
-          item.appendChild(subSpan);
-        } else {
-          textSpan.textContent = opt.text;
-          item.appendChild(textSpan);
+    if (!wrap || !el(triggerId) || !el(labelId) || !el(menuId)) {
+      return null;
+    }
+
+    wrap.setAttribute?.('data-target-select', selectId);
+    const controller = initDropdownController({
+      wrapId,
+      triggerId,
+      labelId,
+      menuId,
+      selectId,
+      searchable: opts.searchable ?? preset.searchable,
+      minMenuWidth: opts.minMenuWidth ?? preset.minMenuWidth,
+      ariaLabel: sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+      getAriaLabel: () => sel.getAttribute?.('aria-label') || opts.ariaLabel || '',
+      emptyLabel: () => (sel.selectedOptions?.[0]?.textContent || sel.options?.[0]?.textContent || ''),
+      getSelectedValue: () => sel.value || '',
+      getOptions: () => Array.from(sel.options || []).map(o => {
+        const rawText = String(o.textContent || o.text || o.value || '').trim();
+        const dotIdx = rawText.indexOf(' · ');
+        return {
+          value: o.value,
+          label: rawText,
+          displayLeft: dotIdx > 0 ? rawText.slice(0, dotIdx) : rawText,
+          displayRight: dotIdx > 0 ? rawText.slice(dotIdx + 3) : '',
+          tooltip: rawText
+        };
+      }),
+      onSelect: (opt) => {
+        sel.value = opt.value;
+        if (typeof Event !== 'undefined') sel.dispatchEvent?.(new Event('change', { bubbles: true }));
+        else sel.dispatchEvent?.({ type: 'change', target: sel });
+      }
+    });
+
+    if (controller) {
+      if (!sel._dropdownSyncBound) {
+        sel._dropdownSyncBound = true;
+        sel.addEventListener?.('change', () => controller.refresh());
+      }
+      controller.refresh();
+      enhancedDropdowns.set(selectId, controller);
+    }
+    return controller;
+  }
+
+  function enhanceCustomSelect(selectId) {
+    return initNativeSelectDropdown(selectId);
+  }
+
+  function syncAllNativeSelectDropdowns() {
+    for (const spec of NATIVE_DROPDOWN_SPECS) {
+      const ctrl = enhancedDropdowns.get(spec.selectId) || initNativeSelectDropdown(spec.selectId, spec);
+      ctrl?.refresh?.();
+    }
+    for (const wrapId of ['direct-country-wrap', 'direct-region-wrap', 'direct-currency-wrap']) {
+      el(wrapId)?._controller?.refresh?.();
+    }
+  }
+
+  syncAllNativeSelectDropdowns();
+
+  // 点击外部自动收起下拉浮层（closeAllDropdowns 同步更新 aria-expanded）
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('click', (e) => {
+      try {
+        if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
+          closeAllDropdowns();
         }
+      } catch {}
+    });
+  }
 
-        const check = document.createElement('span');
-        check.className = 'ag-dropdown-item-check';
-        check.textContent = '✓';
-        item.appendChild(check);
+  function updateRegionCnyPreviewFromForm() {
+    const prevEl = el('region-cny-preview');
+    if (!prevEl) return;
+    const isZero = Boolean(el('check-zero-extra')?.checked);
+    const rawPaidVal = el('input-custom-paid')?.value;
+    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
+    const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
+    const cur = el('select-custom-currency')?.value || 'USD';
+    const regVal = el('input-custom-region')?.value;
+    const reg = (regVal !== undefined && regVal !== null) ? String(regVal).trim() : '';
+    if (isZero || paid === null || paid <= 0) {
+      prevEl.textContent = '';
+      return;
+    }
+    prevEl.textContent = formatSubscriptionSecondaryConversion(paid, cur, reg, { perMonth: true, detail: true }) || '';
+  }
 
-        if (opt.value === selectedVal) {
-          activeText = opt.text;
-        }
+  function normalizeBillingCycleValue(rawCycle) {
+    if (!rawCycle) return '';
+    const cleaned = String(rawCycle).replace(/[（(].*[）)]/g, '').trim();
+    if (!cleaned || cleaned === '未知' || cleaned === 'Unknown') return '';
+    if (cleaned === '月付' || cleaned === '月繳' || cleaned === 'Monthly' || cleaned === 'monthly') return '月付';
+    if (cleaned === '年付' || cleaned === '年繳' || cleaned === 'Yearly' || cleaned === 'yearly') return '年付';
+    if (cleaned === '免费/赠送' || cleaned === '免費/贈送' || cleaned === 'Free / Promo' || cleaned === '随套餐赠送/免费') return '免费/赠送';
+    if (cleaned === '随套餐包含' || cleaned === '隨方案包含' || cleaned === 'Included in bundle') return '随套餐包含';
+    if (cleaned === '其他周期' || cleaned === '其他週期' || cleaned === 'Other cycle') return '其他周期';
+    return cleaned;
+  }
 
-        item.addEventListener('click', (e) => {
-          e?.stopPropagation?.();
-          sel.value = opt.value;
-          renderOptions();
-          wrap?.classList?.remove?.('is-open');
-          if (typeof Event !== 'undefined') sel.dispatchEvent(new Event('change', { bubbles: true })); else sel.dispatchEvent?.({ type: 'change' });
-        });
+  const DP_EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  let validEndDpState = null;
 
-        menu.appendChild(item);
-      });
+  function formatLocalYmdDate(dt) {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
 
-      label.textContent = activeText || sel.selectedOptions[0]?.text || sel.options[0]?.text || '';
+  function closeValidEndDatePicker() {
+    if (!validEndDpState) return;
+    validEndDpState.isOpen = false;
+    removeClass(validEndDpState.wrap, 'is-open');
+    removeClass(validEndDpState.wrap, 'open-up');
+    if (validEndDpState.popover) validEndDpState.popover.style.display = 'none';
+    validEndDpState.trigger?.setAttribute?.('aria-expanded', 'false');
+  }
+
+  function syncValidEndDatePickerLabel() {
+    const labelEl = el('valid-end-label');
+    const hiddenEl = el('input-valid-end');
+    const triggerEl = el('valid-end-trigger');
+    if (triggerEl) triggerEl.setAttribute?.('aria-label', t('datePicker.ariaLabel'));
+    if (!labelEl) return;
+    const raw = String(hiddenEl?.value || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      labelEl.textContent = raw;
+      removeClass(labelEl, 'is-placeholder');
+    } else {
+      labelEl.textContent = t('datePicker.placeholder');
+      addClass(labelEl, 'is-placeholder');
+    }
+  }
+
+  function refreshValidEndDatePicker() {
+    syncValidEndDatePickerLabel();
+    if (validEndDpState?.isOpen) {
+      validEndDpState.renderCalendar();
+    }
+  }
+
+  function initValidEndDatePicker() {
+    const wrap = el('valid-end-picker-wrap');
+    const trigger = el('valid-end-trigger');
+    const popover = el('valid-end-popover');
+    const hiddenInput = el('input-valid-end');
+    if (!wrap || !trigger || !popover || !hiddenInput) return null;
+    if (trigger._dpBound) {
+      refreshValidEndDatePicker();
+      return validEndDpState;
+    }
+    trigger._dpBound = true;
+
+    const now = new Date();
+    validEndDpState = {
+      wrap,
+      trigger,
+      popover,
+      hiddenInput,
+      isOpen: false,
+      viewYear: now.getFullYear(),
+      viewMonth: now.getMonth(),
+      renderCalendar: () => {}
     };
 
-    renderOptions();
+    const dispatchHiddenChange = () => {
+      if (typeof Event !== 'undefined') hiddenInput.dispatchEvent?.(new Event('change', { bubbles: true }));
+      else hiddenInput.dispatchEvent?.({ type: 'change', target: hiddenInput });
+    };
+
+    const commitDateValue = (ymd) => {
+      hiddenInput.value = ymd || '';
+      syncValidEndDatePickerLabel();
+      dispatchHiddenChange();
+      closeValidEndDatePicker();
+    };
+
+    const renderCalendar = () => {
+      const y = validEndDpState.viewYear;
+      const m = validEndDpState.viewMonth;
+      const todayYmd = formatLocalYmdDate(new Date());
+      const selRaw = String(hiddenInput.value || '').trim();
+      const selectedYmd = /^\d{4}-\d{2}-\d{2}$/.test(selRaw) ? selRaw : '';
+
+      if (typeof popover.replaceChildren === 'function') popover.replaceChildren();
+      else popover.innerHTML = '';
+
+      if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+
+      const header = document.createElement('div');
+      header.className = 'ag-dp-header';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.type = 'button';
+      prevBtn.className = 'ag-dp-nav-btn';
+      prevBtn.textContent = '‹';
+      prevBtn.setAttribute('aria-label', t('datePicker.prevMonth'));
+      prevBtn.title = t('datePicker.prevMonth');
+      prevBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        if (validEndDpState.viewMonth === 0) {
+          validEndDpState.viewMonth = 11;
+          validEndDpState.viewYear -= 1;
+        } else {
+          validEndDpState.viewMonth -= 1;
+        }
+        renderCalendar();
+      });
+
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ag-dp-month-title';
+      titleSpan.textContent = t('datePicker.monthTitle', { y, m: m + 1, monthEn: DP_EN_MONTHS[m] });
+
+      const nextBtn = document.createElement('button');
+      nextBtn.type = 'button';
+      nextBtn.className = 'ag-dp-nav-btn';
+      nextBtn.textContent = '›';
+      nextBtn.setAttribute('aria-label', t('datePicker.nextMonth'));
+      nextBtn.title = t('datePicker.nextMonth');
+      nextBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        if (validEndDpState.viewMonth === 11) {
+          validEndDpState.viewMonth = 0;
+          validEndDpState.viewYear += 1;
+        } else {
+          validEndDpState.viewMonth += 1;
+        }
+        renderCalendar();
+      });
+
+      header.appendChild(prevBtn);
+      header.appendChild(titleSpan);
+      header.appendChild(nextBtn);
+      popover.appendChild(header);
+
+      const weekdaysRow = document.createElement('div');
+      weekdaysRow.className = 'ag-dp-weekdays';
+      const wkLabels = String(t('datePicker.weekdays')).split(',');
+      for (const wk of wkLabels) {
+        const wCell = document.createElement('div');
+        wCell.className = 'ag-dp-weekday';
+        wCell.textContent = wk;
+        weekdaysRow.appendChild(wCell);
+      }
+      popover.appendChild(weekdaysRow);
+
+      const grid = document.createElement('div');
+      grid.className = 'ag-dp-grid';
+      const firstDow = new Date(y, m, 1).getDay();
+      for (let i = 0; i < 42; i++) {
+        const cellDate = new Date(y, m, 1 - firstDow + i);
+        const ymd = formatLocalYmdDate(cellDate);
+        const inCurMonth = cellDate.getMonth() === m && cellDate.getFullYear() === y;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        let cls = 'ag-dp-day';
+        if (!inCurMonth) cls += ' is-outside';
+        if (ymd === todayYmd) cls += ' is-today';
+        if (ymd === selectedYmd) cls += ' is-selected';
+        btn.className = cls;
+        btn.setAttribute('data-date', ymd);
+        btn.setAttribute('aria-label', ymd);
+        btn.textContent = String(cellDate.getDate());
+        btn.addEventListener('click', (e) => {
+          e?.stopPropagation?.();
+          commitDateValue(ymd);
+        });
+        grid.appendChild(btn);
+      }
+      popover.appendChild(grid);
+
+      const footer = document.createElement('div');
+      footer.className = 'ag-dp-footer';
+
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'ag-dp-action-btn';
+      clearBtn.setAttribute('data-dp-action', 'clear');
+      clearBtn.textContent = t('datePicker.clear');
+      clearBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        commitDateValue('');
+      });
+
+      const todayBtn = document.createElement('button');
+      todayBtn.type = 'button';
+      todayBtn.className = 'ag-dp-action-btn is-today-btn';
+      todayBtn.setAttribute('data-dp-action', 'today');
+      todayBtn.textContent = t('datePicker.today');
+      todayBtn.addEventListener('click', (e) => {
+        e?.stopPropagation?.();
+        const tNow = new Date();
+        validEndDpState.viewYear = tNow.getFullYear();
+        validEndDpState.viewMonth = tNow.getMonth();
+        commitDateValue(formatLocalYmdDate(tNow));
+      });
+
+      footer.appendChild(clearBtn);
+      footer.appendChild(todayBtn);
+      popover.appendChild(footer);
+    };
+
+    validEndDpState.renderCalendar = renderCalendar;
+
+    const openPicker = () => {
+      closeAllDropdowns(wrap);
+      const curVal = String(hiddenInput.value || '').trim();
+      const m = curVal.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) {
+        validEndDpState.viewYear = Number(m[1]);
+        validEndDpState.viewMonth = Math.max(0, Math.min(11, Number(m[2]) - 1));
+      } else {
+        const curNow = new Date();
+        validEndDpState.viewYear = curNow.getFullYear();
+        validEndDpState.viewMonth = curNow.getMonth();
+      }
+      renderCalendar();
+      validEndDpState.isOpen = true;
+      addClass(wrap, 'is-open');
+      try {
+        const tRect = trigger.getBoundingClientRect?.();
+        if (tRect && typeof window !== 'undefined' && window.innerHeight && tRect.bottom + 240 > window.innerHeight && tRect.top > 240) {
+          addClass(wrap, 'open-up');
+        } else {
+          removeClass(wrap, 'open-up');
+        }
+      } catch {}
+      popover.style.display = 'block';
+      trigger.setAttribute?.('aria-expanded', 'true');
+    };
 
     trigger.addEventListener('click', (e) => {
       e?.stopPropagation?.();
-      const isOpen = Boolean(wrap?.classList?.contains?.('is-open'));
-      const rootScope = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : (typeof document !== 'undefined' ? document : null);
-      rootScope?.querySelectorAll?.('.ag-dropdown-wrapper.is-open')?.forEach(w => {
-        if (w !== wrap) w.classList.remove('is-open');
-      });
-      if (!isOpen) {
-        renderOptions();
-        wrap?.classList?.add?.('is-open');
-      } else {
-        wrap?.classList?.remove?.('is-open');
-      }
+      if (validEndDpState.isOpen) closeValidEndDatePicker();
+      else openPicker();
     });
 
     trigger.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        trigger.click();
-      } else if (e.key === 'Escape') {
-        wrap?.classList?.remove?.('is-open');
+        if (validEndDpState.isOpen) closeValidEndDatePicker();
+        else openPicker();
+      } else if (e.key === 'Escape' && validEndDpState.isOpen) {
+        e.preventDefault();
+        closeValidEndDatePicker();
       }
     });
 
-    sel.parentNode.insertBefore(wrap, sel.nextSibling);
-
-    sel.addEventListener('change', () => {
-      renderOptions();
+    popover.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeValidEndDatePicker();
+        trigger.focus?.();
+      }
     });
 
-    const handler = {
-      wrap,
-      refresh: renderOptions
-    };
-    enhancedDropdowns.set(selectId, handler);
-    return handler;
+    popover.addEventListener('click', (e) => {
+      e?.stopPropagation?.();
+    });
+
+    syncValidEndDatePickerLabel();
+    return validEndDpState;
   }
 
-  // 点击外部自动收起下拉浮层
-  if (typeof document !== 'undefined' && document.addEventListener) {
-    document.addEventListener('click', (e) => {
-      try {
-        if (!e.target?.closest?.('.ag-dropdown-wrapper')) {
-          const root = (typeof shadow !== 'undefined' && shadow && shadow.querySelectorAll) ? shadow : document;
-          root.querySelectorAll('.ag-dropdown-wrapper.is-open').forEach(w => w.classList.remove('is-open'));
-        }
-      } catch {}
-    });
-  }
+  initValidEndDatePicker();
 
   // 就地行内自定义订阅表单交互（实际读取优先于手填，支持官方依据活动来源）
   function togglePlanCustomForm(forceOpen) {
@@ -11283,6 +13315,9 @@ function closeAllDropdowns(exceptWrap = null) {
     const curHidden = form.style.display === 'none' || !form.style.display;
     const next = typeof forceOpen === 'boolean' ? forceOpen : curHidden;
     form.style.display = next ? 'block' : 'none';
+    if (!next) {
+      closeValidEndDatePicker();
+    }
     if (next) {
       const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
       const acqSelect = el('select-custom-acq');
@@ -11300,22 +13335,44 @@ function closeAllDropdowns(exceptWrap = null) {
         if (acqSelect && ps.acquisitionSource) acqSelect.value = ps.acquisitionSource;
         if (acqNameInput) acqNameInput.value = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅') ? ps.acquisitionSourceName : '';
         if (zeroCheck) zeroCheck.checked = Boolean(ps.isZeroExtraCost || ps.actualPricePaid === 0);
-        if (countryInput) countryInput.value = (ps.country && !ps.country.includes('未知')) ? ps.country : '';
-        if (regInput) regInput.value = (ps.region && !ps.region.includes('未知')) ? ps.region : '';
+        if (countryInput) {
+          const cVal = (ps.country && !String(ps.country).includes('未知') && ps.country !== 'Unknown') ? ps.country : '';
+          countryInput.value = cVal ? (localizeRegionDisplayValue(cVal) || cVal) : '';
+        }
+        if (regInput) {
+          const rVal = (ps.region && !String(ps.region).includes('未知') && ps.region !== 'Unknown') ? ps.region : '';
+          regInput.value = rVal ? (localizeRegionDisplayValue(rVal) || rVal) : '';
+        }
         if (paidInput) {
           paidInput.value = (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) ? ps.actualPricePaid : (zeroCheck?.checked ? '0' : '');
           paidInput.disabled = Boolean(zeroCheck?.checked);
         }
         if (curSelect && ps.currency) curSelect.value = ps.currency;
-        if (cycleSelect && ps.billingCycle && !ps.billingCycle.includes('未知')) cycleSelect.value = ps.billingCycle.replace(/（.*）/, '').trim();
+        if (cycleSelect && ps.billingCycle) {
+          const normCycle = normalizeBillingCycleValue(ps.billingCycle);
+          if (normCycle) cycleSelect.value = normCycle;
+        }
         if (validEndInput) validEndInput.value = ps.validEndDate || '';
+        initValidEndDatePicker();
+        refreshValidEndDatePicker();
         if (noteInput) noteInput.value = ps.customNote || '';
+        updateRegionCnyPreviewFromForm();
         ['select-custom-acq', 'select-custom-region-preset', 'select-custom-currency', 'select-custom-cycle'].forEach(id => enhanceCustomSelect(id));
       });
       regInput?.focus?.();
     }
     positionFloatingPanels();
   }
+
+  el('input-custom-paid')?.addEventListener('input', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
+  el('select-custom-currency')?.addEventListener('change', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
+  el('input-custom-region')?.addEventListener('input', () => {
+    if (!isHydratingUiControls) updateRegionCnyPreviewFromForm();
+  });
 
   el('select-custom-region-preset')?.addEventListener('change', (e) => {
     if (isHydratingUiControls) return;
@@ -11342,6 +13399,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (paidInput.value === '0') paidInput.value = '';
       }
     }
+    updateRegionCnyPreviewFromForm();
   });
 
   el('select-custom-acq')?.addEventListener('change', (e) => {
@@ -11362,10 +13420,16 @@ function closeAllDropdowns(exceptWrap = null) {
       if (zeroCheck) zeroCheck.checked = false;
       if (paidInput) {
         paidInput.disabled = false;
-        if (!paidInput.value || paidInput.value === '0') paidInput.value = '19.99';
+        const curTierKey = ANTIGRAVITY_TOKEN_DATA?.planStatus?.tierKey;
+        if ((!paidInput.value || paidInput.value === '0') && curTierKey !== 'ultra') paidInput.value = '19.99';
       }
-      if (cycleSelect) cycleSelect.value = '月付';
+      if (cycleSelect) {
+        cycleSelect.value = '月付';
+        enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
+      }
     }
+    enhancedDropdowns.get('select-custom-acq')?.refresh?.();
+    enhancedDropdowns.get('select-custom-cycle')?.refresh?.();
   });
 
   el('btn-mode-preset')?.addEventListener('click', () => switchPlanPriceMode('preset'));
@@ -11379,18 +13443,19 @@ function closeAllDropdowns(exceptWrap = null) {
     const email = ps.email || 'default';
     const prevCustom = getStoredCustomPlanSnapshot(email);
     const acq = el('select-custom-acq')?.value || 'normal_paid';
-    const acqName = el('input-custom-acq-name')?.value?.trim() || '';
+    const acqName = String(el('input-custom-acq-name')?.value ?? '').trim();
     const isZero = Boolean(el('check-zero-extra')?.checked);
     const countryInputEl = el('input-custom-country');
-    const countryVal = countryInputEl ? countryInputEl.value.trim() : (prevCustom.accountRegion || prevCustom.country || '');
+    const countryVal = countryInputEl ? String(countryInputEl.value ?? '').trim() : (prevCustom.accountRegion || prevCustom.country || '');
     const regInputEl = el('input-custom-region');
-    const reg = regInputEl ? regInputEl.value.trim() : (prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || '');
-    const rawPaid = el('input-custom-paid')?.value?.trim();
+    const reg = regInputEl ? String(regInputEl.value ?? '').trim() : (prevCustom.subscriptionCountry || prevCustom.subscriptionRegion || prevCustom.region || '');
+    const rawPaidVal = el('input-custom-paid')?.value;
+    const rawPaid = (rawPaidVal !== undefined && rawPaidVal !== null) ? String(rawPaidVal).trim() : '';
     const paid = isZero ? 0 : (rawPaid !== '' && !Number.isNaN(Number(rawPaid)) ? Number(rawPaid) : null);
     const cur = el('select-custom-currency')?.value || prevCustom.subscriptionCurrency || prevCustom.currency || 'USD';
     const cycle = el('select-custom-cycle')?.value || (isZero ? '随套餐赠送/免费' : '月付');
-    const validEnd = el('input-valid-end')?.value?.trim() || '';
-    const note = el('input-custom-note')?.value?.trim() || '';
+    const validEnd = String(el('input-valid-end')?.value ?? '').trim();
+    const note = String(el('input-custom-note')?.value ?? '').trim();
 
     const customObj = {
       ...prevCustom,
@@ -11431,6 +13496,9 @@ function closeAllDropdowns(exceptWrap = null) {
 
   el('btn-custom-plan-clear')?.addEventListener('click', () => {
     ++userActionSeq;
+    const validEndInput = el('input-valid-end');
+    if (validEndInput) validEndInput.value = '';
+    refreshValidEndDatePicker();
     const ps = ANTIGRAVITY_TOKEN_DATA.planStatus || {};
     const email = ps.email || 'default';
     const rawLive = ANTIGRAVITY_TOKEN_DATA.rawPlanStatus || null;
@@ -11465,6 +13533,19 @@ function closeAllDropdowns(exceptWrap = null) {
     if (activeBadgeRafId && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(activeBadgeRafId);
       activeBadgeRafId = null;
+    }
+
+    if (targetNum === null || targetNum === undefined) {
+      const displayStr = targetSymbol || t('plan.summary.priceUnsetShort');
+      if (typeof priceValEl.replaceChildren === 'function') {
+        priceValEl.textContent = displayStr;
+      } else {
+        priceValEl.textContent = displayStr;
+      }
+      if (priceCnyEl) priceCnyEl.textContent = targetCnyText || '';
+      if (badgeEl && badgeEl.classList) badgeEl.classList.remove('is-animating');
+      lastBadgePriceState = null;
+      return;
     }
 
     const formattedFinalNum = targetNum !== null && targetNum !== undefined
@@ -11598,20 +13679,21 @@ function closeAllDropdowns(exceptWrap = null) {
   function renderPlanDetail(ps) {
     if (!ps) return;
     const sumTxt = el('plan-summary-text');
+    const tierDisplay = typeof localizePlanTierName === 'function' ? localizePlanTierName(ps.tierName || 'Pro') : (ps.tierName || 'Pro');
     if (sumTxt) {
       const modeTxt = ps.status === 'identified'
         ? t('plan.summary.identified')
         : ps.hasCustomSettings
           ? t('plan.summary.custom')
           : t('plan.summary.unknown');
-      sumTxt.textContent = `${ps.tierName || 'Pro'} · ${modeTxt} · ${t('plan.summary.justNow')}`;
+      sumTxt.textContent = `${tierDisplay} · ${modeTxt} · ${t('plan.summary.justNow')}`;
     }
-    // 实时联动更新黄框位置的订阅费与汇率胶囊 (支持动效与符号消散)
+    // 实时联动更新黄框位置的订阅费与汇率胶囊（Ultra 等无公开统一定价时不回退 Pro $19.99）
     const curSymbol = ps.currencySymbol || '$';
     let targetSymbol = '$';
-    let targetNum = 19.99;
+    let targetNum = null;
     let targetCycle = t('plan.summary.perMonth');
-    let targetCny = '(≈ ¥134.3 CNY)';
+    let targetCny = '';
 
     if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
       targetSymbol = curSymbol;
@@ -11622,34 +13704,27 @@ function closeAllDropdowns(exceptWrap = null) {
       targetSymbol = curSymbol;
       targetNum = Number(ps.actualPricePaid);
       targetCycle = t('plan.summary.perMonth');
-      if (ps.currency === 'CNY') {
-        targetCny = '';
-      } else if (ps.cnyFormatted) {
-        const cnyClean = String(ps.cnyFormatted).replace(/^[折合約\s≈()（）]+/, '').replace(/[()（）]/g, '').trim();
-        const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
-        targetCny = cnyClean ? `(${prefix}${cnyClean})` : '';
-      } else {
-        targetCny = '';
-      }
+      const sec = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { short: true });
+      targetCny = sec ? `(${sec})` : '';
     } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
       targetSymbol = '$';
       targetNum = Number(ps.officialPriceMonthly);
       targetCycle = t('plan.summary.perMonth');
-      const refRate = Number(ps.exchangeRateToCNY) > 0 ? Number(ps.exchangeRateToCNY) : 6.72;
-      const refCny = (targetNum * refRate).toFixed(1);
-      const prefix = currentPanelLanguage === 'en' ? 'approx. ' : '≈ ';
-      targetCny = `(${prefix}¥${refCny} CNY)`;
+      const sec = formatSubscriptionSecondaryConversion(targetNum, 'USD', ps.region, { short: true });
+      targetCny = sec ? `(${sec})` : '';
     } else {
-      targetSymbol = '$';
-      targetNum = 19.99;
-      targetCycle = t('plan.summary.perMonth');
-      targetCny = '(≈ ¥134.3 CNY)';
+      targetSymbol = t('plan.summary.priceUnsetShort');
+      targetNum = null;
+      targetCycle = '';
+      targetCny = t('plan.summary.priceUnsetCny');
     }
 
     renderPlanSummaryPriceBadge(targetSymbol, targetNum, targetCycle, targetCny);
 
     const detName = el('p-det-name');
-    if (detName) detName.textContent = ps.tierName || 'Google AI Pro';
+    if (detName) detName.textContent = typeof localizePlanTierName === 'function'
+      ? localizePlanTierName(ps.tierName || 'Google AI Pro')
+      : (ps.tierName || 'Google AI Pro');
     const detAcc = el('p-det-account');
     if (detAcc) detAcc.textContent = ps.email || t('plan.account.unknown');
 
@@ -11663,8 +13738,11 @@ function closeAllDropdowns(exceptWrap = null) {
     const detCountry = el('p-det-country');
     const tagCountry = el('p-det-country-tag');
     const directCountrySel = el('direct-country-select');
-    const countryText = (ps.country && !String(ps.country).includes('未知')) ? String(ps.country).trim() : '未知';
-    if (detCountry) detCountry.textContent = countryText === '未知' ? t('plan.country.unknown') : countryText;
+    const rawCountryStr = ps.country ? String(ps.country).trim() : '';
+    const isCountryUnknown = !rawCountryStr || rawCountryStr === '未知' || rawCountryStr === 'Unknown' || rawCountryStr.includes('未设置');
+    const countryText = isCountryUnknown ? '未知' : rawCountryStr;
+    const countryDisplay = countryText === '未知' ? t('plan.country.unknown') : (localizeRegionDisplayValue(countryText) || countryText);
+    if (detCountry) detCountry.textContent = countryDisplay;
     if (tagCountry) {
       tagCountry.style.display = ps.countrySource === 'custom' ? 'inline-block' : 'none';
       tagCountry.textContent = ps.countrySource === 'custom' ? t('plan.tag.custom') : '';
@@ -11673,8 +13751,9 @@ function closeAllDropdowns(exceptWrap = null) {
     const detReg = el('p-det-region');
     const tagReg = el('p-det-region-tag');
     let regText = ps.subscriptionRegion || ps.region || '未知';
-    if (regText.includes('未在当前会话中获取') || regText.trim() === '未知') regText = '未知';
-    if (detReg) detReg.textContent = regText === '未知' ? t('plan.region.unknown') : regText;
+    if (regText.includes('未在当前会话中获取') || regText.trim() === '未知' || regText.trim() === 'Unknown') regText = '未知';
+    const regDisplay = regText === '未知' ? t('plan.region.unknown') : (localizeRegionDisplayValue(regText) || regText);
+    if (detReg) detReg.textContent = regDisplay;
     if (tagReg) {
       tagReg.style.display = ps.regionSource === 'custom' ? 'inline-block' : 'none';
       tagReg.textContent = ps.regionSource === 'custom' ? t('plan.tag.custom') : '';
@@ -11698,7 +13777,7 @@ function closeAllDropdowns(exceptWrap = null) {
           if (!exists && typeof document.createElement === 'function') {
             const opt = document.createElement('option');
             opt.value = countryText;
-            opt.textContent = '🌐 ' + countryText;
+            opt.textContent = '🌐 ' + (localizeRegionDisplayValue(countryText) || countryText);
             directCountrySel.appendChild?.(opt);
           }
         }
@@ -11739,22 +13818,17 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (detPrice) {
       const cycleText = localizeBillingCycleLabel(ps.billingCycle);
+      const acqLabel = localizeAcquisitionSource(ps.acquisitionSource || ps.acquisitionSourceName);
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         detPrice.textContent = `${curSymbol}0 · ${cycleText}`;
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        let cnyPart = '';
-        if (ps.currency !== 'CNY' && ps.cnyFormatted) {
-          const locCny = localizeCnyFormatted(ps.cnyFormatted);
-          cnyPart = locCny ? ` (${locCny})` : '';
-        }
+        const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
         const paidFormatted = Number(ps.actualPricePaid) % 1 === 0 ? Number(ps.actualPricePaid) : Number(ps.actualPricePaid).toFixed(2);
-        detPrice.textContent = `${curSymbol}${paidFormatted} · ${cycleText}${cnyPart}`;
-      } else if (ps.priceRangeNote && ps.priceRangeNote !== '未知') {
-        detPrice.textContent = ps.priceRangeNote.replace(/[（\(][^）\)]*[）\)]/g, '').trim();
+        detPrice.textContent = secPart ? `${curSymbol}${paidFormatted} · ${cycleText} (${secPart})` : `${curSymbol}${paidFormatted} · ${cycleText}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         detPrice.textContent = `${t('plan.tag.publicRef')} $${ps.officialPriceMonthly}${t('plan.summary.perMonth')}`;
       } else {
-        detPrice.textContent = '—';
+        detPrice.textContent = `${acqLabel} · ${t('plan.priceUnsetNote')}`;
       }
     }
     if (tagPrice) {
@@ -11763,10 +13837,12 @@ function closeAllDropdowns(exceptWrap = null) {
         tagPrice.textContent = t('plan.tag.manualFree');
       } else if (ps.priceMode === 'custom' || ps.priceSource === 'custom') {
         tagPrice.textContent = t('plan.tag.userPaid');
-      } else if (ps.priceSource === 'preset_region' || isPresetMode) {
+      } else if (ps.priceSource === 'preset_region' && ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         tagPrice.textContent = t('plan.tag.official');
-      } else {
+      } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         tagPrice.textContent = t('plan.tag.publicRef');
+      } else {
+        tagPrice.textContent = t('plan.tag.unset');
       }
     }
 
@@ -11829,11 +13905,45 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   }
 
-  // 数据源切换（全部 / 桌面 / CLI）
+  function formatCompactTokenCount(v) {
+    const n = Number(v) || 0;
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return String(n);
+  }
+
+  // 数据源切换（全部 / 桌面 / CLI）与分账号账本筛选
   let activeTokenSource = 'all';
+  let activeTokenAccountFilter = 'all'; // 'all' | 'unattributed' | 'acct_xxx'
+  const accountsUiState = {
+    overview: null,
+    toolsPreview: null,
+    feedback: '',
+    feedbackTone: 'info',
+    busy: false,
+    removeModal: {
+      open: false,
+      email: '',
+      scopeKey: '',
+      isActive: false,
+      busy: false,
+      error: ''
+    }
+  };
+  function resetAccountScopedViewOffsets() {
+    heatPageOffset = 0;
+    heatMonthOffset = 0;
+    heatYearOffset = 0;
+    modelUsageOffsetDays = 0;
+    modelUsageLockedKey = null;
+    modelUsageHoveredKey = null;
+    if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
+  }
   function switchTokenSource(src) {
     activeTokenSource = src;
     try { localStorage?.setItem('ag_token_source_v1', src); } catch { }
+    if (typeof resetCumSelectionState === 'function') resetCumSelectionState();
     setPillActive(el('src-tab-all'), src === 'all');
     setPillActive(el('src-tab-desktop'), src === 'desktop');
     setPillActive(el('src-tab-cli'), src === 'cli');
@@ -11844,8 +13954,11 @@ function closeAllDropdowns(exceptWrap = null) {
       const bySrc = ANTIGRAVITY_TOKEN_DATA.dailyMapBySource || {};
       const srcMap = bySrc[src] || bySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyMap;
       ANTIGRAVITY_TOKEN_DATA.dailyMap = srcMap;
+      const mBySrc = ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource || {};
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMap = mBySrc[src] || mBySrc.all || ANTIGRAVITY_TOKEN_DATA.dailyModelMap || {};
       renderActiveHeatView(true);
       renderActiveCostEstimateView();
+      renderModelUsageView();
     }
   }
   el('src-tab-all')?.addEventListener('click', () => switchTokenSource('all'));
@@ -11895,17 +14008,445 @@ function closeAllDropdowns(exceptWrap = null) {
   });
   toggleCostDetails(false);
 
+  // 按模型 Token 统计状态与视图渲染
+  let modelUsagePeriodDays = 7;
+  let modelUsageOffsetDays = 0;
+  let modelUsageGroupBy = 'model';
+  let modelUsageMetric = 'total';
+  let modelUsageHideUnattr = false;
+  let modelUsageScaleMode = 'mixed'; // 'mixed' | 'linear'
+  let modelUsageLockedKey = null;
+  let modelUsageHoveredKey = null;
+  const OTHER_SERIES_KEY = '__other_series__';
+
+  function formatModelDateShort(dateStr) {
+    const parts = String(dateStr || '').split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return dateStr || '';
+    const [y, m, d] = parts;
+    if (currentPanelLanguage === 'en') {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return `${months[m - 1] || m} ${d}`;
+    }
+    return `${m}/${String(d).padStart(2, '0')}`;
+  }
+
+  function formatModelRangeLabel(startStr, endStr) {
+    const sp = String(startStr || '').split('-').map(Number);
+    const ep = String(endStr || '').split('-').map(Number);
+    if (sp.length !== 3 || ep.length !== 3) return `${startStr} – ${endStr}`;
+    if (currentPanelLanguage === 'en') {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      if (sp[0] === ep[0] && sp[1] === ep[1]) {
+        return `${months[sp[1] - 1]} ${sp[2]} – ${ep[2]}, ${ep[0]}`;
+      }
+      if (sp[0] === ep[0]) {
+        return `${months[sp[1] - 1]} ${sp[2]} – ${months[ep[1] - 1]} ${ep[2]}, ${ep[0]}`;
+      }
+      return `${months[sp[1] - 1]} ${sp[2]}, ${sp[0]} – ${months[ep[1] - 1]} ${ep[2]}, ${ep[0]}`;
+    }
+    return sp[0] === ep[0]
+      ? `${startStr} – ${String(ep[1]).padStart(2, '0')}-${String(ep[2]).padStart(2, '0')}`
+      : `${startStr} – ${endStr}`;
+  }
+
+  function setClassFlag(node, cls, active) {
+    if (!node || !node.classList) return;
+    if (active) node.classList.add(cls);
+    else node.classList.remove(cls);
+  }
+
+  function applyModelSeriesFocusHighlight() {
+    const focusKey = modelUsageHoveredKey || modelUsageLockedKey || null;
+    const barsEl = el('model-usage-bars');
+    const legendEl = el('model-usage-legend');
+    if (barsEl && barsEl.children) {
+      for (const col of Array.from(barsEl.children)) {
+        for (const child of Array.from(col.children || [])) {
+          if (String(child.className || '').includes('model-usage-stack')) {
+            for (const seg of Array.from(child.children || [])) {
+              const k = seg.getAttribute?.('data-series-key');
+              setClassFlag(seg, 'is-dimmed', Boolean(focusKey && k !== focusKey));
+            }
+          }
+        }
+      }
+    }
+    if (legendEl && legendEl.children) {
+      for (const card of Array.from(legendEl.children)) {
+        const k = card.getAttribute?.('data-series-key');
+        setClassFlag(card, 'is-dimmed', Boolean(focusKey && k !== focusKey));
+        setClassFlag(card, 'is-locked', Boolean(modelUsageLockedKey && k === modelUsageLockedKey));
+      }
+    }
+  }
+
+  function renderModelUsageView() {
+    const viewEl = el('model-usage-view');
+    if (!viewEl) return;
+
+    setPillActive(el('model-period-7d'), modelUsagePeriodDays === 7);
+    setPillActive(el('model-period-30d'), modelUsagePeriodDays === 30);
+    setPillActive(el('model-group-model'), modelUsageGroupBy === 'model');
+    setPillActive(el('model-group-variant'), modelUsageGroupBy === 'variant');
+    setPillActive(el('model-metric-total'), modelUsageMetric === 'total');
+    setPillActive(el('model-metric-nocache'), modelUsageMetric === 'noCache');
+    setPillActive(el('model-scale-mixed'), modelUsageScaleMode === 'mixed');
+    setPillActive(el('model-scale-linear'), modelUsageScaleMode === 'linear');
+
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (!core || typeof core.summarizeModelUsageWindow !== 'function') return;
+
+    const todayStr = formatLocalYmd(new Date());
+    const todayDate = new Date(todayStr + 'T00:00:00');
+    const endDt = new Date(todayDate.getTime() - modelUsageOffsetDays * 86400000);
+    const endDate = formatLocalYmd(endDt);
+
+    const bySrcModel = ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource || {};
+    const dailyModelMap = bySrcModel[activeTokenSource] || bySrcModel.all || ANTIGRAVITY_TOKEN_DATA.dailyModelMap || {};
+
+    const isLightTone = host.getAttribute?.('data-theme') === 'light' || host.getAttribute?.('data-panel-tone') === 'light';
+    const themeAccent = customColors?.tokenAccent || (typeof heatPreset !== 'undefined' && heatPreset !== 'purple' && typeof getEffectiveHeatmapScale === 'function'
+      ? getEffectiveHeatmapScale()[3]
+      : '');
+    const summary = core.summarizeModelUsageWindow(dailyModelMap, {
+      periodDays: modelUsagePeriodDays,
+      endDate,
+      groupBy: modelUsageGroupBy,
+      metric: modelUsageMetric,
+      hideUnattributed: modelUsageHideUnattr,
+      theme: isLightTone ? 'light' : 'dark',
+      accentColor: themeAccent || undefined,
+      modelMetaByKey: ANTIGRAVITY_TOKEN_DATA.modelMetaByKey,
+      unattributedLabel: t('modelsUsage.unattributed')
+    });
+
+    // 长尾折叠：图例大于 6 项时保留 Top 5 独立颜色 + 第 6 项「其他模型/档位」
+    let effectiveLegend = Array.isArray(summary.legend) ? summary.legend.slice() : [];
+    const foldedKeys = new Set();
+    if (effectiveLegend.length > 6) {
+      const top5 = effectiveLegend.slice(0, 5);
+      const tail = effectiveLegend.slice(5);
+      let otherTokens = 0;
+      let otherSteps = 0;
+      tail.forEach(item => {
+        foldedKeys.add(item.key);
+        otherTokens += Number(item.tokens) || 0;
+        otherSteps += Number(item.steps) || 0;
+      });
+      const winTot = Math.max(1, Number(summary.windowTotalTokens) || 0);
+      const otherPct = (otherTokens / winTot) * 100;
+      top5.push({
+        key: '__other_series__',
+        label: t('modelsUsage.otherSeries'),
+        color: '#71717a',
+        tokens: otherTokens,
+        steps: otherSteps,
+        pct: otherPct,
+        pctLabel: otherPct < 0.1 && otherTokens > 0 ? '<0.1%' : `${otherPct.toFixed(1)}%`
+      });
+      effectiveLegend = top5;
+    }
+
+    if (modelUsageLockedKey && !effectiveLegend.some(it => it.key === modelUsageLockedKey)) {
+      modelUsageLockedKey = null;
+    }
+
+    const rangeLbl = el('model-usage-range-label');
+    if (rangeLbl) rangeLbl.textContent = formatModelRangeLabel(summary.startDate, summary.endDate);
+    const winTotEl = el('model-usage-window-total');
+    if (winTotEl) winTotEl.textContent = `${formatCompactTokenCount(summary.windowTotalTokens)} Tokens`;
+
+    const unattrBtn = el('model-toggle-unattr');
+    if (unattrBtn) {
+      const showBtn = summary.hasUnattributed || modelUsageHideUnattr;
+      unattrBtn.style.display = showBtn ? 'inline-flex' : 'none';
+      setPillActive(unattrBtn, modelUsageHideUnattr);
+      unattrBtn.textContent = modelUsageHideUnattr ? t('modelsUsage.showUnattr') : t('modelsUsage.hideUnattr');
+    }
+
+    const firstUse = ANTIGRAVITY_TOKEN_DATA.firstUseDate || ANTIGRAVITY_TOKEN_DATA.summary?.firstUseDate || null;
+    const allModelDates = Object.keys(dailyModelMap || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
+    const earliestKnown = allModelDates[0] && (!firstUse || allModelDates[0] < firstUse) ? allModelDates[0] : firstUse;
+    const prevBtn = el('btn-model-win-prev');
+    const nextBtn = el('btn-model-win-next');
+    if (prevBtn) prevBtn.disabled = Boolean(earliestKnown && summary.startDate <= earliestKnown);
+    if (nextBtn) nextBtn.disabled = modelUsageOffsetDays <= 0;
+
+    const chartPxHeight = 140;
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(summary.maxDayTotal, 'dailyBar')
+      : { tier: '500M', anchor: 500e6, hCap: 1.0, refTicks: [1e6, 10e6, 100e6, 500e6], overflowThreshold: 500e6 };
+
+    const gridWrap = el('model-usage-gridlines');
+    const maxLblEl = el('model-chart-max-lbl');
+    if (gridWrap) {
+      const childrenArr = Array.from(gridWrap.children || []);
+      const baseLines = [];
+      childrenArr.forEach(node => {
+        const cls = String(node.className || '');
+        if (cls.includes('model-usage-tick-line')) {
+          node.remove?.();
+        } else {
+          baseLines.push(node);
+        }
+      });
+      if (modelUsageScaleMode === 'mixed' && typeof core.mapBarHeightPx === 'function') {
+        gridWrap.style.display = 'block';
+        baseLines.forEach(gl => { gl.style.display = 'none'; });
+        const ticks = Array.isArray(env.refTicks) ? env.refTicks : [];
+        const lastTick = ticks.length ? ticks[ticks.length - 1] : 0;
+        ticks.forEach(tVal => {
+          if (!(tVal > 0)) return;
+          const pos = core.mapBarHeightPx(tVal, env, chartPxHeight, { mode: 'mixed', scaleKind: 'dailyBar' });
+          const tickLine = document.createElement('div');
+          tickLine.className = 'model-usage-tick-line';
+          tickLine.style.bottom = `${pos.height.toFixed(1)}px`;
+          const tickLbl = document.createElement('span');
+          tickLbl.className = 'model-usage-tick-lbl';
+          const isOverflowTop = Boolean(env.overflow && tVal === lastTick);
+          tickLbl.textContent = isOverflowTop ? `${formatCompactTokenCount(tVal)}+` : formatCompactTokenCount(tVal);
+          tickLine.appendChild(tickLbl);
+          gridWrap.appendChild(tickLine);
+        });
+        if (maxLblEl) {
+          maxLblEl.textContent = (env.overflow && summary.maxDayTotal > 0)
+            ? formatCompactTokenCount(summary.maxDayTotal)
+            : '';
+        }
+      } else {
+        gridWrap.style.display = 'flex';
+        gridWrap.style.flexDirection = 'column';
+        gridWrap.style.justifyContent = 'space-between';
+        baseLines.forEach(gl => { gl.style.display = 'block'; });
+        if (maxLblEl) {
+          maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
+        }
+      }
+    } else if (maxLblEl) {
+      maxLblEl.textContent = summary.maxDayTotal > 0 ? formatCompactTokenCount(summary.maxDayTotal) : '';
+    }
+
+    const barsEl = el('model-usage-bars');
+    const xaxisEl = el('model-usage-xaxis');
+    const legendEl = el('model-usage-legend');
+    const emptyEl = el('model-usage-empty');
+    const chartWrap = el('model-usage-chart-wrap');
+
+    const hasAnyData = summary.windowTotalTokens > 0;
+    if (emptyEl) emptyEl.style.display = hasAnyData ? 'none' : 'block';
+    if (chartWrap) chartWrap.style.display = hasAnyData ? 'block' : 'none';
+    if (chartWrap) chartWrap.setAttribute('data-scale-mode', modelUsageScaleMode);
+    if (chartWrap) chartWrap.setAttribute('data-scale-tier', env.tier || '');
+
+    const isCompact30 = modelUsagePeriodDays === 30;
+    if (barsEl) {
+      if (isCompact30) barsEl.classList?.add('compact-30');
+      else barsEl.classList?.remove('compact-30');
+      barsEl.replaceChildren();
+    }
+    if (xaxisEl) {
+      if (isCompact30) xaxisEl.classList?.add('compact-30');
+      else xaxisEl.classList?.remove('compact-30');
+      xaxisEl.replaceChildren();
+    }
+
+    const anchorIndices = isCompact30
+      ? new Set([0, 7, 14, 21, 29])
+      : new Set([0, 1, 2, 3, 4, 5, 6]);
+    const focusKey = modelUsageHoveredKey || modelUsageLockedKey || null;
+
+    summary.days.forEach((day, idx) => {
+      if (barsEl) {
+        const col = document.createElement('div');
+        col.className = 'model-usage-col';
+        col.setAttribute('data-date', day.date);
+        col.setAttribute('data-tokens', String(day.total || 0));
+
+        // 折叠长尾段并保持真实 Top 顺序（column-reverse 下 index 0 在零基线底部）
+        const segList = [];
+        let otherSegTok = 0;
+        (day.segments || []).forEach(seg => {
+          if (foldedKeys.has(seg.key)) {
+            otherSegTok += Number(seg.tokens) || 0;
+          } else {
+            segList.push({ ...seg, value: Number(seg.tokens) || 0 });
+          }
+        });
+        if (otherSegTok > 0) {
+          segList.push({
+            key: '__other_series__',
+            label: t('modelsUsage.otherSeries'),
+            color: '#71717a',
+            tokens: otherSegTok,
+            value: otherSegTok,
+            pct: day.total > 0 ? (otherSegTok / day.total) * 100 : 0
+          });
+        }
+        // 点击锁定单系列时将该系列移至 0 基线底部（数组首位）
+        if (modelUsageLockedKey) {
+          const lockIdx = segList.findIndex(s => s.key === modelUsageLockedKey);
+          if (lockIdx > 0) {
+            const [lockedSeg] = segList.splice(lockIdx, 1);
+            segList.unshift(lockedSeg);
+          }
+        }
+
+        if (day.total > 0 && summary.maxDayTotal > 0 && segList.length > 0) {
+          const barInfo = typeof core.mapBarHeightPx === 'function'
+            ? core.mapBarHeightPx(day.total, env, chartPxHeight, { mode: modelUsageScaleMode, linearMax: summary.maxDayTotal, scaleKind: 'dailyBar' })
+            : { height: Math.max(4, (day.total / summary.maxDayTotal) * chartPxHeight), overflow: false };
+          const totalH = barInfo.height;
+          const stack = document.createElement('div');
+          stack.className = `model-usage-stack${barInfo.overflow && modelUsageScaleMode === 'mixed' ? ' is-overflow' : ''}`;
+          stack.style.height = `${totalH.toFixed(4)}px`;
+          stack.setAttribute('data-total-height', totalH.toFixed(4));
+
+          const alloc = typeof core.allocateStackedSegmentHeights === 'function'
+            ? core.allocateStackedSegmentHeights(segList, totalH, 1.5)
+            : segList.map(s => ({ ...s, heightPx: (s.value / Math.max(1, day.total)) * totalH, rawRatio: s.value / Math.max(1, day.total) }));
+
+          alloc.forEach(seg => {
+            const segEl = document.createElement('div');
+            segEl.className = `model-usage-seg${focusKey && seg.key !== focusKey ? ' is-dimmed' : ''}`;
+            segEl.setAttribute('data-series-key', seg.key);
+            segEl.setAttribute('data-raw-pct', (seg.rawRatio * 100).toFixed(2));
+            segEl.style.height = `${seg.heightPx.toFixed(4)}px`;
+            segEl.style.background = seg.color;
+            stack.appendChild(segEl);
+          });
+          col.appendChild(stack);
+        } else {
+          const emptyBar = document.createElement('div');
+          emptyBar.className = 'model-usage-empty-bar';
+          col.appendChild(emptyBar);
+        }
+
+        const showBarPop = () => {
+          const hp = el('heat-pop');
+          const hpDate = el('heat-pop-date');
+          const hpVal = el('heat-pop-val');
+          const hpDet = el('heat-pop-det');
+          if (!hp || !hpDate || !hpVal || !hpDet) return;
+          hpDate.textContent = day.date + (day.date === todayStr ? t('heat.today') : '');
+          hpVal.textContent = day.total > 0 ? `${formatCompactTokenCount(day.total)} Tokens` : '0 Tokens';
+          hpDet.replaceChildren();
+          if (day.segments.length > 0) {
+            hpDet.style.display = 'flex';
+            hpDet.style.flexDirection = 'column';
+            hpDet.style.gap = '3px';
+            day.segments.slice(0, 6).forEach(seg => {
+              const row = document.createElement('div');
+              row.style.display = 'flex';
+              row.style.justifyContent = 'space-between';
+              row.style.alignItems = 'center';
+              row.style.gap = '10px';
+              row.style.fontSize = '10.5px';
+              const left = document.createElement('span');
+              left.style.display = 'inline-flex';
+              left.style.alignItems = 'center';
+              left.style.gap = '5px';
+              const dot = document.createElement('span');
+              dot.style.display = 'inline-block';
+              dot.style.width = '6px';
+              dot.style.height = '6px';
+              dot.style.borderRadius = '999px';
+              dot.style.background = seg.color;
+              const nm = document.createElement('span');
+              nm.textContent = seg.label;
+              left.appendChild(dot);
+              left.appendChild(nm);
+              const right = document.createElement('span');
+              right.textContent = `${formatCompactTokenCount(seg.tokens)} (${Math.round(seg.pct * 10) / 10}%)`;
+              row.appendChild(left);
+              row.appendChild(right);
+              hpDet.appendChild(row);
+            });
+          } else {
+            hpDet.style.display = 'none';
+          }
+          const r = col.getBoundingClientRect();
+          hp.style.left = `${r.left + r.width / 2}px`;
+          hp.style.top = `${r.top - 6}px`;
+          hp.style.opacity = '1';
+        };
+        col.addEventListener('mouseenter', showBarPop);
+        col.addEventListener('mouseleave', hidePopover);
+        col.addEventListener('click', showBarPop);
+        barsEl.appendChild(col);
+      }
+
+      if (xaxisEl) {
+        const lbl = document.createElement('div');
+        lbl.className = 'model-usage-xlabel';
+        lbl.textContent = anchorIndices.has(idx) ? formatModelDateShort(day.date) : '';
+        xaxisEl.appendChild(lbl);
+      }
+    });
+
+    if (legendEl) {
+      legendEl.replaceChildren();
+      effectiveLegend.forEach(item => {
+        const card = document.createElement('div');
+        card.className = `model-legend-item${focusKey && item.key !== focusKey ? ' is-dimmed' : ''}${modelUsageLockedKey === item.key ? ' is-locked' : ''}`;
+        card.setAttribute('data-series-key', item.key);
+        const bar = document.createElement('div');
+        bar.className = 'model-legend-bar';
+        bar.style.background = item.color;
+
+        const textWrap = document.createElement('div');
+        textWrap.className = 'model-legend-text';
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'model-legend-name';
+        nameEl.textContent = item.label;
+        nameEl.title = item.label;
+
+        const valRow = document.createElement('div');
+        valRow.className = 'model-legend-val-row';
+
+        const pctEl = document.createElement('span');
+        pctEl.className = 'model-legend-pct';
+        pctEl.textContent = item.pctLabel;
+
+        const metaEl = document.createElement('span');
+        metaEl.className = 'model-legend-meta';
+        metaEl.textContent = `${formatCompactTokenCount(item.tokens)} · ${t('modelsUsage.stepsSuffix', { n: item.steps })}`;
+
+        valRow.appendChild(pctEl);
+        valRow.appendChild(metaEl);
+        textWrap.appendChild(nameEl);
+        textWrap.appendChild(valRow);
+        card.appendChild(bar);
+        card.appendChild(textWrap);
+
+        card.addEventListener('mouseenter', () => {
+          modelUsageHoveredKey = item.key;
+          applyModelSeriesFocusHighlight();
+        });
+        card.addEventListener('mouseleave', () => {
+          if (modelUsageHoveredKey === item.key) modelUsageHoveredKey = null;
+          applyModelSeriesFocusHighlight();
+        });
+        card.addEventListener('click', () => {
+          modelUsageLockedKey = (modelUsageLockedKey === item.key) ? null : item.key;
+          renderModelUsageView();
+        });
+        legendEl.appendChild(card);
+      });
+    }
+  }
+
   function switchTokenView(v) {
     activeTokenView = v;
     // 离开 Token 统计视图时关闭订阅详情与表单
-    if (v !== 'tokens') {
-      setPlanDetailExpanded(false, { skipReposition: true });
-    } else {
-      setPlanDetailExpanded(false, { skipReposition: true });
-    }
+    setPlanDetailExpanded(false, { skipReposition: true });
+    if (typeof hidePopover === 'function') hidePopover();
+
     setPillActive(el('tok-view-tokens'), v === 'tokens');
+    setPillActive(el('tok-view-models'), v === 'models');
     setPillActive(el('tok-view-cost'), v === 'cost');
     const costCard = el('cost-estimate-card');
+    const modelView = el('model-usage-view');
     const tokensMain = el('tokens-main-view');
     const statCards = el('token-stat-cards');
     const planBar = el('plan-summary-bar');
@@ -11916,13 +14457,26 @@ function closeAllDropdowns(exceptWrap = null) {
       costCard.style.display = v === 'cost' ? 'block' : 'none';
       if (v === 'cost') costCard.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
     }
+    if (modelView) {
+      modelView.style.display = v === 'models' ? 'block' : 'none';
+      if (v === 'models') {
+        modelView.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
+        renderModelUsageView();
+      }
+    }
     if (tokensMain) {
       tokensMain.style.display = v === 'tokens' ? 'block' : 'none';
       if (v === 'tokens') tokensMain.style.animation = 'agFadeIn .18s cubic-bezier(0.16,1,0.3,1)';
     }
     if (statCards) statCards.style.display = v === 'tokens' ? 'grid' : 'none';
     if (planBar) planBar.style.display = v === 'tokens' ? 'flex' : 'none';
-    if (titleTokens) titleTokens.textContent = v === 'cost' ? t('tokens.titleCost') : t('tokens.title');
+    if (titleTokens) {
+      titleTokens.textContent = v === 'cost'
+        ? t('tokens.titleCost')
+        : v === 'models'
+          ? t('tokens.titleModels')
+          : t('tokens.title');
+    }
 
     if (pTokens) {
       const isCompact = v === 'cost' && !costDetailsExpanded;
@@ -11937,7 +14491,54 @@ function closeAllDropdowns(exceptWrap = null) {
     positionFloatingPanels();
   }
   el('tok-view-tokens')?.addEventListener('click', () => switchTokenView('tokens'));
+  el('tok-view-models')?.addEventListener('click', () => switchTokenView('models'));
   el('tok-view-cost')?.addEventListener('click', () => switchTokenView('cost'));
+  el('model-period-7d')?.addEventListener('click', () => {
+    modelUsagePeriodDays = 7;
+    modelUsageOffsetDays = 0;
+    renderModelUsageView();
+  });
+  el('model-period-30d')?.addEventListener('click', () => {
+    modelUsagePeriodDays = 30;
+    modelUsageOffsetDays = 0;
+    renderModelUsageView();
+  });
+  el('model-group-model')?.addEventListener('click', () => {
+    modelUsageGroupBy = 'model';
+    renderModelUsageView();
+  });
+  el('model-group-variant')?.addEventListener('click', () => {
+    modelUsageGroupBy = 'variant';
+    renderModelUsageView();
+  });
+  el('model-metric-total')?.addEventListener('click', () => {
+    modelUsageMetric = 'total';
+    renderModelUsageView();
+  });
+  el('model-metric-nocache')?.addEventListener('click', () => {
+    modelUsageMetric = 'noCache';
+    renderModelUsageView();
+  });
+  el('model-scale-mixed')?.addEventListener('click', () => {
+    modelUsageScaleMode = 'mixed';
+    renderModelUsageView();
+  });
+  el('model-scale-linear')?.addEventListener('click', () => {
+    modelUsageScaleMode = 'linear';
+    renderModelUsageView();
+  });
+  el('model-toggle-unattr')?.addEventListener('click', () => {
+    modelUsageHideUnattr = !modelUsageHideUnattr;
+    renderModelUsageView();
+  });
+  el('btn-model-win-prev')?.addEventListener('click', () => {
+    modelUsageOffsetDays += modelUsagePeriodDays;
+    renderModelUsageView();
+  });
+  el('btn-model-win-next')?.addEventListener('click', () => {
+    modelUsageOffsetDays = Math.max(0, modelUsageOffsetDays - modelUsagePeriodDays);
+    renderModelUsageView();
+  });
 
   // =========================================================================
   // 一键启动 CLI 模式（当前项目目录绑定 + 中文/空格路径兼容 + 错误提示）
@@ -12242,20 +14843,30 @@ function closeAllDropdowns(exceptWrap = null) {
   let contextScopeMode = 'unified'; // 'unified' | 'per_model'
   let contextUnifiedPreference = { mode: 'default', limitTokens: CTX_DEFAULT_TOKENS };
   try {
+    const bootSettings = (typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok)
+      ? window.__AGContextMeterSettings
+      : null;
     if (typeof window !== 'undefined' && window.__AGContextPreferences && typeof window.__AGContextPreferences === 'object') {
       contextPreferencesMap = { ...window.__AGContextPreferences };
+    } else if (bootSettings?.contextPreferences && typeof bootSettings.contextPreferences === 'object') {
+      contextPreferencesMap = { ...bootSettings.contextPreferences };
     } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
       const rawPrefs = localStorage.getItem('ag-context-preferences');
       if (rawPrefs) contextPreferencesMap = JSON.parse(rawPrefs) || {};
     }
     const initMode = (typeof window !== 'undefined' && window.__AGContextScopeMode)
+      || bootSettings?.contextScopeMode
       || (typeof localStorage !== 'undefined' && localStorage?.getItem?.('ag-context-scope-mode'))
       || '';
     if (initMode === 'unified' || initMode === 'per_model') {
       contextScopeMode = initMode;
+    } else if (Object.values(contextPreferencesMap).some(p => p && p.mode && p.mode !== 'default')) {
+      contextScopeMode = 'per_model';
     }
     if (typeof window !== 'undefined' && window.__AGContextUnifiedPreference && typeof window.__AGContextUnifiedPreference === 'object') {
       contextUnifiedPreference = { ...window.__AGContextUnifiedPreference };
+    } else if (bootSettings?.contextUnifiedPreference && typeof bootSettings.contextUnifiedPreference === 'object') {
+      contextUnifiedPreference = { ...bootSettings.contextUnifiedPreference };
     } else if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
       const rawUni = localStorage.getItem('ag-context-unified-preference');
       if (rawUni) contextUnifiedPreference = JSON.parse(rawUni) || contextUnifiedPreference;
@@ -12273,12 +14884,22 @@ function closeAllDropdowns(exceptWrap = null) {
   function syncContextPreferencesCache(map) {
     try {
       if (typeof window !== 'undefined') {
-        window.__AGContextPreferences = { ...(map || {}) };
+        const cleanMap = { ...(map || {}) };
+        const cleanUni = { ...(contextUnifiedPreference || {}) };
+        window.__AGContextPreferences = cleanMap;
         window.__AGContextScopeMode = contextScopeMode;
-        window.__AGContextUnifiedPreference = { ...(contextUnifiedPreference || {}) };
-        localStorage?.setItem('ag-context-preferences', JSON.stringify(map || {}));
+        window.__AGContextUnifiedPreference = cleanUni;
+        if (window.__AGContextMeterSettings && typeof window.__AGContextMeterSettings === 'object') {
+          window.__AGContextMeterSettings = {
+            ...window.__AGContextMeterSettings,
+            contextPreferences: cleanMap,
+            contextScopeMode,
+            contextUnifiedPreference: cleanUni
+          };
+        }
+        localStorage?.setItem('ag-context-preferences', JSON.stringify(cleanMap));
         localStorage?.setItem('ag-context-scope-mode', contextScopeMode);
-        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(contextUnifiedPreference || {}));
+        localStorage?.setItem('ag-context-unified-preference', JSON.stringify(cleanUni));
       }
     } catch { }
   }
@@ -12336,6 +14957,32 @@ function closeAllDropdowns(exceptWrap = null) {
     const lang = typeof getPanelLanguage === 'function' ? getPanelLanguage() : 'zh-CN';
     if (typeof formatEffortLabel === 'function') return formatEffortLabel(effort, lang);
     return String(effort);
+  }
+
+  /**
+   * 合并模型产品名与档位后缀，严格剥离尾部重复档位括号，避免出现 "(High) (High)"。
+   */
+  function formatProductDisplayWithEffort(rawLabel, explicitEffort = null) {
+    const text = String(rawLabel || '').trim();
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    if (core && typeof core.splitModelDisplayAndEffort === 'function') {
+      const split = core.splitModelDisplayAndEffort(text, explicitEffort || null);
+      const base = split.baseLabel || text;
+      const eff = explicitEffort || split.effort;
+      if (!eff) return base;
+      const effDisp = formatEffortZh(eff);
+      if (!effDisp) return base;
+      return `${base} (${effDisp})`;
+    }
+    if (!explicitEffort) return text;
+    const effDisp = formatEffortZh(explicitEffort);
+    if (!effDisp) return text;
+    const low = text.toLowerCase();
+    const rawEff = String(explicitEffort).trim().toLowerCase();
+    if (low.endsWith(`(${rawEff})`) || low.endsWith(`(${effDisp.toLowerCase()})`)) {
+      return text;
+    }
+    return `${text} (${effDisp})`;
   }
 
   function groupProductSafe(input) {
@@ -12535,11 +15182,17 @@ function closeAllDropdowns(exceptWrap = null) {
     if (txResult.targetMode === 'fixed' || txResult.targetMode === 'dynamic' || txResult.targetMode === 'default') {
       scheduleConfirmTimeoutCheck();
     }
+    if (state.route && (!txResult.cascadeId || txResult.cascadeId === state.route)) {
+      startLivePendingRequestWait(txResult.cascadeId || state.route);
+    }
     refreshBudgetUiAfterDispatch();
     return rec;
   }
 
   function finishDispatchOutcome(dispatchId, ok, err) {
+    if (!ok) {
+      clearLivePendingRequestWait();
+    }
     if (!dispatchId || !budgetTracker) return;
     if (!ok) {
       const errMsg = String(err?.message || err || '');
@@ -14251,12 +16904,14 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   function evaluateModelContextStatus(product) {
+    const isEnEval = currentPanelLanguage === 'en';
+    const isTwEval = currentPanelLanguage === 'zh-TW';
     if (!product) {
       return {
         status: 'unconfirmed',
-        badge: t('panel.ctx.currentModelUnconfirmed') || '待确认',
+        badge: t('panel.ctx.currentModelUnconfirmed') || (isEnEval ? 'Unconfirmed' : (isTwEval ? '待確認' : '待确认')),
         pillClass: 'pill-muted',
-        diagnosis: '未获取到模型信息',
+        diagnosis: isEnEval ? 'Model metadata unavailable' : (isTwEval ? '未取得模型資訊' : '未获取到模型信息'),
         targetText: '—',
         requestText: '—',
         observedText: '—',
@@ -14271,11 +16926,14 @@ function closeAllDropdowns(exceptWrap = null) {
     const targetLimit = (targetMode === 'fixed') ? Number(activePref?.limitTokens) : null;
     const capSummary = getProductCapabilitySummary(product);
 
-    let targetText = t('status.savedDefault') || '恢复客户端默认';
+    let targetText = t('status.savedDefault') || (isEnEval ? 'Client Default' : (isTwEval ? '還原用戶端預設' : '恢复客户端默认'));
     if (targetMode === 'dynamic') {
-      targetText = t('models.preset.dynamic') || '动态跟随';
+      targetText = t('models.preset.dynamic') || (isEnEval ? 'Dynamic' : (isTwEval ? '動態跟隨' : '动态跟随'));
     } else if (targetMode === 'fixed' && targetLimit) {
-      targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+      targetText = (targetLimit === 512000) ? `512K (512,000 tokens)` : `${formatKShort(targetLimit)} (${fmt(targetLimit)} tokens)`;
+      if (!isEnEval) {
+        targetText = (targetLimit === 512000) ? '512K（512,000 tokens）' : `${formatKShort(targetLimit)}（${fmt(targetLimit)} tokens）`;
+      }
     }
 
     const activeConvId = state.activeConversationId || state.conversationId || state.route || null;
@@ -14300,18 +16958,24 @@ function closeAllDropdowns(exceptWrap = null) {
     const obs = evalCore.observation;
     const obsBudget = Number(obs?.budget || 0);
 
-    let requestText = dispatched ? '默认透传（未附加自定义参数）' : '尚无本次验证';
+    const noVerifyText = isEnEval ? 'Not verified in this session' : (isTwEval ? '尚無本次驗證' : '尚无本次验证');
+    let requestText = dispatched
+      ? (isEnEval ? 'Default passthrough (no override)' : (isTwEval ? '預設透傳（未附加自訂參數）' : '默认透传（未附加自定义参数）'))
+      : noVerifyText;
     if (dispatched) {
       if (dispatched.status === 'send_failed') {
-        requestText = `发送失败（${dispatched.errorMessage || '请求未完成'}）`;
+        const errPart = dispatched.errorMessage ? translateBackendText(dispatched.errorMessage) : (isEnEval ? 'Request incomplete' : (isTwEval ? '請求未完成' : '请求未完成'));
+        requestText = isEnEval ? `Send failed (${errPart})` : (isTwEval ? `發送失敗（${errPart}）` : `发送失败（${dispatched.errorMessage || '请求未完成'}）`);
       } else if (dispatched.status === 'aborted') {
-        requestText = '已取消发送';
+        requestText = isEnEval ? 'Aborted' : (isTwEval ? '已取消發送' : '已取消发送');
       } else if (dispatched.status === 'uninjectable') {
-        requestText = '透传未注入（缺少可靠模型/不支持帧）';
+        requestText = isEnEval ? 'Passthrough (missing model identity / frame)' : (isTwEval ? '透傳未注入（缺少可靠模型/不支援影格）' : '透传未注入（缺少可靠模型/不支持帧）');
       } else if (dispatched.sentMode === 'fixed' && dispatched.sentLimitTokens) {
-        requestText = `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
+        requestText = isEnEval
+          ? `${formatKShort(dispatched.sentLimitTokens)} (${fmt(dispatched.sentLimitTokens)} tokens)`
+          : `${formatKShort(dispatched.sentLimitTokens)}（${fmt(dispatched.sentLimitTokens)} tokens）`;
       } else if (dispatched.sentMode === 'dynamic') {
-        requestText = '动态跟随（已清除固定数值）';
+        requestText = isEnEval ? 'Dynamic (fixed limit cleared)' : (isTwEval ? '動態跟隨（已清除固定數值）' : '动态跟随（已清除固定数值）');
       }
       if (dispatched.timestamp) {
         requestText += ` · ${formatMonthDayTime(dispatched.timestamp)}`;
@@ -14325,14 +16989,20 @@ function closeAllDropdowns(exceptWrap = null) {
         || (st === 'default' && diagCode === 'default_confirmed');
     }
 
-    let observedText = '尚无本次验证';
+    let observedText = noVerifyText;
     if (obsBudget > 0 && statusUsesExistingObs(evalCore.status, evalCore.diagnosisCode)) {
       const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
       const tTxt = obs.ts ? ` · ${formatMonthDayTime(obs.ts)}` : '';
-      observedText = `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
+      observedText = isEnEval
+        ? `${formatKShort(obsBudget)} (${fmt(obsBudget)} tokens)${effTxt}${tTxt}`
+        : `${formatKShort(obsBudget)}（${fmt(obsBudget)} tokens）${effTxt}${tTxt}`;
     } else if (obsBudget > 0) {
       const effTxt = obs.effort ? ` · ${formatEffortZh(obs.effort)}` : '';
-      observedText = `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`;
+      observedText = isEnEval
+        ? `Historical only: ${fmt(obsBudget)} tokens${effTxt} (current setting unverified)`
+        : (isTwEval
+          ? `僅見歷史觀測 ${fmt(obsBudget)} tokens${effTxt}（目前設定尚無本次驗證）`
+          : `仅见历史观测 ${fmt(obsBudget)} tokens${effTxt}（当前设置尚无本次验证）`);
     }
 
     const convoId = evalCore.convoId || activeConvId || '—';
@@ -14340,65 +17010,92 @@ function closeAllDropdowns(exceptWrap = null) {
     let status = evalCore.status;
     let badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
     let pillClass = 'pill-muted';
-    let diagnosis = '已保存目标参数，将在下次发起请求时自动注入并发送。';
+    let diagnosis = isEnEval
+      ? 'Saved target limit; it will be injected automatically on the next request.'
+      : (isTwEval
+        ? '已儲存目標參數，將在下次發起請求時自動注入並發送。'
+        : '已保存目标参数，将在下次发起请求时自动注入并发送。');
 
     if (status === 'default') {
       if (evalCore.diagnosisCode === 'default_confirmed') {
         badge = t('status.savedDefault') || '使用模型默认值';
         pillClass = 'pill-good';
-        diagnosis = `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`;
+        diagnosis = isEnEval
+          ? `Passed through as client default (no override); reply confirmed ${fmt(obsBudget)} tokens.`
+          : (isTwEval
+            ? `本次請求已依用戶端預設透傳（未附加自訂覆寫），收到新回覆確認實際採用 ${fmt(obsBudget)} tokens。`
+            : `本次请求已按客户端默认透传（未附加自定义覆盖），收到新回复确认实际采用 ${fmt(obsBudget)} tokens。`);
       } else {
         badge = t('status.savedDefault') || '使用模型默认值';
         pillClass = 'pill-muted';
-        diagnosis = '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。';
+        diagnosis = isEnEval
+          ? 'Client default active (no override); verified on next request.'
+          : (isTwEval
+            ? '已還原/維持用戶端預設（不附加覆寫參數），將在下一次發送時生效並驗證實際採用值。'
+            : '已恢复/保持客户端默认（不附加覆盖参数），将在下一次发送时生效并验证实际采用值。');
       }
     } else if (status === 'send_failed') {
-      badge = '发送失败（未确认）';
+      badge = isEnEval ? 'Send failed (unconfirmed)' : (isTwEval ? '發送失敗（未確認）' : '发送失败（未确认）');
       pillClass = 'pill-bad';
-      diagnosis = `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`;
+      const errMsg = evalCore.errorMessage ? translateBackendText(evalCore.errorMessage) : (isEnEval ? 'network or transport error' : (isTwEval ? '網路或傳輸錯誤' : '网络或传输错误'));
+      diagnosis = isEnEval
+        ? `Request failed (${errMsg}); actual budget could not be confirmed.`
+        : (isTwEval ? `本次請求發送失敗（${errMsg}），因此無法確認實際預算。` : `本次请求发送失败（${evalCore.errorMessage || '网络或传输错误'}），因此无法确认实际预算。`);
     } else if (status === 'aborted') {
-      badge = '已取消（未确认）';
+      badge = isEnEval ? 'Aborted (unconfirmed)' : (isTwEval ? '已取消（未確認）' : '已取消（未确认）');
       pillClass = 'pill-muted';
-      diagnosis = '本次请求在完成前被取消，未收到新回复。';
+      diagnosis = isEnEval ? 'Request was cancelled before a reply was received.' : (isTwEval ? '本次請求在完成前被取消，未收到新回覆。' : '本次请求在完成前被取消，未收到新回复。');
     } else if (status === 'uninjectable') {
-      badge = '本次未注入（已透传）';
+      badge = isEnEval ? 'Not injected (passthrough)' : (isTwEval ? '本次未注入（已透傳）' : '本次未注入（已透传）');
       pillClass = 'pill-warn';
-      diagnosis = `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`;
+      const reasonTxt = evalCore.diagnosisCode || (isEnEval ? 'missing model identity or unsupported frame' : (isTwEval ? '缺少可靠模型身分或協定格式不支援' : '缺少可靠模型身份或协议格式不支持'));
+      diagnosis = isEnEval
+        ? `Could not inject override (${reasonTxt}); passed through unchanged.`
+        : (isTwEval ? `未能向本次請求自動注入參數（${reasonTxt}），已保持原樣透傳。` : `未能向本次请求自动注入参数（${evalCore.diagnosisCode || '缺少可靠模型身份或协议格式不支持'}），已保持原样透传。`);
     } else if (status === 'confirmed') {
       badge = t('models.status.confirmed') || '实际预算已确认';
       pillClass = 'pill-good';
       diagnosis = targetMode === 'dynamic'
-        ? `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`
-        : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`;
+        ? (isEnEval ? `Dynamic mode active; observed response budget ${fmt(obsBudget)} tokens.` : (isTwEval ? `已啟用動態跟隨模式，本次發送後實測回傳預算 ${fmt(obsBudget)} tokens。` : `已启用动态跟随模式，本次发送后实测返回预算 ${fmt(obsBudget)} tokens。`))
+        : (isEnEval ? `Sent ${fmt(dispatched?.sentLimitTokens || targetLimit)}; server confirmed ${fmt(obsBudget)} tokens.` : (isTwEval ? `請求實際攜帶 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次發送後伺服器端回傳預算 ${fmt(obsBudget)} tokens，完全吻合。` : `请求实际携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)}，本次发送后服务端返回预算 ${fmt(obsBudget)} tokens，完全吻合。`));
     } else if (status === 'clamped_by_model_limit') {
-      badge = '受模型上限限制';
+      badge = isEnEval ? 'Clamped by model cap' : (isTwEval ? '受模型上限限制' : '受模型上限限制');
       pillClass = 'pill-warn';
-      diagnosis = `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`;
+      diagnosis = isEnEval
+        ? `Sent ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens, clamped to ${fmt(obsBudget)} tokens by known cap (${fmt(evalCore.knownCap)} tokens).`
+        : (isTwEval ? `請求攜帶 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/伺服器端上限（${fmt(evalCore.knownCap)} tokens）限制，實際採用 ${fmt(obsBudget)} tokens。` : `请求携带 ${fmt(dispatched?.sentLimitTokens || targetLimit)} tokens，受已知模型/服务端上限（${fmt(evalCore.knownCap)} tokens）限制，实际采用 ${fmt(obsBudget)} tokens。`);
     } else if (status === 'mismatch') {
       badge = t('models.status.mismatch') || '未生效：目标值与观测值不一致';
       pillClass = 'pill-bad';
-      let detail = `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`;
+      let detail = isEnEval
+        ? `Target (${fmt(targetLimit)} tokens) differs from observed budget (${fmt(obsBudget)} tokens).`
+        : (isTwEval ? `目標設定（${fmt(targetLimit)} tokens）與發送後實際觀測預算（${fmt(obsBudget)} tokens）不一致，原因待確認。` : `目标设置（${fmt(targetLimit)} tokens）与发送后实际观测预算（${fmt(obsBudget)} tokens）不一致，原因待确认。`);
       if (product.unavailable && product.unavailabilityReason) {
-        detail += `（模型可用性说明：${product.unavailabilityReason}）`;
+        detail += isEnEval ? ` (${product.unavailabilityReason})` : `（模型可用性說明：${product.unavailabilityReason}）`;
       }
       diagnosis = detail;
     } else if (status === 'timeout_unconfirmed') {
-      badge = '确认超时（未观测到新回复）';
+      badge = isEnEval ? 'Timed out (unconfirmed)' : (isTwEval ? '確認逾時（未觀測到新回覆）' : '确认超时（未观测到新回复）');
       pillClass = 'pill-warn';
+      const secWait = Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000);
       diagnosis = targetMode === 'default'
-        ? `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`
-        : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`;
+        ? (isEnEval ? `Sent with client default, but no budget confirmation arrived within ${secWait}s.` : (isTwEval ? `已依用戶端預設透傳發送請求，但超過 ${secWait} 秒未觀測到新回覆中的預算回傳。` : `已按客户端默认透传发送请求，但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`))
+        : (isEnEval ? `Sent override (${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : 'Dynamic'}), but no reply arrived within ${secWait}s.` : (isTwEval ? `已在請求中攜帶設定（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '動態跟隨'}），但超過 ${secWait} 秒未觀測到新回覆中的預算回傳。` : `已在请求中携带设置（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），但超过 ${Math.round(CTX_CONFIRM_TIMEOUT_MS / 1000)} 秒未观测到新回复中的预算回传。`));
     } else if (status === 'dispatched_pending_confirm') {
-      badge = targetMode === 'default' ? '已默认透传，等待确认' : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
+      badge = targetMode === 'default'
+        ? (isEnEval ? 'Passthrough sent; awaiting confirm' : (isTwEval ? '已預設透傳，等待確認' : '已默认透传，等待确认'))
+        : (t('models.status.dispatchedPendingConfirm') || '已发送设置，等待确认');
       pillClass = 'pill-warn';
       diagnosis = targetMode === 'default'
-        ? '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'
-        : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`;
+        ? (isEnEval ? 'Sent with client default (no override); awaiting reply to confirm allocated budget.' : (isTwEval ? '已依用戶端預設透傳發出請求（未附加覆寫參數），等待收到新回覆以確認伺服器端實際預算。' : '已按客户端默认透传发出请求（未附加覆盖参数），等待收到新回复以确认服务端实际预算。'))
+        : (isEnEval ? `Injected (${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : 'Dynamic'}); awaiting reply to confirm budget.` : (isTwEval ? `已在本次請求中成功注入參數（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '動態跟隨'}），等待收到新回覆以確認實際分配預算。` : `已在本次请求中成功注入参数（${dispatched?.sentLimitTokens ? `${fmt(dispatched.sentLimitTokens)} tokens` : '动态跟随'}），等待收到新回复以确认实际分配预算。`));
     } else {
       status = 'saved_pending_dispatch';
       badge = t('models.status.savedPendingDispatch') || '已保存，下一次发送时尝试应用';
       pillClass = 'pill-muted';
-      diagnosis = `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`;
+      diagnosis = isEnEval
+        ? `Saved (${targetText}); will be injected on the next request for this model.`
+        : (isTwEval ? `已儲存目標設定（${targetText}），下一次在對應模型發起發送時將自動注入。` : `已保存目标设置（${targetText}），下一次在对应模型发起发送时将自动注入。`);
     }
 
     return {
@@ -14421,7 +17118,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (ctxCardEffortsList) ctxCardEffortsList.textContent = t('models.card.effortsEmpty');
       if (ctxCardSessionEffort) ctxCardSessionEffort.hidden = true;
       if (ctxConflictBanner) ctxConflictBanner.hidden = true;
-      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = '待确认';
+      if (ctxSummaryModelEl) ctxSummaryModelEl.textContent = t('models.summary.pendingConfirm');
       if (ctxSummaryLengthEl) ctxSummaryLengthEl.textContent = '—';
       if (ctxSummaryStatusPillEl) ctxSummaryStatusPillEl.hidden = true;
       return;
@@ -14524,40 +17221,40 @@ function closeAllDropdowns(exceptWrap = null) {
     if (ctxCapModelMaxEl) {
       ctxCapModelMaxEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
         ? `${fmt(capSummary.modelTheoreticalMaxTokens)} tokens`
-        : '未知（待获取元数据）';
+        : t('models.cap.metaUnknown');
     }
     if (ctxCapClientPolicyEl) {
       if (!runtimePolicy || runtimePolicy.runtimeState === 'unknown') {
-        ctxCapClientPolicyEl.textContent = '未知（待读取运行策略）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyUnknown');
       } else if (runtimePolicy.runtimeState === 'pending_restart') {
-        ctxCapClientPolicyEl.textContent = `待重启（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyPendingRestart', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy.runtimeState === 'runtime_unconfirmed') {
-        ctxCapClientPolicyEl.textContent = `进程未确认（磁盘=${formatDiskPolicyText(runtimePolicy)}）`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyUnconfirmed', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy.runtimeState === 'partial') {
-        ctxCapClientPolicyEl.textContent = '部分异常（运行限制未知）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyPartial');
       } else if (runtimePolicy.runtimeMode === 'dynamic') {
-        ctxCapClientPolicyEl.textContent = 'Dynamic 动态跟随（按模型上限）';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyDynamic');
       } else if (runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
-        ctxCapClientPolicyEl.textContent = `固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} tokens`;
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyFixed', { limit: fmt(runtimePolicy.currentClientLimitTokens) });
       } else {
-        ctxCapClientPolicyEl.textContent = '默认限制 256,000 tokens';
+        ctxCapClientPolicyEl.textContent = t('models.cap.policyDefault');
       }
     }
     if (ctxCapDefaultEl) {
       if (capSummary?.currentStrategyDefaultBudget != null && runtimePolicy?.policyKnown) {
         let stratNote = '';
         if (runtimePolicy.runtimeMode === 'dynamic') {
-          stratNote = '（Dynamic 默认）';
+          stratNote = t('models.cap.stratDynamic');
         } else if (runtimePolicy.runtimeMode === 'fixed') {
-          stratNote = `（受固定限制 ${fmt(runtimePolicy.currentClientLimitTokens)} 约束）`;
+          stratNote = t('models.cap.stratFixed', { limit: fmt(runtimePolicy.currentClientLimitTokens) });
         } else {
-          stratNote = '（受默认 256,000 约束）';
+          stratNote = t('models.cap.stratDefault');
         }
         ctxCapDefaultEl.textContent = `${fmt(capSummary.currentStrategyDefaultBudget)} tokens${stratNote}`;
       } else if (runtimePolicy && !runtimePolicy.policyKnown) {
-        ctxCapDefaultEl.textContent = '未知（运行策略待确认）';
+        ctxCapDefaultEl.textContent = t('models.cap.defaultUnknownPolicy');
       } else {
-        ctxCapDefaultEl.textContent = '未知';
+        ctxCapDefaultEl.textContent = t('speed.unknown');
       }
     }
     if (ctxCapRangeEl) {
@@ -14565,33 +17262,51 @@ function closeAllDropdowns(exceptWrap = null) {
         ctxCapRangeEl.textContent = `${fmt(capSummary.rangeMin || CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(capSummary.maxAdjustableTokens)} tokens`;
       } else if (runtimePolicy && !runtimePolicy.policyKnown) {
         ctxCapRangeEl.textContent = capSummary?.modelTheoreticalMaxTokens != null
-          ? `运行策略未知（模型理论上限 ${fmt(capSummary.modelTheoreticalMaxTokens)}）`
-          : `运行策略未知（工程范围 ${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}）`;
+          ? t('models.cap.rangeUnknownPolicyMax', { max: fmt(capSummary.modelTheoreticalMaxTokens) })
+          : t('models.cap.rangeUnknownPolicyEng', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) });
       } else {
-        ctxCapRangeEl.textContent = `${fmt(CTX_MIN_ENGINEERING_TOKENS)} – ${fmt(CTX_MAX_ENGINEERING_TOKENS)}（模型上限未知）`;
+        ctxCapRangeEl.textContent = t('models.cap.rangeUnknownModelMax', { min: fmt(CTX_MIN_ENGINEERING_TOKENS), max: fmt(CTX_MAX_ENGINEERING_TOKENS) });
       }
     }
     if (ctxCapFormulaEl) {
       const parts = [];
       if (capSummary?.sources?.length) {
-        const srcText = capSummary.sources.map(s => (s === 'get_available_models' ? 'GetAvailableModels 目录' : (s === 'step_model_info' ? '会话 Step ModelInfo' : s))).join(' + ');
-        parts.push(`来源：${srcText}`);
+        const srcText = capSummary.sources.map(s => (
+          s === 'get_available_models'
+            ? (currentPanelLanguage === 'en' ? 'GetAvailableModels Catalog' : (currentPanelLanguage === 'zh-TW' ? 'GetAvailableModels 目錄' : 'GetAvailableModels 目录'))
+            : (s === 'step_model_info'
+              ? (currentPanelLanguage === 'en' ? 'Session Step ModelInfo' : (currentPanelLanguage === 'zh-TW' ? '工作階段 Step ModelInfo' : '会话 Step ModelInfo'))
+              : s)
+        )).join(' + ');
+        parts.push(currentPanelLanguage === 'en' ? `Source: ${srcText}` : `来源：${srcText}`);
       }
       if (capSummary?.formulaNote) {
-        parts.push(capSummary.formulaNote);
+        parts.push(typeof translateBackendText === 'function' ? translateBackendText(capSummary.formulaNote) : capSummary.formulaNote);
       } else {
-        parts.push('尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Window & max output metadata not received for current account/step (never inferred from name).'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '尚未取得目前帳號/步驟的模型視窗與最大輸出中繼資料（不依模型名稱推測上限）。'
+            : '尚未获取到当前账号/步骤的模型窗口与最大输出元数据（不按模型名称推测上限）。'));
       }
       if (capSummary?.policyNote) {
-        parts.push(capSummary.policyNote);
+        parts.push(typeof translateBackendText === 'function' ? translateBackendText(capSummary.policyNote) : capSummary.policyNote);
       }
       if (capSummary?.hasTierVariance) {
-        parts.push('注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Note: effort tiers report varying window/output caps; adjustable limit uses safe intersection (see Tier Capabilities below).'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '注意：該模型不同力度檔位回報了不同容量/最大輸出，可調上限取安全交集，詳情見下方「檔位能力」。'
+            : '注意：该模型不同力度档位报告了不同容量/最大输出，可调上限取安全交集，详情见下方「档位能力」。'));
       }
       if (runtimePolicy?.diskVsRuntimeMismatch) {
-        parts.push('磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。');
+        parts.push(currentPanelLanguage === 'en'
+          ? 'Disk config and running process not yet verified consistent: projections are treated as unconfirmed.'
+          : (currentPanelLanguage === 'zh-TW'
+            ? '磁碟設定與執行中程序尚未確認一致：以下預測與預設預算均依未確認處理，請勿當作已實機生效。'
+            : '磁盘配置与运行中进程尚未确认一致：以下预测与默认预算均按未确认处理，请勿当作已实机生效。'));
       }
-      ctxCapFormulaEl.textContent = parts.join('；');
+      ctxCapFormulaEl.textContent = parts.join(currentPanelLanguage === 'en' ? '; ' : '；');
     }
     if (ctxRefSavedEl) {
       const targetSavedLabel = getContextScopeMode() === 'unified'
@@ -14600,10 +17315,10 @@ function closeAllDropdowns(exceptWrap = null) {
       ctxRefSavedEl.textContent = targetSavedLabel;
     }
     if (ctxRefSentEl) {
-      ctxRefSentEl.textContent = evalResult.requestText || '尚无本次验证';
+      ctxRefSentEl.textContent = evalResult.requestText || t('models.cap.noneVerified');
     }
     if (ctxRefAdoptedEl) {
-      ctxRefAdoptedEl.textContent = evalResult.observedText || '尚无本次验证';
+      ctxRefAdoptedEl.textContent = evalResult.observedText || t('models.cap.noneVerified');
     }
 
     if (ctxUnifiedProjEl) {
@@ -14613,8 +17328,10 @@ function closeAllDropdowns(exceptWrap = null) {
         if (projections.length > 0 && typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxUnifiedProjEl.replaceChildren === 'function') {
           const titleDiv = document.createElement('div');
           titleDiv.className = 'ctx-unified-proj-title';
-          titleDiv.textContent = '统一模式各模型预计采用预算（预测值，非实机已确认）：';
+          titleDiv.textContent = t('models.unified.projTitle');
           const rowNodes = [titleDiv];
+          const isEnProj = currentPanelLanguage === 'en';
+          const isTwProj = currentPanelLanguage === 'zh-TW';
           for (const pr of projections.slice(0, 8)) {
             const row = document.createElement('div');
             const isWarnRow = pr.outcome === 'clamped_to_model_max' || pr.outcome === 'exceeds_client_policy' || pr.outcome === 'clamped_by_client_policy' || pr.outcome === 'pending_restart_unconfirmed' || pr.outcome === 'partial_policy_unconfirmed' || pr.outcome === 'runtime_unconfirmed';
@@ -14623,29 +17340,29 @@ function closeAllDropdowns(exceptWrap = null) {
             lbl.textContent = pr.productLabel;
             const val = document.createElement('strong');
             if (pr.outcome === 'clamped_to_model_max') {
-              val.textContent = `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`;
+              val.textContent = isEnProj ? `Capped by model max -> ~${fmt(pr.projectedTokens)}` : (isTwProj ? `受模型上限限制 -> 預計 ${fmt(pr.projectedTokens)}（最大可用）` : `受模型上限限制 -> 预计 ${fmt(pr.projectedTokens)}（最大可用）`);
             } else if (pr.outcome === 'exceeds_client_policy') {
-              val.textContent = `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+              val.textContent = isEnProj ? `Exceeds policy -> ~${fmt(pr.projectedTokens)} (limit ${fmt(pr.clientLimitTokens)})` : `超出当前客户端限制 -> 预计仅保底 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
             } else if (pr.outcome === 'clamped_by_client_policy') {
-              val.textContent = `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
+              val.textContent = isEnProj ? `Capped by policy -> ~${fmt(pr.projectedTokens)} (limit ${fmt(pr.clientLimitTokens)})` : `受当前客户端限制 -> 预计 ${fmt(pr.projectedTokens)}（策略上限 ${fmt(pr.clientLimitTokens)}）`;
             } else if (pr.outcome === 'pending_restart_unconfirmed') {
-              val.textContent = '待验证（磁盘已改，客户端未重启）';
+              val.textContent = isEnProj ? 'Pending restart (disk updated)' : (isTwProj ? '待重啟確認（磁碟已改）' : '待验证（磁盘已改，客户端未重启）');
             } else if (pr.outcome === 'runtime_unconfirmed') {
-              val.textContent = '待验证（运行中进程未确认）';
+              val.textContent = isEnProj ? 'Pending (runtime unconfirmed)' : (isTwProj ? '待驗證（執行中程序未確認）' : '待验证（运行中进程未确认）');
             } else if (pr.outcome === 'partial_policy_unconfirmed') {
-              val.textContent = '未知（客户端处于部分异常状态）';
+              val.textContent = t('models.cap.policyPartial');
             } else if (pr.outcome === 'unknown_policy') {
-              val.textContent = '未知（运行策略待读取）';
+              val.textContent = t('models.cap.policyUnknown');
             } else if (pr.outcome === 'unknown_cap') {
-              val.textContent = '模型上限未知';
+              val.textContent = isEnProj ? 'Model cap unknown' : '模型上限未知';
             } else if (pr.outcome === 'client_default' && pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens (Policy default)` : `预计 ${fmt(pr.projectedTokens)} tokens（当前策略默认）`;
             } else if (pr.outcome === 'dynamic_follow' && pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens (Dynamic default)` : `预计 ${fmt(pr.projectedTokens)} tokens（Dynamic 默认）`;
             } else if (pr.projectedTokens != null) {
-              val.textContent = `预计 ${fmt(pr.projectedTokens)} tokens`;
+              val.textContent = isEnProj ? `~${fmt(pr.projectedTokens)} tokens` : `预计 ${fmt(pr.projectedTokens)} tokens`;
             } else {
-              val.textContent = '待验证';
+              val.textContent = t('models.summary.pendingConfirm');
             }
             row.appendChild(lbl);
             row.appendChild(val);
@@ -14665,12 +17382,12 @@ function closeAllDropdowns(exceptWrap = null) {
       if (capSummary?.tierDetails?.length) {
         ctxCardTierCapsRowEl.hidden = false;
         const lines = capSummary.tierDetails.map(td => {
-          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || '标准');
-          const winTxt = td.maxTokens ? `窗口 ${fmt(td.maxTokens)}` : '窗口未知';
-          const outTxt = td.maxOutputTokens != null ? `最大输出 ${fmt(td.maxOutputTokens)}` : '输出未知';
+          const tierName = td.effort ? formatEffortZh(td.effort) : (td.modelId || t('models.cap.tierStandard'));
+          const winTxt = td.maxTokens ? t('models.cap.tierWin', { val: fmt(td.maxTokens) }) : t('models.cap.tierWinUnk');
+          const outTxt = td.maxOutputTokens != null ? t('models.cap.tierOut', { val: fmt(td.maxOutputTokens) }) : t('models.cap.tierOutUnk');
           const maxInTxt = (td.maxTokens && td.maxOutputTokens != null && td.maxTokens > td.maxOutputTokens)
-            ? `可调上限 ${fmt(td.maxTokens - td.maxOutputTokens)}`
-            : '上限未知';
+            ? t('models.cap.tierAdj', { val: fmt(td.maxTokens - td.maxOutputTokens) })
+            : t('models.cap.tierAdjUnk');
           return `${tierName}：${winTxt} / ${outTxt} / ${maxInTxt}`;
         });
         if (typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof ctxCardTierCapsEl.replaceChildren === 'function') {
@@ -14722,15 +17439,15 @@ function closeAllDropdowns(exceptWrap = null) {
       } else if (!currentUnlockStatus) {
         ctxCardClientEl.textContent = t('status.badge.reading');
       } else if (runtimePolicy?.runtimeState === 'pending_restart') {
-        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（待重启生效）`;
+        ctxCardClientEl.textContent = t('models.cap.diskPending', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy?.runtimeState === 'runtime_unconfirmed') {
-        ctxCardClientEl.textContent = `磁盘为 ${formatDiskPolicyText(runtimePolicy)}（运行态未确认）`;
+        ctxCardClientEl.textContent = t('models.cap.diskUnconfirmed', { disk: formatDiskPolicyText(runtimePolicy) });
       } else if (runtimePolicy?.runtimeState === 'partial') {
-        ctxCardClientEl.textContent = '部分异常（请核对客户端状态）';
+        ctxCardClientEl.textContent = t('models.cap.clientPartialAlert');
       } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'dynamic') {
-        ctxCardClientEl.textContent = '动态跟随已确认运行（各模型独立）';
+        ctxCardClientEl.textContent = t('models.cap.clientDynamicOk');
       } else if (runtimePolicy?.policyKnown && runtimePolicy.runtimeMode === 'fixed' && runtimePolicy.currentClientLimitTokens != null) {
-        ctxCardClientEl.textContent = `固定单一上限模式 (${formatKShort(runtimePolicy.currentClientLimitTokens)}，建议升级为动态跟随)`;
+        ctxCardClientEl.textContent = t('models.cap.fixedAdvice', { val: formatKShort(runtimePolicy.currentClientLimitTokens) });
       } else {
         ctxCardClientEl.textContent = describeClientModeValue(currentUnlockStatus);
       }
@@ -14884,7 +17601,7 @@ function closeAllDropdowns(exceptWrap = null) {
       } else if (product) {
         ctxSummaryModelEl.textContent = product.productLabel;
       } else {
-        ctxSummaryModelEl.textContent = '待确认';
+        ctxSummaryModelEl.textContent = t('models.summary.pendingConfirm');
       }
     }
     if (ctxSummaryLengthEl) {
@@ -14919,13 +17636,13 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (ctxPresetModelMaxSubEl) {
       if (isUnified) {
-        ctxPresetModelMaxSubEl.textContent = '统一模式下各模型不同（已禁用）';
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.unifiedDisabled');
       } else if (knownEnvMax != null) {
-        ctxPresetModelMaxSubEl.textContent = `当前环境最大可采纳：${fmt(knownEnvMax)} tokens`;
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.envMax', { val: fmt(knownEnvMax) });
       } else if (!policyKnown && knownModelMax != null) {
-        ctxPresetModelMaxSubEl.textContent = `运行策略未确认（模型理论上限 ${fmt(knownModelMax)}，暂不可用）`;
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.policyUnconfirmed', { val: fmt(knownModelMax) });
       } else {
-        ctxPresetModelMaxSubEl.textContent = '模型元数据待获取（暂不可用）';
+        ctxPresetModelMaxSubEl.textContent = t('models.preset.metaPending');
       }
     }
 
@@ -14938,20 +17655,38 @@ function closeAllDropdowns(exceptWrap = null) {
 
       let disabled = false;
       let disableReason = '';
+      const isEnPre = currentPanelLanguage === 'en';
+      const isTwPre = currentPanelLanguage === 'zh-TW';
       if (bMode === 'model_max') {
         if (isUnified) {
           disabled = true;
-          disableReason = '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。';
+          disableReason = isEnPre
+            ? 'Max capacity varies per model in unified mode. Switch to Per-Model or enter a specific number.'
+            : (isTwPre
+              ? '統一模式下各模型最大可用上限不同，請切換為依模型個別設定或填寫具體數值。'
+              : '统一模式下各模型最大可用上限不同，请切换到按模型分别设置或填写具体数值。');
         } else if (knownModelMax == null) {
           disabled = true;
-          disableReason = '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。';
+          disableReason = isEnPre
+            ? 'Context window and max output metadata not loaded yet for this model.'
+            : (isTwPre
+              ? '尚未取得此模型的上下文視窗與最大輸出中繼資料，無法計算最大可用值。'
+              : '尚未获取到该模型的上下文窗口与最大输出元数据，无法计算最大可用值。');
         } else if (!policyKnown || knownEnvMax == null) {
           disabled = true;
-          disableReason = '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。';
+          disableReason = isEnPre
+            ? 'Client runtime policy is unknown or pending restart; environment max cannot be verified yet.'
+            : (isTwPre
+              ? '目前用戶端執行策略未知或待重啟確認，暫無法確定目前環境最大可用上限。'
+              : '当前客户端运行策略未知或待重启确认，暂无法确定当前环境最大可用上限。');
         }
       } else if (bMode === 'fixed' && bLim && knownModelMax != null && bLim > knownModelMax) {
         disabled = true;
-        disableReason = `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`;
+        disableReason = isEnPre
+          ? `Preset ${fmt(bLim)} exceeds model theoretical input cap ${fmt(knownModelMax)} (window - max output).`
+          : (isTwPre
+            ? `預設 ${fmt(bLim)} 超出目前模型理論輸入上限 ${fmt(knownModelMax)}（總視窗 - 最大輸出）。`
+            : `预设 ${fmt(bLim)} 超出当前模型理论输入上限 ${fmt(knownModelMax)}（总窗口 - 最大输出）。`);
       }
 
       if ('disabled' in btn) btn.disabled = disabled;
@@ -15006,7 +17741,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
     if (ctxDraft.mode === 'default') {
       ctxValidationEl.className = 'ctx-validation-msg';
-      ctxValidationEl.textContent = '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。';
+      ctxValidationEl.textContent = t('models.validation.defaultDesc');
       return;
     }
     const rawVal = ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== ''
@@ -15200,6 +17935,7 @@ function closeAllDropdowns(exceptWrap = null) {
   ctxPresetGrid?.addEventListener('click', (e) => {
     const btn = e?.target?.closest?.('.ctx-preset-btn');
     if (!btn || btn.disabled) return;
+    userActionSeq++;
     const mode = btn.getAttribute?.('data-ctx-mode') || btn.dataset?.ctxMode || 'default';
     const rawLim = btn.getAttribute?.('data-ctx-limit') ?? btn.dataset?.ctxLimit;
     ctxDraftDirty = true;
@@ -15227,6 +17963,7 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   ctxCustomInput?.addEventListener('input', () => {
+    userActionSeq++;
     const rawStr = String(ctxCustomInput.value || '').trim();
     ctxDraftDirty = true;
     if (ctxResetNoticeEl) ctxResetNoticeEl.hidden = true;
@@ -15297,6 +18034,7 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   async function saveCurrentProductDraft() {
+    userActionSeq++;
     if (contextScopeMode === 'unified') {
       const rawLimit = ctxDraft.mode === 'fixed'
         ? (ctxCustomInput && 'value' in ctxCustomInput && ctxCustomInput.value !== '' ? ctxCustomInput.value : ctxDraft.limitTokens)
@@ -15417,6 +18155,7 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   btnResetModelCtx?.addEventListener('click', async () => {
+    userActionSeq++;
     if (contextScopeMode === 'unified') {
       contextUnifiedPreference = {
         modelId: 'unified',
@@ -15486,6 +18225,7 @@ function closeAllDropdowns(exceptWrap = null) {
   });
 
   function setScopeMode(newMode) {
+    userActionSeq++;
     contextScopeMode = newMode === 'per_model' ? 'per_model' : 'unified';
     if (btnModeUnified) {
       if (contextScopeMode === 'unified') addClass(btnModeUnified, 'is-active');
@@ -15666,7 +18406,8 @@ function closeAllDropdowns(exceptWrap = null) {
 
       if (btnApplyUnlock) {
         const writableStatuses = new Set(['not_patched', 'patched_runtime_unconfirmed', 'patched_pending_restart', 'patched_loaded']);
-        if (writableStatuses.has(data.status) && (!data.arch || data.arch === 'x86-64' || data.arch === 'arm64')) {
+        const archSupported = data.isPlatformSupported !== false && (!data.arch || data.arch === 'x86-64' || data.arch === 'arm64');
+        if (writableStatuses.has(data.status) && archSupported) {
           btnApplyUnlock.disabled = false;
           btnApplyUnlock.textContent = t('models.btn.saveApply');
         } else if (data.status === 'partial_match') {
@@ -16007,8 +18748,7 @@ function closeAllDropdowns(exceptWrap = null) {
       const y = padTop + idx * rowH;
       const val = getVal(g) || 0;
       const w = Math.max(4, (val / maxVal) * barAreaW);
-      const effText = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
-      const displayLabel = `${g.productLabel}${effText}`;
+      const displayLabel = formatProductDisplayWithEffort(g.productLabel, g.effort);
       const unitStr = speedMetric === 'tps' ? `${val} tok/s` : t('speed.unitSec', { val });
 
       const rowGrp = createSvgEl('g', { style: 'cursor:pointer' });
@@ -16225,8 +18965,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const speedDropLabel = el('speed-model-dropdown-label');
     if (speedDropLabel) {
       if (chosenGroup) {
-        const effStr = chosenGroup.effort ? ` (${formatEffortZh(chosenGroup.effort)})` : '';
-        speedDropLabel.textContent = `${chosenGroup.productLabel}${effStr}`;
+        speedDropLabel.textContent = formatProductDisplayWithEffort(chosenGroup.productLabel, chosenGroup.effort);
       } else {
         speedDropLabel.textContent = t('speed.lineNoModel');
       }
@@ -16249,10 +18988,9 @@ function closeAllDropdowns(exceptWrap = null) {
           renderSpeedComparisonTab();
         },
         getOptions: () => lastSpeedGroups.map(g => {
-          const effStr = g.effort ? ` (${formatEffortZh(g.effort)})` : '';
           return {
             value: g.modelExactId,
-            label: `${g.productLabel}${effStr}`,
+            label: formatProductDisplayWithEffort(g.productLabel, g.effort),
             displayRight: t('speed.samples', { n: g.count })
           };
         })
@@ -16452,6 +19190,15 @@ function closeAllDropdowns(exceptWrap = null) {
         const open = chineseDrawerBody.style.display === 'block';
         chineseDrawerArrow.textContent = open ? t('drawer.collapse') : t('drawer.expand');
       }
+      if (displaySettingsArrow && displaySettingsBody) {
+        const open = displaySettingsBody.style.display === 'block';
+        displaySettingsArrow.textContent = open ? t('drawer.collapse') : t('drawer.expand');
+      }
+      const cliStatusPill = el('cli-visibility-badge');
+      if (cliStatusPill) {
+        cliStatusPill.textContent = showCliButton ? t('settings.display.cliVisible') : t('settings.display.cliHidden');
+      }
+      void refreshModulesDisplay();
       const btnCostDet = el('btn-cost-details-toggle');
       const costDetBody = el('cost-details-pane');
       if (btnCostDet && costDetBody) {
@@ -16480,14 +19227,30 @@ function closeAllDropdowns(exceptWrap = null) {
           pv.textContent = `$19.99${t('plan.summary.perMonth')}`;
         }
       }
+      const countryInp = el('input-custom-country');
+      if (countryInp && countryInp.value) {
+        const locCountry = localizeRegionDisplayValue(countryInp.value);
+        if (locCountry) countryInp.value = locCountry;
+      }
+      const regInp = el('input-custom-region');
+      if (regInp && regInp.value) {
+        const locReg = localizeRegionDisplayValue(regInp.value);
+        if (locReg) regInp.value = locReg;
+      }
       if (typeof refreshRegionPresetSelectOptions === 'function') refreshRegionPresetSelectOptions();
       if (typeof refreshDirectCountryDisplay === 'function') refreshDirectCountryDisplay();
       if (typeof refreshDirectRegionDisplay === 'function') refreshDirectRegionDisplay();
       if (typeof refreshDirectCurrencyDisplay === 'function') refreshDirectCurrencyDisplay();
+      if (typeof refreshValidEndDatePicker === 'function') refreshValidEndDatePicker();
+      if (typeof updateRegionCnyPreviewFromForm === 'function') updateRegionCnyPreviewFromForm();
+      if (typeof syncAllNativeSelectDropdowns === 'function') syncAllNativeSelectDropdowns();
     } catch { }
     try {
       if (typeof renderEnhanceSectionUI === 'function') renderEnhanceSectionUI();
       if (typeof rerenderSettingsFeedbacks === 'function') rerenderSettingsFeedbacks();
+      if (typeof renderAccountsOverviewSection === 'function' && accountsUiState?.overview) {
+        renderAccountsOverviewSection();
+      }
     } catch { }
     try {
       if (isChineseExpanded || isProxyExpanded || isContextSettingsView) {
@@ -16498,8 +19261,9 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     } catch { }
     try {
-      if (typeof applyTokenHistoryPayload === 'function' && ANTIGRAVITY_TOKEN_DATA) {
-        applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA);
+      const basePayload = ANTIGRAVITY_TOKEN_DATA?.rawPayload || ANTIGRAVITY_TOKEN_DATA;
+      if (typeof applyTokenHistoryPayload === 'function' && basePayload) {
+        applyTokenHistoryPayload(basePayload);
       }
     } catch { }
 
@@ -17733,47 +20497,47 @@ function closeAllDropdowns(exceptWrap = null) {
         const isDomTranslated = detectHostDomTranslated(null);
         if (chineseBadge) {
           if (currentChineseEnabled && isDomTranslated) {
-            chineseBadge.textContent = '🟢 已翻译生效';
+            chineseBadge.textContent = t('mod.zh.liveBadgeOk');
             chineseBadge.className = 'key-pill pill-ok';
           } else if (currentChineseEnabled) {
-            chineseBadge.textContent = '⏳ 正在加载汉化…';
+            chineseBadge.textContent = t('mod.zh.liveBadgeLoading');
             chineseBadge.className = 'key-pill pill-warn';
           } else if (isDomTranslated) {
-            chineseBadge.textContent = '⏳ 需重启恢复英文';
+            chineseBadge.textContent = t('mod.zh.liveBadgeRestartEn');
             chineseBadge.className = 'key-pill pill-warn';
           } else {
-            chineseBadge.textContent = '⚪ 已关闭';
+            chineseBadge.textContent = t('mod.zh.liveBadgeOff');
             chineseBadge.className = 'key-pill pill-muted';
           }
         }
         if (chineseStatusDesc) {
           if (currentChineseEnabled && isDomTranslated) {
-            chineseStatusDesc.textContent = 'Sidecar 免改盘汉化运行中：DOM 实时翻译已生效（默认开启，不修改 app.asar）。';
+            chineseStatusDesc.textContent = t('mod.zh.liveDescOk');
           } else if (currentChineseEnabled) {
-            chineseStatusDesc.textContent = '已开启 Sidecar 免改盘汉化（默认开启），等待本地桥接注入词库…';
+            chineseStatusDesc.textContent = t('mod.zh.liveDescLoading');
           } else if (isDomTranslated) {
-            chineseStatusDesc.textContent = '已在插件设置中关闭客户端汉化；当前窗口仍保留中文 DOM 缓存，重载或重启 Antigravity 后恢复纯净原生英文。';
+            chineseStatusDesc.textContent = t('mod.zh.liveDescRestartEn');
           } else {
-            chineseStatusDesc.textContent = '客户端汉化已关闭，当前保持官方原生英文界面（开启后免重启即时生效）。';
+            chineseStatusDesc.textContent = t('mod.zh.liveDescOff');
           }
         }
         if (btnToggleChineseModule) {
           btnToggleChineseModule.disabled = false;
-          btnToggleChineseModule.textContent = currentChineseEnabled ? '关闭客户端汉化' : '开启客户端汉化';
+          btnToggleChineseModule.textContent = currentChineseEnabled ? t('mod.zh.liveBtnOff') : t('mod.zh.liveBtnOn');
         }
         syncChineseCheckboxes(currentChineseEnabled);
         syncClientLanguageButtons();
 
         if (proxyBadge) {
-          proxyBadge.textContent = '⚪ 免改盘未启用';
+          proxyBadge.textContent = t('mod.proxy.liveBadgeOff');
           proxyBadge.className = 'key-pill pill-muted';
         }
         if (proxyStatusDesc) {
-          proxyStatusDesc.textContent = '当前为 Sidecar 免侵入运行模式，未向 app.asar 注入代理模块，网络请求跟随系统默认设置。';
+          proxyStatusDesc.textContent = t('mod.proxy.liveDescOff');
         }
         if (btnToggleProxyModule) {
           btnToggleProxyModule.disabled = true;
-          btnToggleProxyModule.textContent = '免改盘模式不支持';
+          btnToggleProxyModule.textContent = t('mod.proxy.liveBtnUnsupported');
         }
         return;
       }
@@ -18162,7 +20926,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const isHidden = displaySettingsBody.style.display === 'none' || !displaySettingsBody.style.display;
     const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : isHidden;
     displaySettingsBody.style.display = nextOpen ? 'block' : 'none';
-    if (displaySettingsArrow) displaySettingsArrow.textContent = nextOpen ? '▲ 收起设置' : '▼ 展开设置';
+    if (displaySettingsArrow) displaySettingsArrow.textContent = nextOpen ? t('drawer.collapse') : t('drawer.expand');
     btnDisplaySettings?.setAttribute('aria-expanded', String(nextOpen));
   }
   btnDisplaySettings?.addEventListener('click', () => toggleDisplaySettingsDrawer());
@@ -18299,7 +21063,7 @@ function closeAllDropdowns(exceptWrap = null) {
 
     if (titleEl) titleEl.textContent = isPeriod ? t('cost.title') : t('cost.titleAll');
     if (periodTag) {
-      const pKey = ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag');
+      const pKey = formatPeriodCalendarLabel(ANTIGRAVITY_TOKEN_DATA.currentPeriod);
       periodTag.textContent = isPeriod ? pKey : t('cost.allHistory');
     }
 
@@ -18334,6 +21098,14 @@ function closeAllDropdowns(exceptWrap = null) {
     let pillText = t('cost.covFull');
     let pillClass = 'key-pill pill-good';
 
+    const inShare = el('ref-cost-input-share');
+    const inBar = el('ref-cost-input-bar');
+    const caShare = el('ref-cost-cache-share');
+    const caBar = el('ref-cost-cache-bar');
+    const outShare = el('ref-cost-output-share');
+    const outBar = el('ref-cost-output-bar');
+    let cInUSD = 0, cCaUSD = 0, cOutUSD = 0;
+
     // 2. 估值模式计算
     let effectiveRef = curRef;
     if ((effectiveRef.totalCostUSD === undefined || effectiveRef.totalCostUSD === null) && curTotal > 0) {
@@ -18356,7 +21128,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const scopeDescEl = el('cost-scope-desc');
     if (scopeDescEl) {
       const srcName = activeTokenSource === 'desktop' ? t('tokens.srcDesktopLabel') : activeTokenSource === 'cli' ? 'CLI' : t('tokens.srcAllLabel');
-      const pLabel = isPeriod ? (ANTIGRAVITY_TOKEN_DATA.currentPeriod?.label || t('cost.periodTag')) : t('cost.allHistory');
+      const pLabel = isPeriod ? formatPeriodCalendarLabel(ANTIGRAVITY_TOKEN_DATA.currentPeriod) : t('cost.allHistory');
       scopeDescEl.textContent = `${srcName} · ${pLabel}`;
     }
     const nonPaidBadge = el('cost-non-paid-badge');
@@ -18366,11 +21138,16 @@ function closeAllDropdowns(exceptWrap = null) {
       apiCost = Number(effectiveRef.totalCostUSD || 0);
       if (grandVal) {
         if (apiCost > 0) {
-          grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
-          grandVal.title = `$${apiCost.toFixed(4)}`;
+          grandVal.textContent = currentPanelLanguage === 'zh-CN'
+            ? t('cost.approx', { val: apiCost.toFixed(2) })
+            : formatUsdMetricDisplay(apiCost, { detail: currentPanelLanguage === 'zh-TW' });
+          grandVal.title = formatUsdMetricTooltip(apiCost);
         } else if (curTotal > 0 && curIn === 0 && curCa === 0 && curOut === 0) {
           grandVal.textContent = t('cost.notReady');
           grandVal.title = t('cost.notReady');
+        } else if (activeTokenAccountFilter !== 'all' && curTotal === 0) {
+          grandVal.textContent = t('cost.noRecords');
+          grandVal.title = t('accounts.filterNoData');
         } else {
           grandVal.textContent = '$0.00';
           grandVal.title = t('cost.noRecords');
@@ -18387,18 +21164,23 @@ function closeAllDropdowns(exceptWrap = null) {
       pillText = t('cost.modeRef');
       pillClass = 'key-pill pill-muted';
 
-      if (inVal) inVal.textContent = `$${Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6)).toFixed(2)}`;
+      cInUSD = Number(effectiveRef.inputCostUSD || (curIn * rateIn / 1e6));
+      cCaUSD = Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6));
+      cOutUSD = Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6));
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIn)} tok`;
-      if (caVal) caVal.textContent = `$${Number(effectiveRef.cacheCostUSD || (curCa * rateCa / 1e6)).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = t('cost.tokCacheDiscount', { tok: fmtYi(curCa) });
-      if (outVal) outVal.textContent = `$${Number(effectiveRef.outputCostUSD || (curOut * rateOut / 1e6)).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curOut)} tok`;
     } else if (costModelMode === 'hybrid') {
       const h = curHybrid.hybrid || {};
       apiCost = Number(h.combinedTotalUSD || effectiveRef.totalCostUSD || 0);
       if (grandVal) {
-        grandVal.textContent = t('cost.approx', { val: apiCost.toFixed(2) });
-        grandVal.title = t('cost.hybridSub', { known: h.knownCostUSD || 0, res: h.unpricedResidualCostUSD || 0 });
+        grandVal.textContent = currentPanelLanguage === 'zh-CN'
+          ? t('cost.approx', { val: apiCost.toFixed(2) })
+          : formatUsdMetricDisplay(apiCost, { detail: currentPanelLanguage === 'zh-TW' });
+        grandVal.title = `${t('cost.hybridSub', { known: Number(h.knownCostUSD || 0).toFixed(2), res: Number(h.unpricedResidualCostUSD || 0).toFixed(2) })} | ${formatUsdMetricTooltip(apiCost)}`;
       }
       if (grandSub) {
         grandSub.textContent = t('cost.hybridSub', {
@@ -18410,11 +21192,14 @@ function closeAllDropdowns(exceptWrap = null) {
       pillClass = 'key-pill pill-muted';
 
       const rb = h.residualTokensBreakdown || {};
-      if (inVal) inVal.textContent = `$${Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6)).toFixed(2)}`;
+      cInUSD = Number(rb.inputCostUSD || (Number(rb.input || 0) * rateIn / 1e6));
+      cCaUSD = Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6));
+      cOutUSD = Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6));
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.input || 0) });
-      if (caVal) caVal.textContent = `$${Number(rb.cacheCostUSD || (Number(rb.cache || 0) * rateCa / 1e6)).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.cache || 0) });
-      if (outVal) outVal.textContent = `$${Number(rb.outputCostUSD || (Number(rb.output || 0) * rateOut / 1e6)).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = t('cost.tokResidual', { tok: fmtYi(rb.output || 0) });
     } else {
       // 仅已识别真实模型
@@ -18433,8 +21218,10 @@ function closeAllDropdowns(exceptWrap = null) {
           grandVal.textContent = '<$0.01';
           grandVal.title = `$${apiCost.toFixed(6)}`;
         } else {
-          grandVal.textContent = `$${apiCost.toFixed(2)}`;
-          grandVal.title = `$${apiCost.toFixed(4)}`;
+          grandVal.textContent = currentPanelLanguage === 'zh-TW'
+            ? formatUsdMetricDisplay(apiCost, { withPrefix: false, detail: true })
+            : `$${apiCost.toFixed(2)}`;
+          grandVal.title = formatUsdMetricTooltip(apiCost);
         }
       }
       if (grandSub) {
@@ -18451,13 +21238,27 @@ function closeAllDropdowns(exceptWrap = null) {
         pillClass = `key-pill ${pct >= 100 ? 'pill-good' : 'pill-warn'}`;
       }
 
-      if (inVal) inVal.textContent = `$${((curIdentified.byCategory?.inputTokens || 0) * rateIn / 1e6).toFixed(2)}`;
+      cInUSD = (curIdentified.byCategory?.inputTokens || 0) * rateIn / 1e6;
+      cCaUSD = (curIdentified.byCategory?.cacheTokens || 0) * rateCa / 1e6;
+      cOutUSD = (curIdentified.byCategory?.outputTokens || 0) * rateOut / 1e6;
+      if (inVal) inVal.textContent = `$${cInUSD.toFixed(2)}`;
       if (inTok) inTok.textContent = `${fmtYi(curIdentified.byCategory?.inputTokens || 0)} tok`;
-      if (caVal) caVal.textContent = `$${((curIdentified.byCategory?.cacheTokens || 0) * rateCa / 1e6).toFixed(2)}`;
+      if (caVal) caVal.textContent = `$${cCaUSD.toFixed(2)}`;
       if (caTok) caTok.textContent = `${fmtYi(curIdentified.byCategory?.cacheTokens || 0)} tok`;
-      if (outVal) outVal.textContent = `$${((curIdentified.byCategory?.outputTokens || 0) * rateOut / 1e6).toFixed(2)}`;
+      if (outVal) outVal.textContent = `$${cOutUSD.toFixed(2)}`;
       if (outTok) outTok.textContent = `${fmtYi(curIdentified.byCategory?.outputTokens || 0)} tok`;
     }
+
+    const cSumUSD = cInUSD + cCaUSD + cOutUSD;
+    const pctIn = cSumUSD > 0 ? Math.max(0, Math.min(100, (cInUSD / cSumUSD) * 100)) : 0;
+    const pctCa = cSumUSD > 0 ? Math.max(0, Math.min(100, (cCaUSD / cSumUSD) * 100)) : 0;
+    const pctOut = cSumUSD > 0 ? Math.max(0, Math.min(100, (cOutUSD / cSumUSD) * 100)) : 0;
+    if (inShare) inShare.textContent = `${pctIn.toFixed(1)}%`;
+    if (inBar) inBar.style.width = `${pctIn.toFixed(1)}%`;
+    if (caShare) caShare.textContent = `${pctCa.toFixed(1)}%`;
+    if (caBar) caBar.style.width = `${pctCa.toFixed(1)}%`;
+    if (outShare) outShare.textContent = `${pctOut.toFixed(1)}%`;
+    if (outBar) outBar.style.width = `${pctOut.toFixed(1)}%`;
 
     if (covPill) {
       covPill.textContent = pillText;
@@ -18471,14 +21272,18 @@ function closeAllDropdowns(exceptWrap = null) {
     if (subSpendLbl) subSpendLbl.textContent = t('cost.subSpendLabel');
 
     const extraNoCompare = isPeriod ? '' : t('cost.allNoCompare');
+    const resolvedAcqLabel = (ps.acquisitionSourceName && ps.acquisitionSourceName !== '正常付费订阅')
+      ? localizeAcquisitionSource(ps.acquisitionSourceName)
+      : localizeAcquisitionSource(ps.acquisitionSource || 'normal_paid');
+    const resolvedCycleLabel = ps.billingCycle ? localizeBillingCycleLabel(ps.billingCycle) : t('plan.summary.perMonth');
     if (subSpendVal && subNote) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         subSpendVal.textContent = `${curSymbol}0`;
-        subNote.textContent = t('cost.freeActive', { src: ps.acquisitionSourceName || t('cost.freePromo'), extra: extraNoCompare });
+        subNote.textContent = t('cost.freeActive', { src: resolvedAcqLabel || t('cost.freePromo'), extra: extraNoCompare });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
         subSpendVal.textContent = `${curSymbol}${Number(ps.actualPricePaid).toFixed(2)}`;
         const expTag = ps.isExpired ? t('cost.expiredTag') : '';
-        subNote.textContent = `${ps.acquisitionSourceName || t('cost.subSpend')} · ${t('cost.paidLabel')} (${ps.billingCycle || t('plan.summary.perMonth')})${expTag}${extraNoCompare}`;
+        subNote.textContent = `${resolvedAcqLabel || t('cost.subSpend')} · ${t('cost.paidLabel')} (${resolvedCycleLabel})${expTag}${extraNoCompare}`;
       } else if (ps.officialPriceMonthly !== null && ps.officialPriceMonthly !== undefined) {
         subSpendVal.textContent = t('cost.paidUnknown');
         subNote.textContent = `${t('cost.publicRefMonthly', { p: ps.officialPriceMonthly })}${extraNoCompare}`;
@@ -18491,14 +21296,15 @@ function closeAllDropdowns(exceptWrap = null) {
     const subLine = el('cost-sub-line');
     if (subLine) {
       if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
-        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: ps.acquisitionSourceName || t('plan.tag.promo') });
+        subLine.textContent = t('cost.subLineFree', { sym: curSymbol, src: resolvedAcqLabel || t('plan.tag.promo') });
       } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
-        const cnyPart = (ps.currency !== 'CNY' && ps.cnyFormatted) ? ` (${ps.cnyFormatted})` : '';
+        const secPart = formatSubscriptionSecondaryConversion(ps.actualPricePaid, ps.currency || 'USD', ps.region, { detail: true });
+        const cnyPart = secPart ? ` (${secPart})` : '';
         subLine.textContent = t('cost.subLinePaid', {
           sym: curSymbol,
           val: Number(ps.actualPricePaid).toFixed(2),
           cny: cnyPart,
-          cycle: ps.billingCycle || t('plan.summary.perMonth'),
+          cycle: resolvedCycleLabel,
           exp: ps.isExpired ? ' · ⚠️' : ''
         });
       } else {
@@ -18515,9 +21321,16 @@ function closeAllDropdowns(exceptWrap = null) {
         diffSummary.textContent = t('cost.diffAll');
       } else if (ps.actualPricePaid === 0 || ps.isZeroExtraCost) {
         diffSummary.textContent = t('cost.diffFree', { val: apiCost.toFixed(2) });
-      } else if (ps.actualPricePaid !== null && ps.currency === 'USD') {
-        const diff = apiCost - Number(ps.actualPricePaid);
-        diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
+      } else if (ps.actualPricePaid !== null && ps.actualPricePaid !== undefined) {
+        const paidUsd = (ps.currency || 'USD') === 'USD'
+          ? Number(ps.actualPricePaid)
+          : convertCurrencyUi(ps.actualPricePaid, ps.currency || 'USD', 'USD', ps.region);
+        if (paidUsd !== null && Number.isFinite(paidUsd)) {
+          const diff = apiCost - paidUsd;
+          diffSummary.textContent = t('cost.diffPaid', { sign: diff >= 0 ? '+' : '', val: diff.toFixed(2) });
+        } else {
+          diffSummary.textContent = t('cost.diffUnknown');
+        }
       } else {
         diffSummary.textContent = t('cost.diffUnknown');
       }
@@ -18535,7 +21348,12 @@ function closeAllDropdowns(exceptWrap = null) {
 
     // 6. 兼容性辅助隐藏层同步
     const refGrand = el('ref-cost-grand-val');
-    if (refGrand) refGrand.textContent = t('cost.refApprox', { val: Number(curRef.totalCostUSD || 0).toFixed(2) });
+    if (refGrand) {
+      const refNum = Number(curRef.totalCostUSD || 0);
+      refGrand.textContent = currentPanelLanguage === 'zh-TW'
+        ? formatUsdMetricDisplay(refNum, { detail: true })
+        : t('cost.refApprox', { val: refNum.toFixed(2) });
+    }
   }
 
   const heatPop = el('heat-pop');
@@ -18608,6 +21426,8 @@ function closeAllDropdowns(exceptWrap = null) {
       }
     });
 
+    setClassFlag(el('h-scroll-box'), 'is-cum-active', view === 'cum');
+
     hidePopover();
     renderActiveHeatView(true);
     updateHeatTabThumb();
@@ -18640,6 +21460,47 @@ function closeAllDropdowns(exceptWrap = null) {
 
   // 初始化默认热力图视图状态与药丸滑块
   switchHeatView('daily', false);
+
+  /**
+   * 仅在累计页可见宽度跨过 460px 窄窗阈值时重绘，自动切换 .is-narrow
+   */
+  function syncCumResponsiveNarrowState() {
+    if (state.disposed || activeHeatView !== 'cum') return false;
+    const cumBox = el('h-cum-box');
+    const scrollBox = el('h-scroll-box') || cumBox?.parentElement;
+    const panelTokens = el('panel-tokens');
+    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
+    const panelRect = panelTokens && typeof panelTokens.getBoundingClientRect === 'function' ? panelTokens.getBoundingClientRect() : null;
+    let width = (rect && rect.width > 120) ? rect.width : 0;
+    if (!width && panelRect && panelRect.width > 120) {
+      width = Math.max(121, panelRect.width - 56);
+    }
+    if (!width) return false;
+    const nextNarrow = width < 460;
+    const cumRoot = cumBox?.querySelector?.('.cum-root') || (cumBox?.children?.[0] || null);
+    if (!cumRoot) return false;
+    const curNarrow = hasClass(cumRoot, 'is-narrow');
+    if (curNarrow === nextNarrow) return false;
+    renderActiveHeatView(true);
+    return true;
+  }
+
+  let panelTokensResizeObserver = null;
+  if (typeof ResizeObserver === 'function') {
+    const pTokensObsTarget = el('panel-tokens');
+    const hScrollObsTarget = el('h-scroll-box');
+    if (pTokensObsTarget) {
+      panelTokensResizeObserver = new ResizeObserver(() => {
+        syncCumResponsiveNarrowState();
+      });
+      panelTokensResizeObserver.observe(pTokensObsTarget);
+      if (hScrollObsTarget) panelTokensResizeObserver.observe(hScrollObsTarget);
+      earlyDisposeHooks.push(() => {
+        try { panelTokensResizeObserver?.disconnect?.(); } catch { }
+        panelTokensResizeObserver = null;
+      });
+    }
+  }
 
   el('h-page-prev')?.addEventListener('click', () => {
     if (activeHeatView === 'monthly') {
@@ -18686,6 +21547,14 @@ function closeAllDropdowns(exceptWrap = null) {
   };
   const escape = e => {
     if (e.key === 'Escape') {
+      if (accountsUiState.removeModal?.open) {
+        if (!accountsUiState.removeModal.busy) closeRemoveAccountModal();
+        return;
+      }
+      if (activeHeatView === 'cum' && typeof hasActiveCumLock === 'function' && hasActiveCumLock()) {
+        if (typeof clearCumLockAndRefresh === 'function') clearCumLockAndRefresh();
+        return;
+      }
       const pop = el('color-picker-popover');
       const isEscClosing = pop?.classList ? pop.classList.contains('is-closing') : pop?.getAttribute('data-closing') === 'true';
       if (pop && !pop.hidden && !isEscClosing) {
@@ -18839,13 +21708,17 @@ function closeAllDropdowns(exceptWrap = null) {
   function getFirstUseDateStr() {
     const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
     const keys = Object.keys(map).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && (map[k]?.total > 0)).sort();
+    const isScopedView = activeTokenAccountFilter !== 'all' || activeTokenSource !== 'all';
+    if (isScopedView) {
+      return keys.length ? keys[0] : null;
+    }
     const declared = ANTIGRAVITY_TOKEN_DATA.firstUseDate;
     if (declared && /^\d{4}-\d{2}-\d{2}$/.test(declared)) {
       if (keys.length && keys[0] < declared) return keys[0];
       return declared;
     }
     if (keys.length) return keys[0];
-    return formatLocalYmd(new Date());
+    return null;
   }
 
   // 计算从「实际首次使用日」起算的 12 个月（52 周 = 364 天）展示窗口，绝不展示首次使用日之前的日期
@@ -18853,7 +21726,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const firstStr = getFirstUseDateStr();
-    const firstDate = parseLocalYmd(firstStr) || today;
+    const firstDate = firstStr ? (parseLocalYmd(firstStr) || today) : today;
     const totalDays = 52 * 7; // 364 天（12 个月 / 52 周）
     const elapsedDays = Math.max(0, Math.floor((today.getTime() - firstDate.getTime()) / 86400000)) + 1;
 
@@ -18884,7 +21757,7 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     const firstBadge = el('first-use-badge');
-    if (firstBadge) firstBadge.textContent = t('tokens.firstUse', { date: formatZhYmd(firstStr) });
+    if (firstBadge) firstBadge.textContent = firstStr ? t('tokens.firstUse', { date: formatZhYmd(firstStr) }) : t('tokens.firstUseNone');
     const rangeEl = el('h-win-range');
     const prevBtn = el('h-page-prev');
     const nextBtn = el('h-page-next');
@@ -18965,29 +21838,179 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     const hasExistingData = Number(ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens) > 0;
-    const incomingKeys = Object.keys(payload.dailyMap || {});
-    const incomingTotal = Number(payload.summary?.grandTotalTokens) || incomingKeys.reduce((acc, k) => acc + (Number(payload.dailyMap[k]?.total) || 0), 0);
+    const incomingAllMap = payload.dailyMapBySource?.[activeTokenSource] || payload.dailyMapBySource?.all || payload.dailyMap || {};
+    const incomingKeys = Object.keys(incomingAllMap);
+    const incomingTotal = Number(payload.summary?.grandTotalTokens) || incomingKeys.reduce((acc, k) => acc + (Number(incomingAllMap[k]?.total) || 0), 0);
+    const hasIncomingBySourceData = Boolean(
+      payload.dailyMapBySource &&
+      typeof payload.dailyMapBySource === 'object' &&
+      Object.values(payload.dailyMapBySource).some(m => m && typeof m === 'object' && Object.keys(m).length > 0)
+    );
     const hasIncomingRefCost = Boolean(payload.referenceCost?.currentMonth?.totalCostUSD || payload.referenceCost?.all?.totalCostUSD);
-    const hasIncomingPayloadContent = incomingKeys.length > 0 || incomingTotal > 0 || hasIncomingRefCost;
+    const hasIncomingPayloadContent = incomingKeys.length > 0 || hasIncomingBySourceData || incomingTotal > 0 || hasIncomingRefCost;
     if (hasExistingData && !hasIncomingPayloadContent && !payload.isAccountSwitched && !payload.forceReset) {
       return false;
     }
 
     ANTIGRAVITY_TOKEN_DATA.rawPayload = payload;
+    syncTokenAccountFilterOptions(payload);
+
+    // 若选择了指定账号或“历史未归属”，构造彻底隔离的账本视图（全量指标、热力图、按模型与费用同步切换，绝不泄漏全局总量）
+    const isScopedAccountFilter = activeTokenAccountFilter !== 'all';
+    let viewPayload = payload;
+    if (isScopedAccountFilter) {
+      const zeroCostEstimate = {
+        pricedCostUSD: 0,
+        pricedRequestsCount: 0,
+        unpricedRequestsCount: 0,
+        pricedTokens: 0,
+        unpricedTokens: 0,
+        coveragePercent: null,
+        byModel: {},
+        byCategory: {}
+      };
+      const zeroRefCost = {
+        totalCostUSD: 0,
+        inputCostUSD: 0,
+        cacheCostUSD: 0,
+        outputCostUSD: 0,
+        inputTokens: 0,
+        cacheTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        modelDisplayName: 'Gemini 3.8 Flash',
+        matchedTier: { inputPerMillion: 0.75, cacheReadPerMillion: 0.075, outputPerMillion: 3.75 }
+      };
+      const bucket = activeTokenAccountFilter === 'unattributed'
+        ? payload.unattributedUsage
+        : payload.usageByAccount?.[activeTokenAccountFilter];
+      if (bucket && typeof bucket === 'object') {
+        const bDaily = bucket.dailyMap || {};
+        const bDailyBySrc = bucket.dailyMapBySource || {
+          all: bDaily,
+          desktop: activeTokenAccountFilter === 'unattributed' ? bDaily : {},
+          cli: {},
+          legacyUnallocated: activeTokenAccountFilter === 'unattributed' ? bDaily : {}
+        };
+        const bModelsBySrc = bucket.dailyModelMapBySource || {
+          all: {},
+          desktop: {},
+          cli: {}
+        };
+        const bCostEst = bucket.costEstimate || zeroCostEstimate;
+        const bCostMonth = bucket.costEstimateCurrentMonth || bCostEst;
+        const bCostBySrc = bucket.costEstimateBySource || {
+          all: bCostEst,
+          desktop: bCostEst,
+          cli: zeroCostEstimate
+        };
+        const bCacheBySrc = bucket.cacheReadStatsBySource || (bucket.cacheReadStats
+          ? { all: bucket.cacheReadStats, desktop: bucket.cacheReadStats, cli: null }
+          : { all: null, desktop: null, cli: null });
+        const bMonthCacheBySrc = bucket.currentMonthCacheReadStatsBySource || bCacheBySrc;
+        viewPayload = {
+          ...payload,
+          scopedAccountView: true,
+          firstUseDate: bucket.firstUseDate || null,
+          dailyMap: bDaily,
+          dailyMapBySource: bDailyBySrc,
+          dailyModelMapBySource: bModelsBySrc,
+          modelMetaByKey: bucket.modelMetaByKey || {},
+          summary: {
+            grandTotalTokens: Number(bucket.totalTokens) || 0,
+            totalInputTokens: Number(bucket.totalInputTokens) || 0,
+            totalOutputTokens: Number(bucket.totalOutputTokens) || 0,
+            totalCacheTokens: Number(bucket.totalCacheTokens) || 0,
+            todayTokens: Number(bucket.todayTokens) || 0,
+            monthTokens: Number(bucket.monthTokens) || 0,
+            yearTokens: Number(bucket.yearTokens) || 0,
+            currentMonthInput: Number(bucket.currentMonthInput) || 0,
+            currentMonthOutput: Number(bucket.currentMonthOutput) || 0,
+            currentMonthCache: Number(bucket.currentMonthCache) || 0,
+            activeDaysCount: Number(bucket.activeDaysCount) || Object.keys(bDaily).length,
+            totalConversations: Number(bucket.totalConversations ?? bucket.callCount) || 0,
+            totalSteps: Number(bucket.totalSteps ?? bucket.callCount) || 0,
+            firstUseDate: bucket.firstUseDate || null,
+            cacheReadStats: bucket.cacheReadStats || null,
+            currentMonthCacheReadStats: bucket.currentMonthCacheReadStats || bucket.cacheReadStats || null
+          },
+          costEstimate: bCostEst,
+          costEstimateCurrentMonth: bCostMonth,
+          costEstimateBySource: bCostBySrc,
+          cacheReadStatsBySource: bCacheBySrc,
+          currentMonthCacheReadStatsBySource: bMonthCacheBySrc,
+          referenceCost: bucket.referenceCost || {
+            all: { ...zeroRefCost },
+            currentMonth: { ...zeroRefCost },
+            hybrid: { ...zeroRefCost },
+            currentMonthHybrid: { ...zeroRefCost }
+          }
+        };
+      } else {
+        viewPayload = {
+          ...payload,
+          scopedAccountView: true,
+          firstUseDate: null,
+          dailyMap: {},
+          dailyMapBySource: { all: {}, desktop: {}, cli: {}, legacyUnallocated: {} },
+          dailyModelMapBySource: { all: {}, desktop: {}, cli: {} },
+          modelMetaByKey: {},
+          summary: {
+            grandTotalTokens: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCacheTokens: 0,
+            todayTokens: 0,
+            monthTokens: 0,
+            yearTokens: 0,
+            currentMonthInput: 0,
+            currentMonthOutput: 0,
+            currentMonthCache: 0,
+            activeDaysCount: 0,
+            totalConversations: 0,
+            totalSteps: 0,
+            firstUseDate: null,
+            cacheReadStats: null,
+            currentMonthCacheReadStats: null
+          },
+          costEstimate: { ...zeroCostEstimate },
+          costEstimateCurrentMonth: { ...zeroCostEstimate },
+          costEstimateBySource: { all: { ...zeroCostEstimate }, desktop: { ...zeroCostEstimate }, cli: { ...zeroCostEstimate } },
+          cacheReadStatsBySource: { all: null, desktop: null, cli: null },
+          currentMonthCacheReadStatsBySource: { all: null, desktop: null, cli: null },
+          referenceCost: {
+            all: { ...zeroRefCost },
+            currentMonth: { ...zeroRefCost },
+            hybrid: { ...zeroRefCost },
+            currentMonthHybrid: { ...zeroRefCost }
+          }
+        };
+      }
+    }
 
     const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
     const todayStr = formatLocalYmd(new Date());
     const normalized = core && typeof core.normalizeTokenHistoryPayload === 'function'
-      ? core.normalizeTokenHistoryPayload(payload, { source: activeTokenSource, todayStr })
+      ? core.normalizeTokenHistoryPayload(viewPayload, { source: activeTokenSource, todayStr, scopedAccountView: isScopedAccountFilter })
       : null;
 
     if (normalized) {
       ANTIGRAVITY_TOKEN_DATA.dailyMap = normalized.dailyMap;
       ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = normalized.dailyMapBySource;
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMap = normalized.dailyModelMap || {};
+      ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = normalized.dailyModelMapBySource || (isScopedAccountFilter ? viewPayload.dailyModelMapBySource : payload.dailyModelMapBySource) || null;
+      ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = normalized.modelMetaByKey || (isScopedAccountFilter ? viewPayload.modelMetaByKey : payload.modelMetaByKey) || null;
       ANTIGRAVITY_TOKEN_DATA.summary = normalized.summary;
       ANTIGRAVITY_TOKEN_DATA.referenceCost = normalized.referenceCost;
       ANTIGRAVITY_TOKEN_DATA.currentPeriod = normalized.currentPeriod;
-      if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
+      if (isScopedAccountFilter) {
+        ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate || viewPayload.firstUseDate || null;
+        ANTIGRAVITY_TOKEN_DATA.costEstimate = viewPayload.costEstimate;
+        ANTIGRAVITY_TOKEN_DATA.costEstimateCurrentMonth = viewPayload.costEstimateCurrentMonth;
+        ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = viewPayload.costEstimateBySource;
+      } else {
+        if (normalized.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = normalized.firstUseDate;
+      }
       if (normalized.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = normalized.updatedAt;
     } else {
       const newMap = {};
@@ -19005,6 +22028,13 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       ANTIGRAVITY_TOKEN_DATA.dailyMap = newMap;
       if (payload.dailyMapBySource) ANTIGRAVITY_TOKEN_DATA.dailyMapBySource = payload.dailyMapBySource;
+      if (payload.dailyModelMapBySource) {
+        ANTIGRAVITY_TOKEN_DATA.dailyModelMapBySource = payload.dailyModelMapBySource;
+        ANTIGRAVITY_TOKEN_DATA.dailyModelMap = payload.dailyModelMapBySource[activeTokenSource] || payload.dailyModelMapBySource.all || {};
+      } else if (payload.dailyModelMap) {
+        ANTIGRAVITY_TOKEN_DATA.dailyModelMap = payload.dailyModelMap;
+      }
+      if (payload.modelMetaByKey) ANTIGRAVITY_TOKEN_DATA.modelMetaByKey = payload.modelMetaByKey;
       if (payload.firstUseDate) ANTIGRAVITY_TOKEN_DATA.firstUseDate = payload.firstUseDate;
       if (payload.updatedAt) ANTIGRAVITY_TOKEN_DATA.updatedAt = payload.updatedAt;
       if (payload.currentPeriod) ANTIGRAVITY_TOKEN_DATA.currentPeriod = payload.currentPeriod;
@@ -19081,15 +22111,15 @@ function closeAllDropdowns(exceptWrap = null) {
       renderPlanDetail(mergedPlan);
     }
 
-    if (payload.costEstimate) {
+    if (payload.costEstimate && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimate = payload.costEstimate;
     }
-    if (payload.costEstimateCurrentMonth) {
+    if (payload.costEstimateCurrentMonth && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateCurrentMonth = payload.costEstimateCurrentMonth;
     }
-    if (payload.costEstimateBySource) {
+    if (payload.costEstimateBySource && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = payload.costEstimateBySource;
-    } else if (payload.costEstimate) {
+    } else if (payload.costEstimate && !isScopedAccountFilter) {
       ANTIGRAVITY_TOKEN_DATA.costEstimateBySource = {
         all: payload.costEstimate,
         desktop: payload.costEstimate,
@@ -19139,6 +22169,53 @@ function closeAllDropdowns(exceptWrap = null) {
     if (tYearVal) tYearVal.textContent = fmtCardM(yearTokens);
     if (tYearSub) tYearSub.textContent = t('tokens.card.yearSub', { n: totalDays });
 
+    const cs = sum.cacheReadStats || {
+      cacheStatus: (sum.totalInputTokens > 0 || sum.totalCacheTokens > 0) ? 'hit' : 'missing',
+      totalUncachedInput: Number(sum.totalInputTokens) || 0,
+      totalCacheRead: Number(sum.totalCacheTokens) || 0,
+      totalInput: (Number(sum.totalInputTokens) || 0) + (Number(sum.totalCacheTokens) || 0),
+      totalOutput: Number(sum.totalOutputTokens) || 0,
+      cacheReadPct: ((Number(sum.totalInputTokens) || 0) + (Number(sum.totalCacheTokens) || 0)) > 0
+        ? Number(((Number(sum.totalCacheTokens || 0) / ((Number(sum.totalInputTokens) || 0) + (Number(sum.totalCacheTokens) || 0))) * 100).toFixed(1))
+        : null,
+      missingCount: 0
+    };
+    const tcbInp = el('tcb-input-val');
+    const tcbCache = el('tcb-cache-val');
+    const tcbTotInp = el('tcb-total-input-val');
+    const tcbOut = el('tcb-output-val');
+    const tcbRatio = el('tcb-ratio-val');
+    const tcbRatioFill = el('tcb-ratio-bar-fill');
+    const tcbNote = el('tcb-note');
+    const unknownText = t('tokens.cache.unknown');
+    if (tcbInp) tcbInp.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalUncachedInput);
+    if (tcbCache) tcbCache.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalCacheRead);
+    if (tcbTotInp) tcbTotInp.textContent = cs.cacheStatus === 'missing' ? unknownText : fmtCardM(cs.totalInput);
+    if (tcbOut) tcbOut.textContent = fmtCardM(sum.totalOutputTokens || cs.totalOutput || 0);
+    if (tcbRatio) {
+      if (cs.cacheStatus === 'missing') tcbRatio.textContent = unknownText;
+      else if (cs.cacheStatus === 'zero_input') tcbRatio.textContent = t('tokens.cache.na');
+      else tcbRatio.textContent = cs.cacheReadPct !== null ? `${cs.cacheReadPct}%` : unknownText;
+    }
+    if (tcbRatioFill) {
+      const pctNum = (cs.cacheStatus === 'missing' || cs.cacheStatus === 'zero_input' || cs.cacheReadPct === null)
+        ? 0
+        : Math.max(0, Math.min(100, Number(cs.cacheReadPct) || 0));
+      tcbRatioFill.style.width = `${pctNum.toFixed(1)}%`;
+    }
+    if (tcbNote) {
+      tcbNote.hidden = false;
+      if (cs.cacheStatus === 'missing') {
+        tcbNote.textContent = t('tokens.cache.missingNote');
+      } else if (cs.cacheStatus === 'zero_input') {
+        tcbNote.textContent = t('tokens.cache.zeroInputNote');
+      } else if (cs.missingCount > 0) {
+        tcbNote.textContent = t('tokens.cache.partialNote', { n: cs.missingCount });
+      } else {
+        tcbNote.textContent = t('tokens.cache.weightedNote');
+      }
+    }
+
     // 聚合全周期各区间预估费用
     const allDateKeys = Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap || {});
     const nowYmd = todayStr;
@@ -19164,21 +22241,36 @@ function closeAllDropdowns(exceptWrap = null) {
     const tMonthCost = el('t-month-cost');
     const tYearCost = el('t-year-cost');
 
+    const isScopedEmptyAccount = isScopedAccountFilter && totalTokens === 0;
+    const noAcctCostStr = t('tokens.noAccountCost');
     if (tTotalCost) {
-      tTotalCost.textContent = `≈ $${totalCostAgg.totalCostUSD.toFixed(2)}${totalCostCny !== null ? ` (¥${totalCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tTotalCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `${formatUsdMetricDisplay(totalCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: totalCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tTotalCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(totalCostAgg.totalCostUSD);
     }
     if (tTodayCost) {
-      tTodayCost.textContent = `≈ $${todayCostInfo.costUSD.toFixed(2)}${todayCostCny !== null ? ` (¥${todayCostCny.toFixed(2)})` : ''}`;
+      tTodayCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : formatUsdMetricDisplay(todayCostInfo.costUSD);
+      tTodayCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(todayCostInfo.costUSD);
     }
     if (tMonthCost) {
-      tMonthCost.textContent = `≈ $${monthCostAgg.totalCostUSD.toFixed(2)}${monthCostCny !== null ? ` (¥${monthCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tMonthCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `${formatUsdMetricDisplay(monthCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: monthCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tMonthCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(monthCostAgg.totalCostUSD);
     }
     if (tYearCost) {
-      tYearCost.textContent = `≈ $${yearCostAgg.totalCostUSD.toFixed(2)}${yearCostCny !== null ? ` (¥${yearCostCny.toFixed(2)})` : ''}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tYearCost.textContent = isScopedEmptyAccount
+        ? noAcctCostStr
+        : `${formatUsdMetricDisplay(yearCostAgg.totalCostUSD)}${t('tokens.dailyAvg', { val: yearCostAgg.dailyAverageUSD.toFixed(2) })}`;
+      tYearCost.title = isScopedEmptyAccount ? '' : formatUsdMetricTooltip(yearCostAgg.totalCostUSD);
     }
 
     // 规范化已完整保留输入/缓存/输出分类，执行费用视图渲染
     renderActiveCostEstimateView();
+    renderModelUsageView();
 
     computeTimelineWindow();
     renderActiveHeatView(true);
@@ -19244,7 +22336,7 @@ function closeAllDropdowns(exceptWrap = null) {
           settingsRes = out.result;
         } catch { }
       }
-      if (!settingsRes && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
+      if (!settingsRes?.ok && typeof window !== 'undefined' && window.__AGContextMeterSettings?.ok) {
         settingsRes = window.__AGContextMeterSettings;
       }
 
@@ -19273,6 +22365,17 @@ function closeAllDropdowns(exceptWrap = null) {
 
         if (settingsRes.contextPreferences && typeof settingsRes.contextPreferences === 'object') {
           contextPreferencesMap = { ...settingsRes.contextPreferences };
+        }
+        if (typeof window !== 'undefined') {
+          window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
+            ok: true,
+            ...(settingsRes.customPlan ? { customPlan: { ...settingsRes.customPlan } } : {}),
+            uiPreferences: { ...(settingsRes.uiPreferences || {}) },
+            contextScopeMode,
+            contextUnifiedPreference: { ...contextUnifiedPreference },
+            contextPreferences: { ...contextPreferencesMap }
+          };
         }
         syncContextPreferencesCache(contextPreferencesMap);
         renderHeaderModelDropdown();
@@ -19324,8 +22427,11 @@ function closeAllDropdowns(exceptWrap = null) {
         lastSavedCustomPlan = { ...settingsRes.customPlan };
         if (typeof window !== 'undefined') {
           window.__AGContextMeterSettings = {
+            ...(window.__AGContextMeterSettings || {}),
             ok: true,
             customPlan: { ...settingsRes.customPlan },
+            contextScopeMode,
+            contextUnifiedPreference: { ...contextUnifiedPreference },
             contextPreferences: { ...contextPreferencesMap }
           };
         }
@@ -19506,7 +22612,8 @@ function closeAllDropdowns(exceptWrap = null) {
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8-1';
+    const currentDisplayVer = formatDisplayVersion(currentVer);
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
     if (!hasBridge) {
@@ -19514,7 +22621,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.unavailableTitle');
-      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.unavailableVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.unavailableBody');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -19527,7 +22634,7 @@ function closeAllDropdowns(exceptWrap = null) {
       cachedLatestRelease = null;
       showUpdatePopover(trigger);
       if (titleEl) titleEl.textContent = t('update.checkingTitle');
-      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.checkingVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.connecting');
       if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -19549,7 +22656,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.failedTitle');
-        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+        if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
         const errMsg = res?.error ? translateBackendText(res.error) : t('update.failedFetch');
         if (bodyEl) bodyEl.textContent = t('update.failedBody', { err: errMsg });
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
@@ -19560,12 +22667,13 @@ function closeAllDropdowns(exceptWrap = null) {
 
       if (res.hasUpdate && res.latestVersion) {
         cachedLatestRelease = res;
+        const nextDisplayVer = formatDisplayVersion(res.latestVersion);
         if (dot) dot.style.display = 'block';
         if (dotCtx) dotCtx.style.display = 'block';
         if (titleEl) titleEl.textContent = t('update.foundTitle');
-        if (verEl) verEl.textContent = `v${res.currentVersion || currentVer} → v${res.latestVersion}`;
+        if (verEl) verEl.textContent = `${formatDisplayVersion(res.currentVersion || currentVer)} → ${nextDisplayVer}`;
         if (bodyEl) {
-          bodyEl.textContent = t('update.foundBody', { ver: res.latestVersion, notes: res.releaseNotes || t('update.defaultNotes') });
+          bodyEl.textContent = t('update.foundBody', { ver: nextDisplayVer, notes: res.releaseNotes || t('update.defaultNotes') });
         }
         if (applyBtn) {
           applyBtn.disabled = false;
@@ -19580,14 +22688,15 @@ function closeAllDropdowns(exceptWrap = null) {
         if (dotCtx) dotCtx.style.display = 'none';
         if (titleEl) titleEl.textContent = t('update.latestTitle');
         const effectiveCurrent = res.installedVersion || res.currentVersion || currentVer;
-        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveCurrent });
+        const effectiveDisplayVer = formatDisplayVersion(effectiveCurrent);
+        if (verEl) verEl.textContent = t('update.latestVer', { ver: effectiveDisplayVer });
         const needsDiskRestart = Boolean(res.diskPendingRestart);
         if (needsDiskRestart) {
           pendingUpdateRestart = true;
         }
         const updateStatusText = needsDiskRestart
-          ? t('update.diskPending', { ver: effectiveCurrent })
-          : t('update.latestBody', { ver: effectiveCurrent });
+          ? t('update.diskPending', { ver: effectiveDisplayVer })
+          : t('update.latestBody', { ver: effectiveDisplayVer });
         if (bodyEl) bodyEl.textContent = updateStatusText;
         if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
         setUpdateRestartVisible(needsDiskRestart);
@@ -19602,7 +22711,7 @@ function closeAllDropdowns(exceptWrap = null) {
       if (dot) dot.style.display = 'none';
       if (dotCtx) dotCtx.style.display = 'none';
       if (titleEl) titleEl.textContent = t('update.failedTitle');
-      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentVer });
+      if (verEl) verEl.textContent = t('update.failedVer', { ver: currentDisplayVer });
       if (bodyEl) bodyEl.textContent = t('update.failedNetBody', { err: translateBackendText(err.message) });
       if (applyBtn) { applyBtn.style.display = 'none'; applyBtn.disabled = true; }
       setUpdateRestartVisible(false);
@@ -19651,10 +22760,11 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.7-2';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.8.8-1';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
+        const nextDisplayVer = formatDisplayVersion(nextVer);
         const vEl = el('v');
-        if (vEl && res.liveInjected) vEl.textContent = `v${nextVer}`;
+        if (vEl && res.liveInjected) vEl.textContent = nextDisplayVer;
 
         if (dot) dot.style.display = 'none';
         if (dotCtx) dotCtx.style.display = 'none';
@@ -19662,11 +22772,11 @@ function closeAllDropdowns(exceptWrap = null) {
         const fullyHotReloaded = Boolean(res.liveInjected && res.backendHotReloaded);
         pendingUpdateRestart = !fullyHotReloaded;
         if (titleEl) titleEl.textContent = t('update.doneTitle');
-        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextVer });
+        if (verEl) verEl.textContent = t('update.doneVer', { ver: nextDisplayVer });
         if (bodyEl) {
           bodyEl.textContent = fullyHotReloaded
-            ? t('update.doneHotFull', { ver: nextVer })
-            : (res.liveInjected ? t('update.doneHot', { ver: nextVer }) : t('update.doneDisk', { ver: nextVer }));
+            ? t('update.doneHotFull', { ver: nextDisplayVer })
+            : (res.liveInjected ? t('update.doneHot', { ver: nextDisplayVer }) : t('update.doneDisk', { ver: nextDisplayVer }));
         }
         if (applyBtn) {
           applyBtn.textContent = t('update.btnUpdated');
@@ -19679,17 +22789,17 @@ function closeAllDropdowns(exceptWrap = null) {
         }
 
         if (fullyHotReloaded) {
-          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextVer });
+          if (statusEl) statusEl.textContent = t('update.doneHotFull', { ver: nextDisplayVer });
           if (backendStatus.backendVersion === nextVer) {
             backendStatus.backendVersionMismatch = false;
           }
         } else if (res.liveInjected) {
-          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextVer });
+          if (statusEl) statusEl.textContent = t('update.doneHot', { ver: nextDisplayVer });
         } else {
           if (statusEl) {
             statusEl.textContent = hostSupportsRestart
-              ? t('update.doneDisk', { ver: nextVer })
-              : `${t('update.doneDisk', { ver: nextVer })} ${t('client.restart.hostNotSupported')}`;
+              ? t('update.doneDisk', { ver: nextDisplayVer })
+              : `${t('update.doneDisk', { ver: nextDisplayVer })} ${t('client.restart.hostNotSupported')}`;
           }
         }
         if (typeof renderQuotaBoard === 'function') {
@@ -19771,12 +22881,72 @@ function closeAllDropdowns(exceptWrap = null) {
     }
   });
 
-function renderHeatmapGrid(forceRebuild = false) {
+var cumLockedKey = null;
+  var cumHoveredKey = null;
+  var cumExpandedWeekKey = null;
+  var cumLinkedDailyDate = null;
+  var _lastCumSummary = null;
+
+  function resetCumSelectionState() {
+    cumLockedKey = null;
+    cumHoveredKey = null;
+    cumExpandedWeekKey = null;
+    cumLinkedDailyDate = null;
+  }
+
+  function hasActiveCumLock() {
+    return Boolean(cumLockedKey);
+  }
+
+  function clearCumLockAndRefresh() {
+    if (!cumLockedKey) return false;
+    cumLockedKey = null;
+    cumExpandedWeekKey = null;
+    cumLinkedDailyDate = null;
+    if (typeof hidePopover === 'function') hidePopover();
+    if (activeHeatView === 'cum') renderHeatmapCum();
+    return true;
+  }
+
+  function formatCumShortDate(ymd) {
+    const parts = String(ymd || '').split('-');
+    if (parts.length !== 3) return String(ymd || '');
+    return `${parts[1]}.${parts[2]}`;
+  }
+
+  function locateDayInDailyHeatmap(ymd) {
+    if (!ymd) return;
+    cumLinkedDailyDate = ymd;
+    switchHeatView('daily');
+    const colsBox = el('h-grid-cols');
+    if (colsBox) {
+      const cells = [];
+      for (const col of Array.from(colsBox.children || [])) {
+        for (const c of Array.from(col.children || [])) {
+          if (c.getAttribute?.('data-date') === ymd) cells.push(c);
+        }
+      }
+      if (cells.length === 0 && typeof heatPageOffset !== 'undefined') {
+        // 如果目标日因旧分页偏移不在当前页，回到最新页或定位并重绘
+        heatPageOffset = 0;
+        renderHeatmapGrid(true);
+      }
+      const targetCell = (Array.from(colsBox.children || [])
+        .flatMap(col => Array.from(col.children || []))
+        .find(c => c.getAttribute?.('data-date') === ymd));
+      if (targetCell) {
+        targetCell.scrollIntoView?.({ inline: 'center', block: 'nearest' });
+        targetCell.click?.();
+      }
+    }
+  }
+
+  function renderHeatmapGrid(forceRebuild = false) {
     const colsBox = el('h-grid-cols');
     const monthsBox = el('h-months');
     if (!colsBox || !monthsBox) return;
     const win = computeTimelineWindow();
-    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}`;
+    const sig = `${win.firstStr}:${formatLocalYmd(win.winStart)}:${Object.keys(ANTIGRAVITY_TOKEN_DATA.dailyMap).length}:${cumLinkedDailyDate || ''}`;
     if (!forceRebuild && colsBox.children.length > 0 && colsBox.getAttribute('data-sig') === sig) return;
 
     colsBox.replaceChildren();
@@ -19784,13 +22954,16 @@ function renderHeatmapGrid(forceRebuild = false) {
     colsBox.setAttribute('data-sig', sig);
 
     const todayKey = formatLocalYmd(win.today);
+    const firstKey = win.firstStr && win.firstStr !== '--' ? win.firstStr : '';
     const list = [];
     for (let i = 0; i < win.totalDays; i++) {
       const d = addDays(win.winStart, i);
       const key = formatLocalYmd(d);
       const isFuture = d.getTime() > win.today.getTime();
       const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[key];
-      list.push({ date: d, key, tokens: rec ? rec.total : 0, rec, isFuture, isToday: key === todayKey });
+      const tokens = rec ? rec.total : 0;
+      const isUnactivated = !isFuture && tokens === 0 && Boolean(firstKey && key < firstKey);
+      list.push({ date: d, key, tokens, rec, isFuture, isToday: key === todayKey, isUnactivated });
     }
 
     const monthMarkers = [];
@@ -19813,7 +22986,15 @@ function renderHeatmapGrid(forceRebuild = false) {
       slice.forEach(item => {
         const cell = document.createElement('div');
         const lvl = getLvl(item.tokens);
-        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isToday ? ' is-today' : ''}`;
+        const isLinked = Boolean(cumLinkedDailyDate && item.key === cumLinkedDailyDate);
+        cell.className = `heat-cell lvl-${lvl}${item.isFuture ? ' is-future' : ''}${item.isUnactivated ? ' is-unactivated' : ''}${item.isToday ? ' is-today' : ''}${isLinked ? ' is-cum-linked' : ''}`;
+        if (item.tokens > 0 && typeof getContinuousHeatColor === 'function') {
+          const contCol = getContinuousHeatColor(item.tokens, 'heat');
+          if (contCol) {
+            cell.style.backgroundColor = contCol;
+            cell.setAttribute('data-heat-color', contCol);
+          }
+        }
         cell.setAttribute('data-date', item.key);
         cell.setAttribute('data-tokens', String(item.tokens));
 
@@ -19821,12 +23002,15 @@ function renderHeatmapGrid(forceRebuild = false) {
           const d = item.date;
           const dateLabel = currentPanelLanguage === 'en'
             ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-            : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+            : (currentPanelLanguage === 'zh-TW'
+              ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
+              : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`);
           heatPopDate.textContent = `${dateLabel}${item.isToday ? t('heat.today') : (item.key === win.firstStr ? t('heat.firstUse') : '')}`;
           const costInfo = getDailyModelCost(item.rec, item.key, activeCostModel, { mode: activeCostMode });
-          const cny = convertToCNY(costInfo.costUSD, 'USD');
-          const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-          heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heat.future') : '0 Tokens');
+          const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
+          heatPopVal.textContent = item.tokens > 0
+            ? `${fmtYi(item.tokens)} Tokens${costStr}`
+            : (item.isFuture ? t('heat.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
           if (item.rec) {
             heatPopDet.innerHTML = `
               <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(item.rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
@@ -19870,11 +23054,12 @@ function renderHeatmapGrid(forceRebuild = false) {
     box.replaceChildren();
 
     const scale = getEffectiveHeatmapScale();
-    const [cEmpty, c1, c2, c3, c4] = scale;
+    const [cEmpty] = scale;
     const win = computeTimelineWindow();
+    const todayTs = win.today.getTime();
     const totalWeeks = 52;
     const weeksData = [];
-    let max = 1;
+    let maxWeekTokens = 0;
 
     for (let c = 0; c < totalWeeks; c++) {
       let sum = 0;
@@ -19887,20 +23072,57 @@ function renderHeatmapGrid(forceRebuild = false) {
         const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
         if (rec) sum += rec.total;
       }
-      if (sum > max) max = sum;
-      weeksData.push({ sum, sDate, eDate, startKey: formatLocalYmd(sDate) });
+      const isFutureWeek = Boolean(sDate && sDate.getTime() > todayTs && sum === 0);
+      if (!isFutureWeek && sum > maxWeekTokens) maxWeekTokens = sum;
+      weeksData.push({ sum, sDate, eDate, startKey: formatLocalYmd(sDate), isFutureWeek });
     }
+
+    const core = globalThis.__AGContextMeterCore || {};
+    const chartPxHeight = 96;
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(maxWeekTokens, 'weekly')
+      : { tier: '400M', anchor: 400e6, hCap: 0.84, refTicks: [4e6, 40e6, 400e6], overflowThreshold: 2e9 };
+    box.setAttribute('data-scale-tier', env.tier || '');
+
+    // 绘制右侧量级参考线（统一调用 mapBarHeightPx，确保刻度与柱图位置精确一致）
+    const ticks = Array.isArray(env.refTicks) ? env.refTicks : [];
+    const lastTickVal = ticks.length ? ticks[ticks.length - 1] : 0;
+    const visibleTicks = ticks.length > 3 ? [ticks[0], ticks[ticks.length - 2], lastTickVal] : ticks;
+    visibleTicks.forEach(tickVal => {
+      if (!(tickVal > 0) || typeof core.mapBarHeightPx !== 'function') return;
+      const tickRes = core.mapBarHeightPx(tickVal, env, chartPxHeight, { minPx: 3.0, scaleKind: 'weekly' });
+      const line = document.createElement('div');
+      line.className = 'w-ref-line';
+      line.style.bottom = `${(3 + tickRes.height).toFixed(2)}px`;
+      const lbl = document.createElement('span');
+      lbl.className = 'w-ref-lbl';
+      const isCeilingOverflowTick = Boolean(env.overflow && tickVal === lastTickVal);
+      lbl.textContent = isCeilingOverflowTick ? `${formatCompactTokenCount(tickVal)}+` : formatCompactTokenCount(tickVal);
+      line.appendChild(lbl);
+      box.appendChild(line);
+    });
 
     weeksData.forEach(w => {
       const col = document.createElement('div');
       col.className = 'w-bar-col';
       col.setAttribute('data-week-start', w.startKey);
+      col.setAttribute('data-tokens', String(w.sum));
       const fill = document.createElement('div');
-      fill.className = 'w-bar-fill';
-      const pct = Math.max(3, (w.sum / max) * 100);
-      fill.style.height = `${pct}%`;
-      const lvl = getLvlForRange(w.sum, 'week', max);
-      fill.style.backgroundColor = w.sum === 0 ? cEmpty : (scale[lvl] || c4);
+      if (w.sum <= 0 || w.isFutureWeek) {
+        fill.className = 'w-bar-fill is-empty';
+        fill.style.height = '1px';
+        fill.style.backgroundColor = cEmpty;
+      } else {
+        const barRes = typeof core.mapBarHeightPx === 'function'
+          ? core.mapBarHeightPx(w.sum, env, chartPxHeight, { minPx: 3.0, scaleKind: 'weekly' })
+          : { height: Math.max(3, (w.sum / Math.max(1, maxWeekTokens)) * chartPxHeight), overflow: false };
+        fill.className = `w-bar-fill${barRes.overflow ? ' is-overflow' : ''}`;
+        fill.style.height = `${barRes.height.toFixed(2)}px`;
+        const colHex = typeof getContinuousHeatColor === 'function'
+          ? getContinuousHeatColor(w.sum, 'weekly')
+          : scale[4];
+        fill.style.backgroundColor = colHex || scale[4];
+      }
       col.appendChild(fill);
 
       const showPop = () => {
@@ -19910,10 +23132,9 @@ function renderHeatmapGrid(forceRebuild = false) {
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
         });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(costAgg.totalCostUSD, { detail: true })}` : '';
         heatPopDate.textContent = `${w.sDate.getFullYear()}.${w.sDate.getMonth() + 1}.${w.sDate.getDate()} - ${w.eDate.getMonth() + 1}.${w.eDate.getDate()}`;
-        heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : '0 Tokens';
+        heatPopVal.textContent = w.sum > 0 ? `${fmtYi(w.sum)} Tokens${costStr}` : (w.isFutureWeek ? t('tokens.heat.futureTip') : '0 Tokens');
         heatPopDet.innerHTML = `<span>${t('heat.weeklyTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
         heatPopDet.style.display = 'block';
         const r = col.getBoundingClientRect();
@@ -19935,122 +23156,552 @@ function renderHeatmapGrid(forceRebuild = false) {
   }
 
   function renderHeatmapCum() {
-    const cvs = el('h-cum-canvas');
-    if (!cvs || !cvs.getContext) return;
-    const ctx = cvs.getContext('2d');
-    const rect = cvs.getBoundingClientRect ? cvs.getBoundingClientRect() : { width: 670 };
-    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-    const width = (rect.width || 670);
-    const height = 100;
-    cvs.width = width * dpr;
-    cvs.height = height * dpr;
-    ctx.scale(dpr, dpr);
+    const box = el('h-cum-box');
+    if (!box) return;
+    box.replaceChildren();
 
-    ctx.clearRect(0, 0, width, height);
-
+    const core = globalThis.__AGContextMeterCore || {};
     const win = computeTimelineWindow();
     const map = ANTIGRAVITY_TOKEN_DATA.dailyMap || {};
-    const winStartKey = formatLocalYmd(win.winStart);
-    // 计算窗口起点之前的历史滚存基数（支持跨年翻页时累计曲线连续）
-    let running = 0;
-    for (const [k, rec] of Object.entries(map)) {
-      if (k < winStartKey && rec?.total > 0) running += rec.total;
-    }
-
+    const todayKey = formatLocalYmd(win.today);
+    // 当前窗口截断到今天；历史翻页窗口展示到该区间末日
     const activeEnd = win.winEnd.getTime() > win.today.getTime() ? win.today : win.winEnd;
-    const plotDays = Math.max(1, Math.floor((activeEnd.getTime() - win.winStart.getTime()) / 86400000) + 1);
-    const points = [];
+    const startKey = formatLocalYmd(win.winStart);
+    const endKey = formatLocalYmd(activeEnd);
 
-    for (let i = 0; i < plotDays; i++) {
-      const d = addDays(win.winStart, i);
-      const k = formatLocalYmd(d);
-      const rec = map[k];
-      if (rec) running += rec.total;
-      points.push({ date: d, key: k, val: running });
+    const rangeEl = el('h-win-range');
+    if (rangeEl) rangeEl.textContent = `${formatDotYmd(win.winStart)} – ${formatDotYmd(activeEnd)}`;
+
+    const summary = typeof core.computeCumulativeStripSummary === 'function'
+      ? core.computeCumulativeStripSummary(map, startKey, endKey)
+      : {
+        startDate: startKey, endDate: endKey, totalDays: 0, activeDays: 0, zeroDays: 0,
+        intervalTotal: 0, grouping: 'daily', dailyEntries: [], segments: [], topPeaks: [],
+        mergedPeakSpans: [], peakDay: null, peakWeek: null, concentration: null,
+        concentrationOmittedReason: 'empty', ruler: { status: 'zero', pct: 0, value: 0, ticks: [] }
+      };
+    _lastCumSummary = summary;
+
+    // 切换账号/区间后若锁定键不再属于当前窗口，自动清理失效选中项
+    if (cumLockedKey && !summary.segments.some(s => s.key === cumLockedKey)) {
+      cumLockedKey = null;
+      cumExpandedWeekKey = null;
+    }
+    if (cumHoveredKey && !summary.segments.some(s => s.key === cumHoveredKey)) {
+      cumHoveredKey = null;
     }
 
-    const max = running || 1;
-    const denom = Math.max(1, points.length - 1);
-    const step = points.length === 1 ? width : (width / denom);
-
-    const scale = getEffectiveHeatmapScale();
-    const strokeColor = customColors.tokenAccent || scale[4];
-    const strokeRgb = hexToRgb(normalizeHex(strokeColor)) || { r: 192, g: 132, b: 252 };
-    const grad = ctx.createLinearGradient(0, 0, 0, height);
-    grad.addColorStop(0, `rgba(${strokeRgb.r}, ${strokeRgb.g}, ${strokeRgb.b}, 0.36)`);
-    grad.addColorStop(1, `rgba(${strokeRgb.r}, ${strokeRgb.g}, ${strokeRgb.b}, 0.02)`);
-
-    ctx.beginPath();
-    ctx.moveTo(0, height);
-    points.forEach((pt, idx) => {
-      const x = points.length === 1 ? width / 2 : idx * step;
-      const y = height - (pt.val / max) * (height - 12);
-      ctx.lineTo(x, y);
+    const rangeDates = summary.dailyEntries.map(d => d.date);
+    const costAgg = calculateIntervalCost(map, rangeDates, activeCostModel, {
+      mode: activeCostMode,
+      todayStr: todayKey
     });
-    if (points.length === 1) {
-      const y = height - (points[0].val / max) * (height - 12);
-      ctx.lineTo(width, y);
-    }
-    ctx.lineTo(width, height);
-    ctx.fillStyle = grad;
-    ctx.fill();
+    const costText = formatUsdMetricDisplay(costAgg.totalCostUSD);
 
-    ctx.beginPath();
-    points.forEach((pt, idx) => {
-      const x = points.length === 1 ? 0 : idx * step;
-      const y = height - (pt.val / max) * (height - 12);
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    const scrollBox = el('h-scroll-box') || box.parentElement;
+    const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
+    const W = (rect && rect.width > 120) ? rect.width : 670;
+    const isNarrow = W < 460;
+
+    const rootEl = document.createElement('div');
+    rootEl.className = `cum-root${isNarrow ? ' is-narrow' : ''}`;
+    rootEl.setAttribute('data-grouping', summary.grouping);
+    rootEl.setAttribute('data-total-days', String(summary.totalDays));
+    rootEl.setAttribute('data-interval-total', String(summary.intervalTotal));
+
+    // 1. 顶部数字行（总量与参考金额各只在此处显示一次）
+    const headRow = document.createElement('div');
+    headRow.className = 'cum-summary-head';
+
+    const headLeft = document.createElement('div');
+    headLeft.className = 'cum-head-left';
+
+    const totalBig = document.createElement('span');
+    totalBig.className = 'cum-total-big';
+    totalBig.id = 'cum-head-total';
+    totalBig.textContent = `${fmtYi(summary.intervalTotal)} Tokens`;
+    totalBig.title = `${summary.intervalTotal.toLocaleString()} Tokens`;
+
+    const metaText = document.createElement('span');
+    metaText.className = 'cum-meta-text';
+    metaText.id = 'cum-head-meta';
+    const rangeTxt = t('tokens.cum.daysMeta', {
+      start: formatCumShortDate(summary.startDate),
+      end: formatCumShortDate(summary.endDate),
+      total: summary.totalDays
     });
-    if (points.length === 1) {
-      const y = height - (points[0].val / max) * (height - 12);
-      ctx.lineTo(width, y);
-    }
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    const activeTxt = t('tokens.cum.activeMeta', { active: summary.activeDays, zero: summary.zeroDays });
+    metaText.textContent = summary.totalDays < 7
+      ? `${rangeTxt} · ${t('tokens.cum.recordDaysShort', { total: summary.totalDays })} · ${activeTxt}`
+      : `${rangeTxt} · ${activeTxt}`;
 
-    cvs.onmousemove = e => {
-      const r = cvs.getBoundingClientRect();
-      const mouseX = e.clientX - r.left;
-      const idx = points.length === 1 ? 0 : Math.min(points.length - 1, Math.max(0, Math.round(mouseX / step)));
-      const pt = points[idx];
-      const cumDates = [];
-      for (const k of Object.keys(map)) {
-        if (k <= pt.key) cumDates.push(k);
-      }
-      const costAgg = calculateIntervalCost(map, cumDates, activeCostModel, {
-        mode: activeCostMode,
-        todayStr: formatLocalYmd(win.today)
+    headLeft.appendChild(totalBig);
+    headLeft.appendChild(metaText);
+
+    const headCost = document.createElement('span');
+    headCost.className = 'cum-head-cost';
+    headCost.id = 'cum-head-cost';
+    headCost.textContent = costText;
+    headCost.title = formatUsdMetricTooltip(costAgg.totalCostUSD);
+
+    headRow.appendChild(headLeft);
+    headRow.appendChild(headCost);
+    rootEl.appendChild(headRow);
+
+    // 2. 跨账号共用的对数量级尺 (10M / 100M / 1B / 10B / 100B)
+    const rulerCard = document.createElement('div');
+    rulerCard.className = 'cum-ruler-card';
+    rulerCard.setAttribute('data-ruler-status', summary.ruler.status);
+
+    const rulerTop = document.createElement('div');
+    rulerTop.className = 'cum-ruler-top';
+    const rulerLbl = document.createElement('span');
+    rulerLbl.textContent = t('tokens.cum.rulerLabel');
+    const rulerBadge = document.createElement('span');
+    rulerBadge.className = 'cum-ruler-badge';
+    rulerBadge.id = 'cum-ruler-badge';
+    if (summary.ruler.status === 'zero') {
+      rulerBadge.classList.add('is-zero');
+      rulerBadge.textContent = t('tokens.cum.zeroVal');
+    } else if (summary.ruler.status === 'below_min') {
+      rulerBadge.classList.add('is-below-min');
+      rulerBadge.textContent = t('tokens.cum.belowMin', { val: fmtYi(summary.intervalTotal) });
+    } else if (summary.ruler.status === 'above_max') {
+      rulerBadge.classList.add('is-above-max');
+      rulerBadge.textContent = t('tokens.cum.aboveMax', { val: fmtYi(summary.intervalTotal) });
+    } else {
+      rulerBadge.textContent = fmtYi(summary.intervalTotal);
+    }
+    rulerTop.appendChild(rulerLbl);
+    rulerTop.appendChild(rulerBadge);
+    rulerCard.appendChild(rulerTop);
+
+    const rulerWrap = document.createElement('div');
+    rulerWrap.className = 'cum-ruler-track-wrap';
+    const rulerTrack = document.createElement('div');
+    rulerTrack.className = 'cum-ruler-track';
+    rulerWrap.appendChild(rulerTrack);
+
+    (summary.ruler.ticks || []).forEach((tk, idx, arr) => {
+      const tickEl = document.createElement('div');
+      tickEl.className = 'cum-ruler-tick';
+      tickEl.style.left = `${tk.pct}%`;
+      if (idx === 0) tickEl.setAttribute('data-edge', 'start');
+      else if (idx === arr.length - 1) tickEl.setAttribute('data-edge', 'end');
+      if (idx === 1 || idx === 3) tickEl.setAttribute('data-mid', 'true');
+      const tickLbl = document.createElement('span');
+      tickLbl.className = 'cum-ruler-tick-lbl';
+      tickLbl.textContent = tk.label;
+      tickEl.appendChild(tickLbl);
+      rulerWrap.appendChild(tickEl);
+    });
+
+    const marker = document.createElement('div');
+    marker.className = `cum-ruler-marker${summary.ruler.status === 'below_min' ? ' is-below-min' : ''}${summary.ruler.status === 'above_max' ? ' is-above-max' : ''}${summary.ruler.status === 'zero' ? ' is-zero' : ''}`;
+    marker.id = 'cum-ruler-marker';
+    marker.style.left = `${summary.ruler.pct.toFixed(2)}%`;
+    marker.setAttribute('data-ruler-pct', summary.ruler.pct.toFixed(2));
+    marker.setAttribute('data-ruler-status', summary.ruler.status);
+    const tri = document.createElement('div');
+    tri.className = 'cum-ruler-tri';
+    marker.appendChild(tri);
+    rulerWrap.appendChild(marker);
+    rulerCard.appendChild(rulerWrap);
+    rootEl.appendChild(rulerCard);
+
+    // 3. 空态处理（总量为 0，避免除零）
+    if (summary.intervalTotal <= 0) {
+      const emptyBox = document.createElement('div');
+      emptyBox.className = 'cum-empty-state';
+      emptyBox.id = 'cum-empty-state';
+      const emptyTitle = document.createElement('div');
+      emptyTitle.className = 'cum-empty-title';
+      emptyTitle.textContent = t('tokens.cum.emptyTitle');
+      const emptySub = document.createElement('div');
+      emptySub.className = 'cum-empty-sub';
+      emptySub.textContent = t('tokens.cum.emptySub', { days: summary.totalDays });
+      emptyBox.appendChild(emptyTitle);
+      emptyBox.appendChild(emptySub);
+      rootEl.appendChild(emptyBox);
+      box.appendChild(rootEl);
+      updateSummaryBar('cum', rangeDates);
+      return;
+    }
+
+    // 4. 主图：比例时间带 + 高峰标签 + 连接线 + 等距日期轴
+    const stripSection = document.createElement('div');
+    stripSection.className = 'cum-strip-section';
+
+    const peakChipsRow = document.createElement('div');
+    peakChipsRow.className = 'cum-peak-chips';
+    peakChipsRow.id = 'cum-peak-chips';
+    summary.mergedPeakSpans.forEach(sp => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `cum-peak-chip${cumLockedKey && sp.itemKeys.includes(cumLockedKey) ? ' is-active' : ''}`;
+      const rangeStr = sp.startDate === sp.endDate
+        ? formatCumShortDate(sp.startDate)
+        : `${formatCumShortDate(sp.startDate)}–${formatCumShortDate(sp.endDate)}`;
+      chip.textContent = t('tokens.cum.peakSpanFmt', {
+        range: rangeStr,
+        pct: sp.sharePct >= 10 ? sp.sharePct.toFixed(0) : sp.sharePct.toFixed(1)
       });
-      const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-      const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
-      const cumDateLabel = currentPanelLanguage === 'en'
-        ? `${pt.date.getFullYear()}-${String(pt.date.getMonth() + 1).padStart(2, '0')}-${String(pt.date.getDate()).padStart(2, '0')}`
-        : `${pt.date.getFullYear()}年${pt.date.getMonth() + 1}月${pt.date.getDate()}日`;
-      heatPopDate.textContent = `${cumDateLabel}${t('heat.cumSuffix')}`;
-      heatPopVal.textContent = `${fmtYi(pt.val)} Tokens${costStr}`;
-      heatPopDet.innerHTML = `<span>${t('heat.cumTotal', { avg: costAgg.dailyAverageUSD.toFixed(2) })}</span>`;
+      chip.addEventListener('click', () => {
+        const firstKey = sp.itemKeys[0];
+        cumLockedKey = (cumLockedKey === firstKey) ? null : firstKey;
+        if (summary.grouping === 'weekly') cumExpandedWeekKey = cumLockedKey;
+        renderHeatmapCum();
+      });
+      peakChipsRow.appendChild(chip);
+    });
+    if (summary.grouping === 'weekly') {
+      const grpHint = document.createElement('span');
+      grpHint.className = 'cum-group-hint';
+      grpHint.textContent = t('tokens.cum.weekGroupHint', { n: summary.segments.length });
+      peakChipsRow.appendChild(grpHint);
+    }
+    stripSection.appendChild(peakChipsRow);
+
+    const stripEl = document.createElement('div');
+    stripEl.className = 'cum-strip';
+    stripEl.id = 'cum-strip';
+
+    const createSvgNode = tag => {
+      if (typeof document !== 'undefined' && typeof document.createElementNS === 'function') {
+        return document.createElementNS('http://www.w3.org/2000/svg', tag);
+      }
+      return document.createElement(tag);
+    };
+    const connSvg = createSvgNode('svg');
+    connSvg.setAttribute('class', 'cum-connectors-svg');
+    connSvg.setAttribute('viewBox', '0 0 1000 18');
+    connSvg.setAttribute('preserveAspectRatio', 'none');
+
+    const axisRow = document.createElement('div');
+    axisRow.className = 'cum-axis-row';
+    axisRow.id = 'cum-axis-row';
+
+    const isLight = typeof resolveEffectiveTheme === 'function' && resolveEffectiveTheme() === 'light';
+    const segPaletteDark = ['#4c1d95', '#5b21b6', '#6d28d9', '#7c3aed'];
+    const segPaletteLight = ['#7c3aed', '#6d28d9', '#8b5cf6', '#5b21b6'];
+    const segPalette = isLight ? segPaletteLight : segPaletteDark;
+
+    const showSegPop = (seg, anchorNode) => {
+      const segDates = seg.days.map(d => d.date);
+      const segCost = calculateIntervalCost(map, segDates, activeCostModel, { mode: activeCostMode, todayStr: todayKey });
+      const costSuffix = segCost.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(segCost.totalCostUSD, { detail: true })}` : '';
+      const dateTitle = seg.startDate === seg.endDate
+        ? seg.startDate
+        : `${seg.startDate} – ${seg.endDate} (${seg.daysCount}d)`;
+      heatPopDate.textContent = `${dateTitle}${t('heat.cumSuffix')}`;
+      const deltaPrefix = summary.grouping === 'weekly' ? t('tokens.cum.weekSumLbl') : t('tokens.heat.cumDeltaLbl');
+      heatPopVal.textContent = seg.tokens > 0
+        ? `${deltaPrefix}: +${fmtYi(seg.tokens)} (${seg.sharePct.toFixed(1)}%)${costSuffix}`
+        : `0 Tokens (0.0%)`;
+      heatPopDet.innerHTML = `<span>${t('tokens.heat.cumTotalLbl')}: ${fmtYi(seg.cumulativeTokens)} Tokens (${summary.intervalTotal > 0 ? ((seg.cumulativeTokens / summary.intervalTotal) * 100).toFixed(1) : '0.0'}%)</span>`;
       heatPopDet.style.display = 'block';
-      heatPop.style.left = `${e.clientX}px`;
-      heatPop.style.top = `${r.top + (height - (pt.val / max) * (height - 12)) - 6}px`;
+      const r = anchorNode && anchorNode.getBoundingClientRect ? anchorNode.getBoundingClientRect() : { left: 100, top: 100, width: 20 };
+      heatPop.style.left = `${r.left + (r.width || 0) / 2}px`;
+      heatPop.style.top = `${r.top - 6}px`;
       heatPop.style.opacity = '1';
     };
-    cvs.onmouseleave = hidePopover;
 
-    const allWinDates = [];
-    for (let i = 0; i < win.totalDays; i++) allWinDates.push(formatLocalYmd(addDays(win.winStart, i)));
-    updateSummaryBar('cum', allWinDates);
+    const segNodeMap = new Map();
+    const axisNodeMap = new Map();
+    const connNodeMap = new Map();
+
+    const syncCumActiveVisuals = () => {
+      const focusKey = cumHoveredKey || cumLockedKey || null;
+      summary.segments.forEach(s => {
+        const segEl = segNodeMap.get(s.key);
+        const axEl = axisNodeMap.get(s.key);
+        const lnEl = connNodeMap.get(s.key);
+        const isAct = Boolean(focusKey && s.key === focusKey);
+        const isDim = Boolean(focusKey && s.key !== focusKey);
+        if (segEl) {
+          segEl.classList?.toggle?.('is-active', isAct);
+          if (!segEl.classList?.toggle) {
+            if (isAct) segEl.classList?.add?.('is-active'); else segEl.classList?.remove?.('is-active');
+          }
+          if (isDim) segEl.classList?.add?.('is-dimmed'); else segEl.classList?.remove?.('is-dimmed');
+        }
+        if (axEl) {
+          if (isAct) axEl.classList?.add?.('is-active'); else axEl.classList?.remove?.('is-active');
+        }
+        if (lnEl) {
+          const curCls = lnEl.getAttribute('class') || 'cum-conn-line';
+          lnEl.setAttribute('class', isAct ? 'cum-conn-line is-active' : 'cum-conn-line');
+        }
+      });
+    };
+
+    let activeBarIdx = 0;
+    let lastShownLblPct = -999;
+    const totalSegs = summary.segments.length;
+
+    summary.segments.forEach((seg, sIdx) => {
+      const isActiveFocus = Boolean((cumHoveredKey || cumLockedKey) === seg.key);
+
+      // 横带仅含非零日/周；零用量日不占宽
+      if (seg.tokens > 0 && seg.stripWidthPct > 0) {
+        const segBtn = document.createElement('button');
+        segBtn.type = 'button';
+        segBtn.className = `cum-seg${seg.isPeak ? ' is-peak' : ''}${isActiveFocus ? ' is-active' : ''}`;
+        segBtn.style.width = `${seg.stripWidthPct.toFixed(6)}%`;
+        const colBg = seg.isPeak
+          ? (isLight ? '#7c3aed' : '#9333ea')
+          : segPalette[(seg.weekIdx * 2 + (activeBarIdx % 2)) % segPalette.length];
+        segBtn.style.backgroundColor = colBg;
+        segBtn.setAttribute('data-cum-key', seg.key);
+        segBtn.setAttribute('data-tokens', String(seg.tokens));
+        segBtn.setAttribute('data-width-pct', seg.stripWidthPct.toFixed(4));
+        segBtn.setAttribute('data-cum-tokens', String(seg.cumulativeTokens));
+        segBtn.setAttribute('aria-label', `${seg.startDate === seg.endDate ? seg.startDate : `${seg.startDate}–${seg.endDate}`}: ${fmtYi(seg.tokens)} (${seg.sharePct.toFixed(1)}%), ${t('tokens.heat.cumTotalLbl')} ${fmtYi(seg.cumulativeTokens)}`);
+
+        if (!isNarrow && seg.stripWidthPct >= 10) {
+          const lbl = document.createElement('span');
+          lbl.className = 'cum-seg-lbl';
+          lbl.textContent = seg.isPeak
+            ? `${formatCumShortDate(seg.startDate)} ${seg.sharePct.toFixed(0)}%`
+            : formatCumShortDate(seg.startDate);
+          segBtn.appendChild(lbl);
+        }
+
+        const onEnter = () => {
+          cumHoveredKey = seg.key;
+          syncCumActiveVisuals();
+          showSegPop(seg, segBtn);
+        };
+        const onLeave = () => {
+          if (cumHoveredKey === seg.key) cumHoveredKey = null;
+          syncCumActiveVisuals();
+          hidePopover();
+        };
+        const onClick = () => {
+          cumLockedKey = (cumLockedKey === seg.key) ? null : seg.key;
+          cumExpandedWeekKey = cumLockedKey && summary.grouping === 'weekly' ? cumLockedKey : null;
+          renderHeatmapCum();
+        };
+        segBtn.addEventListener('mouseenter', onEnter);
+        segBtn.addEventListener('focus', onEnter);
+        segBtn.addEventListener('mouseleave', onLeave);
+        segBtn.addEventListener('blur', onLeave);
+        segBtn.addEventListener('click', onClick);
+
+        stripEl.appendChild(segBtn);
+        segNodeMap.set(seg.key, segBtn);
+        activeBarIdx += 1;
+
+        // 细连接线（仅连接非零有效段到等距刻度点）
+        const connLine = createSvgNode('line');
+        connLine.setAttribute('class', `cum-conn-line${isActiveFocus ? ' is-active' : ''}`);
+        connLine.setAttribute('data-cum-key', seg.key);
+        connLine.setAttribute('x1', (seg.stripCenterPct * 10).toFixed(2));
+        connLine.setAttribute('y1', '0');
+        connLine.setAttribute('x2', (seg.equidistantPct * 10).toFixed(2));
+        connLine.setAttribute('y2', '18');
+        connSvg.appendChild(connLine);
+        connNodeMap.set(seg.key, connLine);
+      }
+
+      // 等距日期轴（含 0 用量日 ✕ 标记）
+      const slotBtn = document.createElement('button');
+      slotBtn.type = 'button';
+      slotBtn.className = `cum-axis-slot${seg.isZero ? ' is-zero' : ''}${isActiveFocus ? ' is-active' : ''}`;
+      slotBtn.style.left = `${seg.equidistantPct.toFixed(4)}%`;
+      slotBtn.setAttribute('data-cum-key', seg.key);
+      if (seg.isZero) slotBtn.setAttribute('data-zero', 'true');
+      slotBtn.setAttribute('aria-label', `${seg.startDate}: ${seg.isZero ? '0 Tokens' : fmtYi(seg.tokens)}`);
+
+      if (seg.isZero) {
+        const zMark = document.createElement('span');
+        zMark.className = 'cum-axis-zero';
+        zMark.textContent = '✕';
+        slotBtn.appendChild(zMark);
+      } else {
+        const dot = document.createElement('span');
+        dot.className = `cum-axis-dot${seg.isPeak ? ' is-peak' : ''}`;
+        slotBtn.appendChild(dot);
+      }
+
+      const isFirst = sIdx === 0;
+      const isLast = sIdx === totalSegs - 1;
+      const canPlaceMid = !isFirst && !isLast && (seg.equidistantPct - lastShownLblPct >= 14) && (100 - seg.equidistantPct >= 11);
+      if (isFirst || isLast || (canPlaceMid && (seg.isZero || seg.isPeak))) {
+        const lbl = document.createElement('span');
+        lbl.className = 'cum-axis-lbl';
+        lbl.textContent = seg.isZero ? `${formatCumShortDate(seg.startDate)}(0)` : formatCumShortDate(seg.startDate);
+        slotBtn.appendChild(lbl);
+        lastShownLblPct = seg.equidistantPct;
+      }
+
+      const onAxisEnter = () => {
+        cumHoveredKey = seg.key;
+        syncCumActiveVisuals();
+        showSegPop(seg, slotBtn);
+      };
+      const onAxisLeave = () => {
+        if (cumHoveredKey === seg.key) cumHoveredKey = null;
+        syncCumActiveVisuals();
+        hidePopover();
+      };
+      const onAxisClick = () => {
+        cumLockedKey = (cumLockedKey === seg.key) ? null : seg.key;
+        cumExpandedWeekKey = cumLockedKey && summary.grouping === 'weekly' ? cumLockedKey : null;
+        renderHeatmapCum();
+      };
+      slotBtn.addEventListener('mouseenter', onAxisEnter);
+      slotBtn.addEventListener('focus', onAxisEnter);
+      slotBtn.addEventListener('mouseleave', onAxisLeave);
+      slotBtn.addEventListener('blur', onAxisLeave);
+      slotBtn.addEventListener('click', onAxisClick);
+
+      axisRow.appendChild(slotBtn);
+      axisNodeMap.set(seg.key, slotBtn);
+    });
+
+    stripSection.appendChild(stripEl);
+    stripSection.appendChild(connSvg);
+    stripSection.appendChild(axisRow);
+    rootEl.appendChild(stripSection);
+
+    // 5. 结论行（基于真实数据计算，不写死）
+    const concRow = document.createElement('div');
+    concRow.className = `cum-conclusion-row${summary.concentrationOmittedReason === 'insufficient_days' ? ' is-insufficient' : ''}`;
+    concRow.id = 'cum-conclusion-row';
+    const concParts = [];
+    if (summary.concentration) {
+      concParts.push(t('tokens.cum.concLine', {
+        start: formatCumShortDate(summary.concentration.startDate),
+        end: formatCumShortDate(summary.concentration.endDate),
+        n: summary.concentration.daysCount,
+        pct: summary.concentration.sharePct.toFixed(1)
+      }));
+    } else if (summary.concentrationOmittedReason === 'insufficient_days') {
+      concParts.push(t('tokens.cum.concInsufficient'));
+    }
+    if (summary.grouping === 'weekly' && summary.peakWeek) {
+      concParts.push(t('tokens.cum.peakWeekFmt', {
+        range: `${formatCumShortDate(summary.peakWeek.startDate)}–${formatCumShortDate(summary.peakWeek.endDate)}`,
+        val: fmtYi(summary.peakWeek.tokens),
+        pct: summary.peakWeek.sharePct.toFixed(1)
+      }));
+    } else if (summary.peakDay) {
+      concParts.push(t('tokens.cum.peakDayFmt', {
+        date: formatCumShortDate(summary.peakDay.date),
+        val: fmtYi(summary.peakDay.tokens),
+        pct: summary.peakDay.sharePct.toFixed(1)
+      }));
+    }
+    concRow.textContent = concParts.join(' · ');
+    rootEl.appendChild(concRow);
+
+    // 6. 锁定详情与联动「每天」热力图 / 周展开到日
+    const lockedSeg = cumLockedKey ? summary.segments.find(s => s.key === cumLockedKey) : null;
+    if (lockedSeg) {
+      const insp = document.createElement('div');
+      insp.className = 'cum-inspector';
+      insp.id = 'cum-inspector';
+
+      const inspTop = document.createElement('div');
+      inspTop.className = 'cum-insp-top';
+
+      const metrics = document.createElement('div');
+      metrics.className = 'cum-insp-metrics';
+      const titleDate = lockedSeg.startDate === lockedSeg.endDate
+        ? lockedSeg.startDate
+        : `${lockedSeg.startDate} – ${lockedSeg.endDate}`;
+      const deltaTitle = summary.grouping === 'weekly' ? t('tokens.cum.weekSumLbl') : t('tokens.heat.cumDeltaLbl');
+      metrics.innerHTML = `<strong>${titleDate}</strong><span>${deltaTitle}: <strong>+${fmtYi(lockedSeg.tokens)}</strong></span><span>${t('tokens.cum.shareLbl')}: <strong>${lockedSeg.sharePct.toFixed(1)}%</strong></span><span>${t('tokens.heat.cumTotalLbl')}: <strong>${fmtYi(lockedSeg.cumulativeTokens)}</strong></span>`;
+
+      const actions = document.createElement('div');
+      actions.className = 'cum-insp-actions';
+
+      if (summary.grouping === 'weekly' && lockedSeg.days.length > 0) {
+        const isExpanded = cumExpandedWeekKey === lockedSeg.key;
+        const expBtn = document.createElement('button');
+        expBtn.type = 'button';
+        expBtn.className = 'cum-mini-btn';
+        expBtn.id = 'cum-btn-expand-days';
+        expBtn.textContent = isExpanded
+          ? t('tokens.cum.collapseDays')
+          : t('tokens.cum.expandDays', { n: lockedSeg.days.length });
+        expBtn.addEventListener('click', () => {
+          cumExpandedWeekKey = isExpanded ? null : lockedSeg.key;
+          renderHeatmapCum();
+        });
+        actions.appendChild(expBtn);
+      }
+
+      const locBtn = document.createElement('button');
+      locBtn.type = 'button';
+      locBtn.className = 'cum-mini-btn';
+      locBtn.id = 'cum-btn-locate-daily';
+      locBtn.textContent = t('tokens.cum.locateDaily');
+      locBtn.addEventListener('click', () => {
+        const targetDay = lockedSeg.days && lockedSeg.days.length
+          ? lockedSeg.days.slice().sort((a, b) => b.tokens - a.tokens)[0].date
+          : lockedSeg.startDate;
+        locateDayInDailyHeatmap(targetDay);
+      });
+      actions.appendChild(locBtn);
+
+      const clrBtn = document.createElement('button');
+      clrBtn.type = 'button';
+      clrBtn.className = 'cum-mini-btn';
+      clrBtn.id = 'cum-btn-clear-lock';
+      clrBtn.textContent = t('tokens.cum.clearLock');
+      clrBtn.addEventListener('click', () => { clearCumLockAndRefresh(); });
+      actions.appendChild(clrBtn);
+
+      inspTop.appendChild(metrics);
+      inspTop.appendChild(actions);
+      insp.appendChild(inspTop);
+
+      if (summary.grouping === 'weekly' && cumExpandedWeekKey === lockedSeg.key && lockedSeg.days.length > 0) {
+        const daysList = document.createElement('div');
+        daysList.className = 'cum-week-days';
+        daysList.id = 'cum-week-days';
+        lockedSeg.days.forEach(dayObj => {
+          const dayBtn = document.createElement('button');
+          dayBtn.type = 'button';
+          dayBtn.className = `cum-day-row-btn${cumLinkedDailyDate === dayObj.date ? ' is-active' : ''}`;
+          dayBtn.setAttribute('data-day-date', dayObj.date);
+          const leftD = document.createElement('span');
+          leftD.textContent = formatCumShortDate(dayObj.date);
+          const rightD = document.createElement('span');
+          rightD.textContent = dayObj.tokens > 0
+            ? `${fmtYi(dayObj.tokens)} (${dayObj.sharePct.toFixed(1)}%)`
+            : t('tokens.cum.zeroDayBadge');
+          dayBtn.appendChild(leftD);
+          dayBtn.appendChild(rightD);
+          dayBtn.addEventListener('click', () => locateDayInDailyHeatmap(dayObj.date));
+          daysList.appendChild(dayBtn);
+        });
+        insp.appendChild(daysList);
+      }
+
+      rootEl.appendChild(insp);
+    }
+
+    box.appendChild(rootEl);
+    updateSummaryBar('cum', rangeDates);
   }
 
   function updateSummaryBar(viewType, dateKeys = []) {
     const sumTokensEl = el('h-sum-tokens');
     const sumCostEl = el('h-sum-cost');
+    const sumTokensWrap = el('h-sum-tokens-wrap');
+    const sumCostWrap = el('h-sum-cost-wrap');
     const sumDailyAvgEl = el('h-sum-daily-avg');
     const sumActiveAvgEl = el('h-sum-active-avg');
     const subRatioWrapEl = el('h-sum-sub-ratio-wrap');
     const subRatioEl = el('h-sum-sub-ratio');
     if (!sumTokensEl || !sumCostEl) return;
+
+    const isCum = viewType === 'cum';
+    if (sumTokensWrap) sumTokensWrap.style.display = isCum ? 'none' : '';
+    if (sumCostWrap) sumCostWrap.style.display = isCum ? 'none' : '';
 
     const win = computeTimelineWindow();
     const todayStr = formatLocalYmd(win.today);
@@ -20059,9 +23710,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       todayStr
     });
 
-    const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
     sumTokensEl.textContent = `${fmtYi(costAgg.totalTokens)} Tokens`;
-    sumCostEl.textContent = `≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}`;
+    sumCostEl.textContent = formatUsdMetricDisplay(costAgg.totalCostUSD);
+    sumCostEl.title = formatUsdMetricTooltip(costAgg.totalCostUSD);
     sumDailyAvgEl.textContent = `$${costAgg.dailyAverageUSD.toFixed(2)}`;
     sumActiveAvgEl.textContent = t('heat.activeDays', { avg: costAgg.activeDailyAverageUSD.toFixed(2), days: costAgg.activeDays });
 
@@ -20070,7 +23721,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       const paidVal = plan.actualPricePaid ?? plan.pricePaid ?? plan.officialPriceMonthly ?? null;
       const isZeroCost = plan.isZeroExtraCost || paidVal === 0;
       if (!isZeroCost && paidVal > 0 && costAgg.totalCostUSD > 0) {
-        const subMonthlyUSD = plan.currency === 'USD' ? paidVal : (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal);
+        const subMonthlyUSD = convertCurrencyUi(paidVal, plan.currency || 'USD', 'USD', plan.region)
+          ?? (plan.actualPricePaidUSD || (plan.actualPricePaidCNY ? plan.actualPricePaidCNY / 6.72 : paidVal));
         if (subMonthlyUSD > 0) {
           const ratio = (costAgg.totalCostUSD / (viewType === 'yearly' ? subMonthlyUSD * 12 : subMonthlyUSD)).toFixed(1);
           subRatioEl.textContent = t('heat.roi', { ratio });
@@ -20132,6 +23784,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     grid.style.height = `${H}px`;
 
     const dateKeys = [];
+    const firstKey = win.firstStr && win.firstStr !== '--' ? win.firstStr : '';
     for (let day = 1; day <= daysInMonth; day++) {
       const d = new Date(targetYear, targetMonth, day);
       const k = formatLocalYmd(d);
@@ -20140,13 +23793,18 @@ function renderHeatmapGrid(forceRebuild = false) {
       const isToday = k === todayKey;
       const rec = ANTIGRAVITY_TOKEN_DATA.dailyMap[k];
       const tokens = rec ? rec.total : 0;
+      const isUnactivated = !isFuture && tokens === 0 && Boolean(firstKey && k < firstKey);
       const lvl = getLvl(tokens);
+      const contCol = (!isFuture && tokens > 0 && typeof getContinuousHeatColor === 'function')
+        ? getContinuousHeatColor(tokens, 'heat')
+        : null;
 
       const cell = document.createElement('div');
-      cell.className = `heat-month-cell heat-cell lvl-${lvl}${isFuture ? ' is-future' : ''}${isToday ? ' is-today' : ''}`;
+      cell.className = `heat-month-cell heat-cell lvl-${lvl}${isFuture ? ' is-future' : ''}${isUnactivated ? ' is-unactivated' : ''}${isToday ? ' is-today' : ''}`;
       cell.style.width = `${bestS}px`;
       cell.style.height = `${bestS}px`;
-      cell.style.backgroundColor = scale[lvl];
+      cell.style.backgroundColor = contCol || scale[lvl];
+      if (contCol) cell.setAttribute('data-heat-color', contCol);
       cell.setAttribute('data-date', k);
       cell.setAttribute('data-tokens', String(tokens));
 
@@ -20159,13 +23817,16 @@ function renderHeatmapGrid(forceRebuild = false) {
 
       const showPop = () => {
         const costInfo = getDailyModelCost(rec, k, activeCostModel, { mode: activeCostMode });
-        const cny = convertToCNY(costInfo.costUSD, 'USD');
-        const costStr = costInfo.costUSD > 0 ? ` · ≈ $${costInfo.costUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costInfo.costUSD > 0 ? ` · ${formatUsdMetricDisplay(costInfo.costUSD, { detail: true })}` : '';
         const mDateLabel = currentPanelLanguage === 'en'
           ? `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-          : `${targetYear}年${targetMonth + 1}月${day}日`;
+          : (currentPanelLanguage === 'zh-TW'
+            ? `${targetYear} 年 ${targetMonth + 1} 月 ${day} 日`
+            : `${targetYear}年${targetMonth + 1}月${day}日`);
         heatPopDate.textContent = `${mDateLabel}${isToday ? t('heat.today') : ''}`;
-        heatPopVal.textContent = tokens > 0 ? `${fmtYi(tokens)} Tokens${costStr}` : (isFuture ? t('heat.future') : '0 Tokens');
+        heatPopVal.textContent = tokens > 0
+          ? `${fmtYi(tokens)} Tokens${costStr}`
+          : (isFuture ? t('heat.future') : (isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
         if (rec) {
           heatPopDet.innerHTML = `
             <div class="pop-det-col"><span class="pop-det-val">Prompt: ${fmtYi(rec.input)}</span><span class="pop-det-trans">${t('heat.prompt')}</span></div>
@@ -20201,7 +23862,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     const scrollBox = el('h-scroll-box') || box.parentElement;
     const rect = scrollBox && typeof scrollBox.getBoundingClientRect === 'function' ? scrollBox.getBoundingClientRect() : null;
     const W = (rect && rect.width > 200) ? Math.floor(rect.width - 16) : 670;
-    const H = 95;
+    const H = 98;
 
     const scale = getEffectiveHeatmapScale();
     const win = computeTimelineWindow();
@@ -20209,10 +23870,11 @@ function renderHeatmapGrid(forceRebuild = false) {
     const thisYear = today.getFullYear();
     const thisMonth = today.getMonth();
     const targetYear = thisYear + heatYearOffset;
+    const firstYm = (win.firstStr && win.firstStr.length >= 7 && win.firstStr !== '--') ? win.firstStr.slice(0, 7) : '';
 
     const monthsData = [];
     const allYearDates = [];
-    let maxMonthTokens = 1;
+    let maxMonthTokens = 0;
 
     for (let m = 0; m < 12; m++) {
       const daysCount = new Date(targetYear, m + 1, 0).getDate();
@@ -20228,6 +23890,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       }
       const isCurrent = (targetYear === thisYear && m === thisMonth);
       const isFuture = (targetYear > thisYear || (targetYear === thisYear && m > thisMonth));
+      const ym = `${targetYear}-${String(m + 1).padStart(2, '0')}`;
+      const isUnactivated = !isFuture && mTokens === 0 && Boolean(firstYm && ym < firstYm);
       if (!isFuture && mTokens > maxMonthTokens) {
         maxMonthTokens = mTokens;
       }
@@ -20238,9 +23902,16 @@ function renderHeatmapGrid(forceRebuild = false) {
         tokens: mTokens,
         dates: mDates,
         isCurrent,
-        isFuture
+        isFuture,
+        isUnactivated
       });
     }
+
+    const core = globalThis.__AGContextMeterCore || {};
+    const env = typeof core.resolveScaleEnvelope === 'function'
+      ? core.resolveScaleEnvelope(maxMonthTokens, 'yearly')
+      : { tier: '1B', label: '1B', anchor: 1e9, dCap: 58, refRings: [1e6, 10e6, 100e6, 1e9], overflowThreshold: 1e9 };
+    box.setAttribute('data-scale-tier', env.tier || '');
 
     const createSvgNode = tag => {
       if (typeof document !== 'undefined' && typeof document.createElementNS === 'function') {
@@ -20255,42 +23926,118 @@ function renderHeatmapGrid(forceRebuild = false) {
     svg.setAttribute('width', String(W));
     svg.setAttribute('height', String(H));
 
-    const Rmin = 6;
-    const Rmax = 24;
-    const colW = W / 12;
-    const cy = 42;
+    // 右侧留出同心参考环独立区域，保证窄窗不挤压或遮挡任何月份标签
+    const refZoneW = Math.min(70, Math.max(52, Math.round(W * 0.11)));
+    const monthsWidth = Math.max(200, W - refZoneW);
+    const colW = monthsWidth / 12;
+    const cy = 40;
+    const labelY = H - 7;
 
-    let peakMonthIndex = -1;
+    // 判定双门槛 Peak 徽标（活跃非零月 >= 2 且最大值 >= 10M）
+    const nonFutureTokens = monthsData.filter(x => !x.isFuture).map(x => x.tokens);
+    const allowPeak = typeof core.shouldShowYearlyPeakBadge === 'function'
+      ? core.shouldShowYearlyPeakBadge(nonFutureTokens)
+      : false;
+
+    let rawPeakIdx = -1;
     let peakTokens = 0;
     monthsData.forEach(item => {
       if (!item.isFuture && item.tokens > peakTokens) {
         peakTokens = item.tokens;
-        peakMonthIndex = item.monthIndex;
+        rawPeakIdx = item.monthIndex;
       }
     });
+    const peakMonthIndex = allowPeak ? rawPeakIdx : -1;
 
+    // 1. 先渲染右侧背景同心参考圆（1M / 10M / 100M / 1B 中匹配当前包络的物理大小）
+    const refGroup = createSvgNode('g');
+    refGroup.setAttribute('class', 'yearly-ref-rings');
+    const refCx = monthsWidth + refZoneW / 2;
+    const ringsList = Array.isArray(env.refRings) && env.refRings.length ? env.refRings : [env.anchor];
+    ringsList.forEach(ringVal => {
+      const rInfo = typeof core.mapBubbleDiameter === 'function'
+        ? core.mapBubbleDiameter(ringVal, env)
+        : { radius: 20 };
+      const ringCircle = createSvgNode('circle');
+      ringCircle.setAttribute('cx', String(refCx));
+      ringCircle.setAttribute('cy', String(cy));
+      ringCircle.setAttribute('r', rInfo.radius.toFixed(2));
+      ringCircle.setAttribute('fill', 'none');
+      ringCircle.setAttribute('stroke', 'rgba(148,163,184,0.28)');
+      ringCircle.setAttribute('stroke-width', '1');
+      ringCircle.setAttribute('stroke-dasharray', '2,2');
+      refGroup.appendChild(ringCircle);
+    });
+    const refCaption = createSvgNode('text');
+    refCaption.setAttribute('x', String(refCx));
+    refCaption.setAttribute('y', String(labelY));
+    refCaption.setAttribute('text-anchor', 'middle');
+    refCaption.setAttribute('font-size', '9');
+    refCaption.setAttribute('fill', 'var(--ag-text-muted)');
+    refCaption.textContent = env.label || '';
+    refGroup.appendChild(refCaption);
+    svg.appendChild(refGroup);
+
+    // 2. 渲染 12 个月气泡、状态描边与全列点击热区
     monthsData.forEach((item, idx) => {
       const cx = colW * idx + colW / 2;
       const g = createSvgNode('g');
       g.setAttribute('class', 'heat-yearly-bubble-group');
+      g.setAttribute('data-month', String(item.monthIndex + 1));
+      g.setAttribute('data-tokens', String(item.tokens));
       g.style.animationDelay = `${idx * 20}ms`;
 
-      let radius = Rmin;
-      if (!item.isFuture && item.tokens > 0) {
-        const ratio = Math.sqrt(item.tokens / maxMonthTokens);
-        radius = Rmin + ratio * (Rmax - Rmin);
+      // 全列交互热区，确保 5px 零值点或极小气泡可轻松悬浮与点击
+      const hitRect = createSvgNode('rect');
+      hitRect.setAttribute('class', 'bubble-hit-area');
+      hitRect.setAttribute('x', String(colW * idx));
+      hitRect.setAttribute('y', '0');
+      hitRect.setAttribute('width', String(colW));
+      hitRect.setAttribute('height', String(H));
+      hitRect.setAttribute('fill', 'transparent');
+      g.appendChild(hitRect);
+
+      let radius = 2.5;
+      let fillCol = scale[0] || '#27272a';
+      let isOverflow = false;
+      if (item.isFuture) {
+        radius = 8.0;
+        fillCol = 'transparent';
+      } else if (item.tokens > 0) {
+        const bInfo = typeof core.mapBubbleDiameter === 'function'
+          ? core.mapBubbleDiameter(item.tokens, env)
+          : { radius: 14, diameter: 28, overflow: false };
+        radius = bInfo.radius;
+        isOverflow = Boolean(bInfo.overflow);
+        fillCol = (typeof getContinuousHeatColor === 'function' ? getContinuousHeatColor(item.tokens, 'yearly') : null) || scale[2];
       }
 
-      const lvl = item.isFuture ? 0 : getLvlForRange(item.tokens, 'month', maxMonthTokens);
-      const fillCol = item.isFuture ? 'transparent' : (scale[lvl] || scale[0]);
+      if (isOverflow) {
+        const glowRing = createSvgNode('circle');
+        glowRing.setAttribute('class', 'bubble-overflow-glow');
+        glowRing.setAttribute('cx', String(cx));
+        glowRing.setAttribute('cy', String(cy));
+        glowRing.setAttribute('r', (radius + 2.5).toFixed(2));
+        glowRing.setAttribute('fill', 'none');
+        glowRing.setAttribute('stroke', '#E879F9');
+        glowRing.setAttribute('stroke-width', '2');
+        glowRing.setAttribute('opacity', '0.88');
+        g.appendChild(glowRing);
+      }
 
       const circle = createSvgNode('circle');
       circle.setAttribute('class', 'bubble-main');
       circle.setAttribute('cx', String(cx));
       circle.setAttribute('cy', String(cy));
-      circle.setAttribute('r', String(radius));
+      circle.setAttribute('r', radius.toFixed(2));
+      circle.setAttribute('data-diameter', (radius * 2).toFixed(2));
       circle.setAttribute('fill', fillCol);
-      circle.setAttribute('stroke', item.isFuture ? 'rgba(255,255,255,0.18)' : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'rgba(255,255,255,0.08)'));
+      if (item.isUnactivated) {
+        circle.setAttribute('opacity', '0.35');
+      }
+      circle.setAttribute('stroke', item.isFuture
+        ? '#3F3F46'
+        : (item.monthIndex === peakMonthIndex ? 'var(--ag-text-primary)' : 'rgba(255,255,255,0.10)'));
       circle.setAttribute('stroke-width', item.monthIndex === peakMonthIndex ? '2' : '1');
 
       if (item.isFuture) {
@@ -20301,9 +24048,10 @@ function renderHeatmapGrid(forceRebuild = false) {
 
       if (item.isCurrent) {
         const activeRing = createSvgNode('circle');
+        activeRing.setAttribute('class', 'bubble-current-ring');
         activeRing.setAttribute('cx', String(cx));
         activeRing.setAttribute('cy', String(cy));
-        activeRing.setAttribute('r', String(radius + 4));
+        activeRing.setAttribute('r', (radius + 3.5).toFixed(2));
         activeRing.setAttribute('fill', 'none');
         activeRing.setAttribute('stroke', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
         activeRing.setAttribute('stroke-width', '1.5');
@@ -20313,21 +24061,23 @@ function renderHeatmapGrid(forceRebuild = false) {
 
       if (item.monthIndex === peakMonthIndex && item.tokens > 0) {
         const peakBadge = createSvgNode('text');
+        peakBadge.setAttribute('class', 'bubble-peak-badge');
         peakBadge.setAttribute('x', String(cx));
-        peakBadge.setAttribute('y', String(cy - radius - 5));
+        peakBadge.setAttribute('y', String(Math.max(8, cy - radius - 4)));
         peakBadge.setAttribute('text-anchor', 'middle');
         peakBadge.setAttribute('font-size', '8.5');
         peakBadge.setAttribute('font-weight', '600');
         peakBadge.setAttribute('fill', 'var(--ag-custom-token-accent,var(--ag-token-accent-default,#a78bfa))');
-        peakBadge.textContent = t('heat.peak');
+        peakBadge.textContent = t('tokens.heat.peakBadge');
         g.appendChild(peakBadge);
       }
 
       const text = createSvgNode('text');
+      text.setAttribute('class', 'bubble-month-lbl');
       text.setAttribute('x', String(cx));
-      text.setAttribute('y', String(H - 12));
+      text.setAttribute('y', String(labelY));
       text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('font-size', '10');
+      text.setAttribute('font-size', colW < 34 ? '8.5' : '10');
       text.setAttribute('fill', item.isCurrent ? 'var(--ag-text-primary)' : 'var(--ag-text-muted)');
       text.setAttribute('font-weight', item.isCurrent ? '600' : '400');
       text.textContent = item.monthName;
@@ -20338,11 +24088,12 @@ function renderHeatmapGrid(forceRebuild = false) {
           mode: activeCostMode,
           todayStr: formatLocalYmd(win.today)
         });
-        const cny = convertToCNY(costAgg.totalCostUSD, 'USD');
-        const costStr = costAgg.totalCostUSD > 0 ? ` · ≈ $${costAgg.totalCostUSD.toFixed(2)}${cny !== null ? ` (¥${cny.toFixed(2)})` : ''}` : '';
+        const costStr = costAgg.totalCostUSD > 0 ? ` · ${formatUsdMetricDisplay(costAgg.totalCostUSD, { detail: true })}` : '';
         const yearMonthLabel = currentPanelLanguage === 'en' ? `${item.monthName} ${targetYear}` : `${targetYear}年${item.monthName}`;
         heatPopDate.textContent = `${yearMonthLabel}${item.isCurrent ? t('heatmap.pop.inProgress') : (item.monthIndex === peakMonthIndex ? t('heatmap.pop.peak') : '')}`;
-        heatPopVal.textContent = item.tokens > 0 ? `${fmtYi(item.tokens)} Tokens${costStr}` : (item.isFuture ? t('heatmap.pop.future') : '0 Tokens');
+        heatPopVal.textContent = item.tokens > 0
+          ? `${fmtYi(item.tokens)} Tokens${costStr}`
+          : (item.isFuture ? t('heatmap.pop.future') : (item.isUnactivated ? t('tokens.heat.unactivatedTip') : '0 Tokens'));
         heatPopDet.innerHTML = `<span>${t('heatmap.pop.monthlyDet', { avg: costAgg.dailyAverageUSD.toFixed(2), days: costAgg.activeDays })}</span>`;
         heatPopDet.style.display = 'block';
 
@@ -20643,7 +24394,337 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (state.tooltipOpen) positionContextTooltip();
   }
 
+  function stopLiveWaitTickTimer() {
+    if (state.liveWaitTickTimer) {
+      clearInterval(state.liveWaitTickTimer);
+      state.liveWaitTickTimer = null;
+    }
+  }
+
+  function clearLivePendingRequestWait() {
+    state.livePendingRequest = null;
+    stopLiveWaitTickTimer();
+  }
+  earlyDisposeHooks.push(clearLivePendingRequestWait);
+
+  function resolveSpeedEvaluationInput() {
+    if (state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object') {
+      return state.speedOverrideForTest;
+    }
+    if (state.livePendingRequest && state.route && state.livePendingRequest.cascadeId === state.route) {
+      const elapsedSec = Math.max(0, (Date.now() - state.livePendingRequest.startedAtMs) / 1000);
+      return {
+        phase: 'waiting',
+        status: 'waiting',
+        elapsedSec
+      };
+    }
+    const d = state.latest;
+    if (!d) return { phase: 'idle', status: 'idle' };
+    const latestRec = resolveLatestSessionCallRecord();
+    const sameActiveCall = latestRec && (!d.speed || !latestRec.outputTokens || Math.abs(Number(latestRec.outputTokens) - Number(d.speed?.outputTokens || 0)) <= 50 || latestRec.status === 'streaming');
+    const trackedSamples = (latestRec && state.streamSampleTracker?.byCallId?.get?.(latestRec.callId)) || null;
+
+    if (d.status === 'canceled' || d.errorClassification?.kind === 'canceled') {
+      return {
+        phase: 'canceled',
+        status: 'canceled',
+        outcomeStatus: 'canceled',
+        ttftSec: d.speed?.ttft ?? null,
+        totalDurationSec: d.speed?.duration ?? null,
+        outputTokens: d.speed?.outputTokens ?? null,
+        error: d.error || ''
+      };
+    }
+    if (d.exceeded || d.network || d.error || ['failed', 'quota_exhausted', 'rate_limited', 'auth_error', 'service_unavailable'].includes(d.status)) {
+      return {
+        phase: 'failed',
+        status: d.status || 'failed',
+        outcomeStatus: d.status || 'failed',
+        ttftSec: d.speed?.ttft ?? null,
+        totalDurationSec: d.speed?.duration ?? null,
+        outputTokens: d.speed?.outputTokens ?? null,
+        error: d.error || ''
+      };
+    }
+    if (latestRec && latestRec.status === 'streaming' && latestRec.outputTokens > 0) {
+      return {
+        phase: 'streaming',
+        status: 'streaming',
+        ttftSec: latestRec.ttftSec ?? d.speed?.ttft ?? null,
+        streamingSec: latestRec.streamingSec ?? d.speed?.streamingSec ?? trackedSamples?.elapsedStreamSec ?? null,
+        totalDurationSec: latestRec.durationSec ?? d.speed?.duration ?? null,
+        streamSpeed: latestRec.streamingTps ?? d.speed?.streamingTps ?? null,
+        overallTps: latestRec.tps ?? d.speed?.tps ?? null,
+        outputTokens: latestRec.outputTokens ?? d.speed?.outputTokens ?? 0,
+        totalInputTokens: latestRec.totalInputTokens ?? d.input ?? null,
+        chunkCount: trackedSamples?.chunks ?? latestRec.chunkCount ?? null,
+        chunkIntervalsMs: trackedSamples?.intervalsMs ?? latestRec.chunkIntervalsMs ?? null
+      };
+    }
+    if (d.speed) {
+      return {
+        phase: 'final',
+        status: 'final',
+        ttftSec: d.speed.ttft ?? null,
+        streamingSec: d.speed.streamingSec ?? null,
+        totalDurationSec: d.speed.duration ?? null,
+        streamSpeed: d.speed.streamingTps ?? d.speed.streamSpeed ?? null,
+        overallTps: d.speed.tps ?? null,
+        outputTokens: d.speed.outputTokens ?? null,
+        totalInputTokens: d.speed.totalInputTokens ?? d.input ?? null,
+        chunkCount: (sameActiveCall && trackedSamples?.chunks) || (sameActiveCall && latestRec?.chunkCount) || null,
+        chunkIntervalsMs: (sameActiveCall && trackedSamples?.intervalsMs) || (sameActiveCall && latestRec?.chunkIntervalsMs) || null
+      };
+    }
+    if (latestRec && (latestRec.ttftSec != null || latestRec.durationSec != null || latestRec.outputTokens > 0)) {
+      return {
+        phase: latestRec.status === 'streaming' ? 'streaming' : 'final',
+        status: latestRec.status,
+        ttftSec: latestRec.ttftSec ?? null,
+        streamingSec: latestRec.streamingSec ?? null,
+        totalDurationSec: latestRec.durationSec ?? null,
+        streamSpeed: latestRec.streamingTps ?? null,
+        overallTps: latestRec.tps ?? null,
+        outputTokens: latestRec.outputTokens ?? null,
+        totalInputTokens: latestRec.totalInputTokens ?? null,
+        chunkCount: trackedSamples?.chunks ?? latestRec.chunkCount ?? null,
+        chunkIntervalsMs: trackedSamples?.intervalsMs ?? latestRec.chunkIntervalsMs ?? null
+      };
+    }
+    return { phase: 'idle', status: 'idle' };
+  }
+
+  function applyElv91PillTone(badgeEl, evalRes) {
+    if (!badgeEl || !evalRes?.badge) return;
+    const sev = evalRes.badge.severity || 'neutral';
+    const cls = (sev === 'good' || sev === 'fast' || sev === 'rapid' || sev === 'epic')
+      ? 'pill-good'
+      : (sev === 'warn' ? 'pill-warn' : ((sev === 'danger' || sev === 'critical') ? 'pill-danger' : 'pill-muted'));
+    badgeEl.className = `key-pill ${cls}`;
+    badgeEl.style.color = evalRes.badge.color || '';
+    badgeEl.textContent = `${evalRes.badge.glyph ? evalRes.badge.glyph + ' ' : ''}${evalRes.badge.text}`;
+  }
+
+  function renderSpeedExperienceInPlace(evalRes) {
+    if (!evalRes) return;
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+    const activeColor = evalRes.badge?.color || '';
+
+    const speedAmount = el('speed-amount');
+    const overflowSpeedVal = el('overflow-speed-val');
+    const topBolt = el('badge-speed-icon');
+    const cardBolt = el('speed-summary-bolt');
+    if (topBolt) topBolt.style.color = activeColor;
+    if (cardBolt) cardBolt.style.color = activeColor;
+    if (topBolt && evalRes.badge?.glyph) topBolt.textContent = evalRes.badge.glyph;
+    if (cardBolt && evalRes.badge?.glyph) cardBolt.textContent = evalRes.badge.glyph;
+
+    const isCompact = state.layoutMode === 'compact';
+    const shortSampleText = t('session.speed.shortSampleBadge');
+    if (speedAmount) {
+      if (evalRes.phase === 'waiting') {
+        speedAmount.textContent = isCompact ? evalRes.elapsedFormatted : (isEn ? `Wait ${evalRes.elapsedFormatted}` : `等待 ${evalRes.elapsedFormatted}`);
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.elapsedFormatted}`;
+      } else if (evalRes.isSampleSparse) {
+        speedAmount.textContent = shortSampleText;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = shortSampleText;
+      } else if (evalRes.streamSpeed != null) {
+        speedAmount.textContent = isCompact ? `${evalRes.streamSpeed}` : `${evalRes.streamSpeed} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.streamSpeed} tok/s`;
+      } else if (evalRes.overallTps != null) {
+        speedAmount.textContent = isCompact ? `${evalRes.overallTps}` : `${evalRes.overallTps} tok/s`;
+        if (overflowSpeedVal) overflowSpeedVal.textContent = `${evalRes.overallTps} tok/s`;
+      } else {
+        speedAmount.textContent = isCompact ? '--' : '-- tok/s';
+        if (overflowSpeedVal) overflowSpeedVal.textContent = '-- tok/s';
+      }
+    }
+
+    const spBadge = el('speed-badge');
+    const spVal = el('speed-val');
+    const spDur = el('speed-duration');
+    const spTtft = el('speed-ttft');
+    const spTokens = el('speed-tokens');
+    const spSub = el('speed-sub-label');
+    const spTakeaway = el('speed-takeaway');
+    const spToggleBtn = el('btn-speed-breakdown-toggle');
+    const spBreakdownDet = el('speed-breakdown-details');
+    const spBreakdownGrid = el('speed-breakdown-grid');
+
+    const spMockTag = el('speed-mock-tag');
+    if (spMockTag) {
+      spMockTag.hidden = !(state.speedOverrideForTest && typeof state.speedOverrideForTest === 'object');
+      if (!spMockTag.hidden) spMockTag.textContent = t('session.speed.mockTag');
+    }
+    if (spBadge) applyElv91PillTone(spBadge, evalRes);
+    if (spVal) {
+      if (evalRes.phase === 'waiting') {
+        spVal.textContent = isEn ? 'Waiting' : '等待首字';
+      } else if (evalRes.isSampleSparse) {
+        spVal.textContent = shortSampleText;
+      } else if (evalRes.streamSpeed != null) {
+        spVal.textContent = `${evalRes.streamSpeed} tok/s`;
+      } else if (evalRes.overallTps != null) {
+        spVal.textContent = `${evalRes.overallTps} tok/s`;
+      } else {
+        spVal.textContent = '—';
+      }
+    }
+    if (spDur) spDur.textContent = evalRes.durationFormatted || '—';
+    if (spTtft) spTtft.textContent = evalRes.ttftFormatted || '—';
+    if (spTokens) spTokens.textContent = evalRes.outputTokens != null ? `${fmt(evalRes.outputTokens)} tok` : '—';
+
+    if (spSub) {
+      if (evalRes.subLabel && evalRes.phase !== 'idle') {
+        spSub.hidden = false;
+        spSub.textContent = evalRes.subLabel;
+      } else {
+        spSub.hidden = true;
+        spSub.textContent = '';
+      }
+    }
+    if (spTakeaway) {
+      const avgNote = (evalRes.phase === 'final' && evalRes.overallTps != null && (evalRes.isSampleSparse || (evalRes.streamSpeed != null && Math.abs(evalRes.overallTps - evalRes.streamSpeed) >= 5)))
+        ? (isEn ? ` (Overall avg ${evalRes.overallTps} tok/s)` : (isTw ? `（整體均速 ${evalRes.overallTps} tok/s）` : `（整体均速 ${evalRes.overallTps} tok/s）`))
+        : '';
+      spTakeaway.textContent = `${evalRes.comment || ''}${avgNote}`;
+    }
+
+    const canShowBreakdown = evalRes.phase === 'final' || evalRes.phase === 'streaming';
+    if (spToggleBtn) {
+      spToggleBtn.hidden = !canShowBreakdown;
+      spToggleBtn.textContent = state.speedBreakdownOpen ? t('session.speed.hideDetails') : t('session.speed.details');
+      spToggleBtn.setAttribute?.('aria-expanded', state.speedBreakdownOpen ? 'true' : 'false');
+    }
+    if (spBreakdownDet) {
+      spBreakdownDet.style.display = (canShowBreakdown && state.speedBreakdownOpen) ? 'block' : 'none';
+    }
+    if (spBreakdownGrid && canShowBreakdown && state.speedBreakdownOpen) {
+      spBreakdownGrid.replaceChildren();
+      const unk = t('session.latestCall.unknownVal');
+      const eText = evalRes.efficiency?.available
+        ? `${evalRes.efficiency.score} ${isEn ? 'pts' : '分'} · ${evalRes.efficiency.tier?.title || evalRes.efficiency.grade}`
+        : (evalRes.efficiency?.skippedReason === 'insufficient_sample' ? t('session.speed.scoreSkippedSparse') : t('session.speed.scoreSkippedMissing'));
+      const stabText = evalRes.stability?.isStable
+        ? t('session.speed.stabilityOk', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
+        : (evalRes.stability?.reason === 'high_variance'
+          ? t('session.speed.stabilityHighVar', { n: evalRes.stability.chunks, cv: evalRes.stability.intervalCv })
+          : t('session.speed.stabilityUnverified'));
+      const fmtTierComment = (tier, elapsed) => (tier && tier.comment) ? String(tier.comment).replace('{elapsed}', elapsed || '—') : '';
+      const streamCellVal = evalRes.isSampleSparse
+        ? `${shortSampleText}${evalRes.shortWindowEstimateSpeed != null ? ` (${evalRes.shortWindowEstimateSpeed} tok/s)` : ''}`
+        : (evalRes.speedTier ? `${evalRes.streamSpeed} tok/s · ${evalRes.speedTier.title}` : unk);
+      const cells = [
+        {
+          k: t('session.speed.breakdown.eScore'),
+          v: eText,
+          color: evalRes.efficiency?.tier?.color || null,
+          note: evalRes.efficiency?.tier?.comment || ''
+        },
+        {
+          k: t('session.speed.breakdown.ttft'),
+          v: evalRes.ttftTier ? `${evalRes.ttftFormatted} · ${evalRes.ttftTier.title}${evalRes.ttftRatioPct != null ? ` (${evalRes.ttftRatioPct}%)` : ''}` : unk,
+          color: evalRes.ttftTier?.color || null,
+          note: fmtTierComment(evalRes.ttftTier, evalRes.ttftFormatted)
+        },
+        {
+          k: t('session.speed.breakdown.stream'),
+          v: streamCellVal,
+          color: evalRes.isSampleSparse ? null : (evalRes.speedTier?.color || null),
+          note: evalRes.isSampleSparse ? t('session.speed.shortWindowNote') : (evalRes.speedTier?.comment || '')
+        },
+        {
+          k: t('session.speed.breakdown.duration'),
+          v: evalRes.durationTier ? `${evalRes.durationFormatted} · ${evalRes.durationTier.title}` : unk,
+          color: evalRes.durationTier?.color || null,
+          note: evalRes.durationTier?.comment || ''
+        },
+        { k: t('session.speed.breakdown.overall'), v: evalRes.overallTps != null ? `${evalRes.overallTps} tok/s` : unk, color: null, note: '' },
+        { k: t('session.speed.breakdown.stability'), v: stabText, color: evalRes.stability?.isStable ? '#10B981' : null, note: '' }
+      ];
+      if (evalRes.isSampleSparse && evalRes.shortWindowEstimateSpeed != null) {
+        cells.splice(3, 0, {
+          k: t('session.speed.shortWindowEst'),
+          v: `${evalRes.shortWindowEstimateSpeed} tok/s`,
+          color: null,
+          note: t('session.speed.shortWindowNote')
+        });
+      }
+      if (evalRes.efficiency?.basis) {
+        const b = evalRes.efficiency.basis;
+        cells.push({
+          k: t('session.speed.breakdown.basis'),
+          v: `N=${b.N_work} · γ=${b.gamma} · w=[${b.w1}/${b.w2}/${b.w3}]`,
+          color: null,
+          note: ''
+        });
+      }
+      for (const item of cells) {
+        const cell = document.createElement('div');
+        cell.className = 'call-detail-cell';
+        const kEl = document.createElement('span');
+        kEl.className = 'call-detail-k';
+        kEl.textContent = item.k;
+        const vEl = document.createElement('span');
+        vEl.className = 'call-detail-v';
+        if (item.color) {
+          const dot = document.createElement('span');
+          dot.className = 'tier-color-swatch';
+          dot.style.backgroundColor = item.color;
+          dot.setAttribute('aria-hidden', 'true');
+          vEl.appendChild(dot);
+          const txtEl = document.createElement('span');
+          txtEl.textContent = item.v;
+          vEl.appendChild(txtEl);
+        } else {
+          vEl.textContent = item.v;
+        }
+        cell.appendChild(kEl);
+        cell.appendChild(vEl);
+        if (item.note) {
+          const noteEl = document.createElement('span');
+          noteEl.className = 'call-detail-note';
+          noteEl.textContent = item.note;
+          cell.appendChild(noteEl);
+        }
+        spBreakdownGrid.appendChild(cell);
+      }
+    }
+    state.lastSpeedEval = evalRes;
+  }
+
+  function startLivePendingRequestWait(cascadeId) {
+    const cid = cascadeId || state.route;
+    if (!cid) return;
+    const latestRec = resolveLatestSessionCallRecord();
+    state.livePendingRequest = {
+      cascadeId: cid,
+      startedAtMs: Date.now(),
+      baselineCallId: latestRec?.callId || null,
+      baselineCount: state.count || 0
+    };
+    const updateWaitOnly = () => {
+      if (state.disposed || !state.livePendingRequest || state.livePendingRequest.cascadeId !== state.route) {
+        stopLiveWaitTickTimer();
+        return;
+      }
+      if (typeof evaluateGenerationExperience === 'function') {
+        renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+      }
+    };
+    updateWaitOnly();
+    stopLiveWaitTickTimer();
+    state.liveWaitTickTimer = setInterval(updateWaitOnly, 1000);
+  }
+
   function syncSpeedBadgeText() {
+    if (typeof evaluateGenerationExperience === 'function') {
+      const evalRes = evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
+      renderSpeedExperienceInPlace(evalRes);
+      return;
+    }
     const sp = state.latest?.speed;
     const speedAmount = el('speed-amount');
     const overflowSpeedVal = el('overflow-speed-val');
@@ -20662,6 +24743,719 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
   }
 
+  let lastCallCardLang = '';
+  let timelineFetchController = null;
+  let timelineFetchSeq = 0;
+
+  function prefersReducedMotionNow() {
+    try {
+      return Boolean(typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch {
+      return false;
+    }
+  }
+
+  function formatCallTimeStr(call) {
+    if (!call) return '—';
+    const rawTs = call.timestamp || (call.created_at ? Date.parse(call.created_at) : NaN);
+    if (!Number.isFinite(rawTs) || rawTs <= 0) return t('session.latestCall.unknownVal');
+    try {
+      return new Date(rawTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    } catch {
+      return new Date(rawTs).toLocaleTimeString();
+    }
+  }
+
+  function formatCallModelTitle(call) {
+    if (!call) return t('session.latestCall.unknownVal');
+    if (call.isPlaceholderOnly && !call.isRoutedModelVerified) {
+      const rawId = call.rawPlaceholderId || call.modelExactId || call.model || '';
+      return rawId ? t('session.latestCall.unknownMappedModel', { id: rawId }) : t('session.latestCall.unknownVal');
+    }
+    const rawLbl = call.modelLabel || (call.model && !/^model_/i.test(String(call.model)) ? String(call.model) : '');
+    if (rawLbl) {
+      if (typeof splitModelDisplayAndEffort === 'function') {
+        const split = splitModelDisplayAndEffort(rawLbl, call.effort);
+        if (split.baseLabel) return split.baseLabel;
+      }
+      return rawLbl;
+    }
+    if (call.stableModelId && !/^model_placeholder_/i.test(String(call.stableModelId))) return String(call.stableModelId);
+    if (call.modelExactId && !/^model_placeholder_/i.test(String(call.modelExactId))) return String(call.modelExactId);
+    if (call.model && !/^model_placeholder_/i.test(String(call.model))) return String(call.model);
+    if (call.rawPlaceholderId || call.modelExactId || call.model) {
+      return t('session.latestCall.unknownMappedModel', { id: call.rawPlaceholderId || call.modelExactId || call.model });
+    }
+    return t('session.latestCall.unknownVal');
+  }
+
+  function buildCallDisplaySignature(call) {
+    if (!call) return '';
+    return [
+      call.callId || '',
+      call.outcomeStatus || call.status || '',
+      call.inputTokens ?? '',
+      call.cacheReadTokens ?? '',
+      call.outputTokens ?? '',
+      call.totalTokens ?? '',
+      call.modelExactId || call.model || '',
+      call.modelLabel || '',
+      call.effort || '',
+      call.durationSec ?? '',
+      call.ttftSec ?? '',
+      call.error || '',
+      call.agentRole || ''
+    ].join('|');
+  }
+
+  function resolveLatestSessionCallRecord() {
+    if (!state.route) return null;
+    const rawPool = [];
+    if (Array.isArray(state.sessionCalls)) {
+      for (const c of state.sessionCalls) {
+        if (c) rawPool.push(c);
+      }
+    }
+    if (Array.isArray(state.scan?.recentGeneratorCalls)) {
+      for (const c of state.scan.recentGeneratorCalls) {
+        if (c) rawPool.push(c);
+      }
+    }
+    if (state.scan?.latestCallRecord) {
+      rawPool.push(state.scan.latestCallRecord);
+    }
+    if (!rawPool.length) return null;
+
+    const mergedById = new Map();
+    const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+    for (const raw of rawPool) {
+      const norm = typeof normalizeSessionCallRecord === 'function'
+        ? normalizeSessionCallRecord(raw, { cascadeId: state.route, cascadeModelConfigs: configs })
+        : raw;
+      if (!norm || !norm.callId) continue;
+      const prev = mergedById.get(norm.callId);
+      if (!prev) {
+        mergedById.set(norm.callId, norm);
+        continue;
+      }
+      // 同一 callId 从不同源补齐耗时、精确模型或状态，不产生第二条
+      mergedById.set(norm.callId, {
+        ...prev,
+        ...norm,
+        modelExactId: norm.modelExactId || prev.modelExactId || null,
+        modelLabel: norm.modelLabel || prev.modelLabel || null,
+        effort: norm.effort || prev.effort || null,
+        ttftSec: norm.ttftSec ?? prev.ttftSec ?? null,
+        durationSec: norm.durationSec ?? prev.durationSec ?? null,
+        tps: norm.tps ?? prev.tps ?? null,
+        streamingTps: norm.streamingTps ?? prev.streamingTps ?? null,
+        error: norm.error || prev.error || null,
+        errorClassification: norm.errorClassification || prev.errorClassification || null,
+        hasInputCacheFields: Boolean(norm.hasInputCacheFields || prev.hasInputCacheFields),
+        inputTokens: norm.hasInputCacheFields ? norm.inputTokens : (prev.hasInputCacheFields ? prev.inputTokens : norm.inputTokens),
+        cacheReadTokens: norm.hasInputCacheFields ? norm.cacheReadTokens : (prev.hasInputCacheFields ? prev.cacheReadTokens : norm.cacheReadTokens),
+        totalInputTokens: norm.hasInputCacheFields ? norm.totalInputTokens : (prev.hasInputCacheFields ? prev.totalInputTokens : norm.totalInputTokens),
+        outputTokens: Math.max(Number(norm.outputTokens) || 0, Number(prev.outputTokens) || 0) || norm.outputTokens,
+        totalTokens: Math.max(Number(norm.totalTokens) || 0, Number(prev.totalTokens) || 0) || norm.totalTokens,
+        timestamp: norm.timestamp || prev.timestamp || null,
+        created_at: norm.created_at || prev.created_at || null,
+        stepIndex: norm.stepIndex ?? prev.stepIndex ?? null
+      });
+    }
+
+    const candidates = Array.from(mergedById.values());
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => {
+      const ta = Number(a.timestamp) || 0;
+      const tb = Number(b.timestamp) || 0;
+      if (ta !== tb) return ta - tb;
+      const sa = a.stepIndex != null ? Number(a.stepIndex) : -1;
+      const sb = b.stepIndex != null ? Number(b.stepIndex) : -1;
+      if (sa !== sb) return sa - sb;
+      if (a.status === 'streaming' && b.status !== 'streaming') return 1;
+      if (b.status === 'streaming' && a.status !== 'streaming') return -1;
+      return 0;
+    });
+    return candidates[candidates.length - 1];
+  }
+
+  function isElementActivelyInspected() {
+    try {
+      const det = el('latest-call-details');
+      const tl = el('session-timeline-drawer');
+      if (det && state.latestCallDetailOpen && typeof det.matches === 'function' && det.matches(':hover')) return true;
+      if (tl && state.historyDrawerOpen && typeof tl.matches === 'function' && tl.matches(':hover')) return true;
+      const activeEl = shadow?.activeElement || document?.activeElement;
+      if (activeEl && ((det && det.contains?.(activeEl)) || (tl && tl.contains?.(activeEl)))) return true;
+      const sel = shadow?.getSelection?.() || window?.getSelection?.();
+      if (sel && String(sel.toString() || '').trim().length > 0 && sel.anchorNode) {
+        const card = el('latest-call-card');
+        if (card && card.contains?.(sel.anchorNode)) return true;
+      }
+    } catch { }
+    return false;
+  }
+
+  function isCallCardReadingProtected(incomingCall) {
+    if (!state.displayedCallRecord || !incomingCall) return false;
+    if (state.pinnedCallRecord) return true;
+    const differentCall = incomingCall.callId !== state.displayedCallRecord.callId;
+    if (!differentCall) return false;
+    if (state.latestCallDetailOpen && state.displayedCallRecord.status !== 'streaming') return true;
+    if (isElementActivelyInspected()) return true;
+    return false;
+  }
+
+  function resolveCallStatusDisplay(call) {
+    const out = call?.outcomeStatus || call?.status || 'unknown';
+    if (out === 'streaming') return { text: t('session.latestCall.statusStreaming'), cls: 'key-pill pill-warn' };
+    if (out === 'canceled') return { text: t('session.latestCall.statusCanceled'), cls: 'key-pill pill-muted' };
+    if (out === 'success' || out === 'final') return { text: t('session.latestCall.statusSuccess'), cls: 'key-pill pill-good' };
+    if (out === 'quota_exhausted' || out === 'context_overflow' || out === 'exceeded' || out === 'network' || out === 'network_error' || out === 'rate_limit' || out === 'failed' || call?.error) {
+      return { text: t('session.latestCall.statusFailed'), cls: 'key-pill pill-danger' };
+    }
+    return { text: t('session.latestCall.statusUnknown'), cls: 'key-pill pill-muted' };
+  }
+
+  function formatCallCachePctText(call) {
+    if (!call) return t('session.latestCall.unknownVal');
+    if (call.cacheStatus === 'missing' || !call.hasInputCacheFields) return t('session.latestCall.unknownVal');
+    if (call.cacheStatus === 'zero_input') return t('session.latestCall.naVal');
+    if (call.cacheReadPct !== null && call.cacheReadPct !== undefined) return `${call.cacheReadPct}%`;
+    return t('session.latestCall.unknownVal');
+  }
+
+  function applyLatestCallRecordToDom(call, { playAnim = false } = {}) {
+    const card = el('latest-call-card');
+    if (!card) return;
+    const statusPill = el('latest-call-status-pill');
+    const agentPill = el('latest-call-agent-pill');
+    const timeEl = el('latest-call-time');
+    const modelEl = el('latest-call-model');
+    const effortEl = el('latest-call-effort');
+    const tokInline = el('latest-call-tokens-inline');
+    const cacheInline = el('latest-call-cache-inline');
+    const durInline = el('latest-call-duration-inline');
+    const detailGrid = el('latest-call-detail-grid');
+    const errorBox = el('latest-call-error-box');
+    const bodyEl = el('latest-call-body');
+
+    const st = resolveCallStatusDisplay(call);
+    if (statusPill) {
+      statusPill.textContent = st.text;
+      statusPill.className = st.cls;
+    }
+
+    if (agentPill) {
+      if (call.agentRole === 'subagent') {
+        agentPill.hidden = false;
+        agentPill.className = 'call-agent-badge is-subagent';
+        agentPill.textContent = call.subagentType ? `${t('session.latestCall.agentSub')} · ${call.subagentType}` : t('session.latestCall.agentSub');
+      } else if (call.attributionConfidence === 'unidentified') {
+        agentPill.hidden = false;
+        agentPill.className = 'call-agent-badge is-unknown';
+        agentPill.textContent = t('session.latestCall.agentUnknown');
+      } else {
+        agentPill.hidden = false;
+        agentPill.className = 'call-agent-badge';
+        agentPill.textContent = t('session.latestCall.agentMain');
+      }
+    }
+
+    if (timeEl) timeEl.textContent = formatCallTimeStr(call);
+    const modelTitle = formatCallModelTitle(call);
+    if (modelEl) {
+      modelEl.textContent = modelTitle;
+      modelEl.title = call.modelExactId ? `${modelTitle} (${call.modelExactId})` : modelTitle;
+    }
+    if (effortEl) {
+      if (call.effort) {
+        effortEl.hidden = false;
+        effortEl.textContent = call.effort;
+      } else {
+        effortEl.hidden = true;
+        effortEl.textContent = '';
+      }
+    }
+
+    const unk = t('session.latestCall.unknownVal');
+    const scoreInline = el('latest-call-score-inline');
+    const callEval = (typeof evaluateGenerationExperience === 'function')
+      ? evaluateGenerationExperience({
+          phase: call.status === 'streaming' ? 'streaming' : (call.outcomeStatus === 'canceled' ? 'canceled' : (call.error ? 'failed' : 'final')),
+          outcomeStatus: call.outcomeStatus,
+          ttftSec: call.ttftSec,
+          streamingSec: call.streamingSec,
+          totalDurationSec: call.durationSec,
+          streamSpeed: call.streamingTps ?? call.streamSpeed,
+          overallTps: call.tps,
+          outputTokens: call.outputTokens,
+          totalInputTokens: call.totalInputTokens,
+          chunkCount: call.chunkCount,
+          chunkIntervalsMs: call.chunkIntervalsMs,
+          intervalCv: call.intervalCv,
+          sampleSource: call.sampleSource || null,
+          isSyntheticPoll: call.isSyntheticPoll === true,
+          error: call.error
+        }, currentPanelLanguage)
+      : null;
+
+    if (scoreInline) {
+      if (callEval && callEval.efficiency?.available) {
+        scoreInline.hidden = false;
+        scoreInline.textContent = `${callEval.efficiency.score}${currentPanelLanguage === 'en' ? ' pts' : '分'} · ${callEval.efficiency.grade}`;
+        scoreInline.style.color = callEval.efficiency.tier?.color || '';
+        scoreInline.style.borderColor = callEval.efficiency.tier?.color || '';
+        scoreInline.title = callEval.shortTitle || '';
+      } else if (call.eScore != null && call.eGrade) {
+        scoreInline.hidden = false;
+        scoreInline.textContent = `${call.eScore}${currentPanelLanguage === 'en' ? ' pts' : '分'} · ${call.eGrade}`;
+        scoreInline.style.color = callEval?.badge?.color || '';
+        scoreInline.style.borderColor = callEval?.badge?.color || '';
+      } else {
+        scoreInline.hidden = true;
+        scoreInline.textContent = '—';
+        scoreInline.style.color = '';
+        scoreInline.style.borderColor = '';
+      }
+    }
+
+    const inpStr = call.hasInputCacheFields && call.inputTokens !== null ? short(call.inputTokens) : unk;
+    const outStr = call.outputTokens !== null && call.outputTokens !== undefined ? short(call.outputTokens) : unk;
+    if (tokInline) tokInline.textContent = t('session.latestCall.inlineTokens', { inp: inpStr, out: outStr });
+    if (cacheInline) cacheInline.textContent = t('session.latestCall.inlineCache', { val: formatCallCachePctText(call) });
+    if (durInline) durInline.textContent = call.durationSec !== null && call.durationSec !== undefined
+      ? (typeof formatHumanDuration === 'function' ? formatHumanDuration(call.durationSec, currentPanelLanguage) : `${call.durationSec}s`)
+      : '—';
+
+    if (detailGrid) {
+      detailGrid.replaceChildren();
+      const agentDesc = call.agentRole === 'subagent'
+        ? `${t('session.latestCall.agentSub')}${call.subagentRole ? ` (${call.subagentRole})` : (call.subagentType ? ` (${call.subagentType})` : '')}${call.parentCascadeId ? ` · parent ${String(call.parentCascadeId).slice(0, 8)}` : ''}${call.parentStepIndex != null ? ` · step #${call.parentStepIndex}` : ` · ${t('session.latestCall.missingParentStep')}`}`
+        : (call.attributionConfidence === 'unidentified' ? t('session.latestCall.agentUnknown') : t('session.latestCall.agentMain'));
+      const fmtDurOrUnk = (v) => (v !== null && v !== undefined) ? (typeof formatHumanDuration === 'function' ? formatHumanDuration(v, currentPanelLanguage) : `${v}s`) : unk;
+      const eDetailVal = callEval?.efficiency?.available
+        ? `${callEval.efficiency.score} ${currentPanelLanguage === 'en' ? 'pts' : '分'} · ${callEval.efficiency.tier?.title || callEval.efficiency.grade}`
+        : (call.eScore != null ? `${call.eScore} (${call.eGrade || '--'})` : (callEval?.efficiency?.skippedReason === 'insufficient_sample' ? t('session.speed.scoreSkippedSparse') : t('session.speed.scoreSkippedMissing')));
+      const rawIdBadge = call.rawPlaceholderId ? ` (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})` : '';
+      const stableIdDisplay = (call.stableModelId && !/^model_placeholder_/i.test(String(call.stableModelId)))
+        ? `${call.stableModelId}${rawIdBadge}`
+        : ((call.modelExactId && !/^model_placeholder_/i.test(String(call.modelExactId)))
+          ? `${call.modelExactId}${rawIdBadge}`
+          : (call.rawPlaceholderId
+            ? `${unk} (${t('session.latestCall.rawIdNote', { id: call.rawPlaceholderId })})`
+            : (call.modelExactId || call.modelKey || unk)));
+      const modelAndEffortDisplay = formatProductDisplayWithEffort(modelTitle, call.effort);
+      const callStreamDisplay = callEval?.isSampleSparse
+        ? `${t('session.speed.shortSampleBadge')}${callEval.shortWindowEstimateSpeed != null ? ` (${t('session.speed.shortWindowEst')}: ${callEval.shortWindowEstimateSpeed} tok/s)` : ''}`
+        : ((call.streamingTps ?? call.streamSpeed) != null ? `${call.streamingTps ?? call.streamSpeed} tok/s${callEval?.speedTier ? ` · ${callEval.speedTier.title}` : ''}` : unk);
+      const cells = [
+        [t('session.latestCall.fieldTime'), formatCallTimeStr(call)],
+        [t('session.latestCall.fieldStatus'), st.text],
+        [t('session.latestCall.fieldModelId'), stableIdDisplay],
+        [t('session.latestCall.fieldModelLabel'), modelAndEffortDisplay],
+        [t('session.latestCall.fieldInput'), call.hasInputCacheFields && call.inputTokens !== null ? fmt(call.inputTokens) : unk],
+        [t('session.latestCall.fieldCacheRead'), call.hasInputCacheFields && call.cacheReadTokens !== null ? fmt(call.cacheReadTokens) : unk],
+        [t('session.latestCall.fieldTotalInput'), call.hasInputCacheFields && call.totalInputTokens !== null ? fmt(call.totalInputTokens) : unk],
+        [t('session.latestCall.fieldOutput'), call.outputTokens !== null && call.outputTokens !== undefined
+          ? `${fmt(call.outputTokens)}${call.thinkingTokens ? ` (${fmt(call.thinkingTokens)})` : ''}`
+          : unk],
+        [t('session.latestCall.fieldCacheRatio'), formatCallCachePctText(call)],
+        [t('session.latestCall.fieldTtft'), `${fmtDurOrUnk(call.ttftSec)}${call.ttftRatioPct != null ? ` (${call.ttftRatioPct}%)` : ''}${callEval?.ttftTier ? ` · ${callEval.ttftTier.title}` : ''}`],
+        [t('session.latestCall.fieldDuration'), `${fmtDurOrUnk(call.durationSec)}${callEval?.durationTier ? ` · ${callEval.durationTier.title}` : ''}`],
+        [t('session.speed.streamRate'), callStreamDisplay],
+        [t('session.speed.breakdown.overall'), call.tps !== null && call.tps !== undefined ? `${call.tps} tok/s` : unk],
+        [t('session.speed.breakdown.eScore'), eDetailVal],
+        [t('session.latestCall.fieldAgent'), agentDesc]
+      ];
+      for (const [k, v] of cells) {
+        const cell = document.createElement('div');
+        cell.className = 'call-detail-cell';
+        const kEl = document.createElement('span');
+        kEl.className = 'call-detail-k';
+        kEl.textContent = k;
+        const vEl = document.createElement('span');
+        vEl.className = 'call-detail-v';
+        vEl.textContent = v;
+        cell.appendChild(kEl);
+        cell.appendChild(vEl);
+        detailGrid.appendChild(cell);
+      }
+    }
+
+    if (errorBox) {
+      if (call.error || st.cls.includes('pill-danger')) {
+        errorBox.hidden = false;
+        const reason = call.errorClassification?.reason || '';
+        errorBox.textContent = [reason, call.error].filter(Boolean).join(' · ') || st.text;
+      } else {
+        errorBox.hidden = true;
+        errorBox.textContent = '';
+      }
+    }
+
+    if (bodyEl && playAnim && !prefersReducedMotionNow()) {
+      if (state.callEnterAnimTimer) {
+        clearTimeout(state.callEnterAnimTimer);
+        state.callEnterAnimTimer = null;
+      }
+      bodyEl.classList?.remove?.('is-entering');
+      void bodyEl.offsetWidth;
+      bodyEl.classList?.add?.('is-entering');
+      state.callEnterAnimTimer = setTimeout(() => {
+        state.callEnterAnimTimer = null;
+        bodyEl.classList?.remove?.('is-entering');
+      }, 250);
+    }
+  }
+
+  function syncLatestCallDetailsVisibility() {
+    const det = el('latest-call-details');
+    const row = el('latest-call-summary-row');
+    if (det) det.style.display = state.latestCallDetailOpen ? 'block' : 'none';
+    if (row) row.setAttribute?.('aria-expanded', state.latestCallDetailOpen ? 'true' : 'false');
+  }
+
+  function renderLatestCallCard({ fromUserAction = false, skipAnim = false } = {}) {
+    const card = el('latest-call-card');
+    if (!card) return;
+    if (!state.route) {
+      card.hidden = true;
+      return;
+    }
+
+    const incoming = resolveLatestSessionCallRecord();
+    const target = state.pinnedCallRecord || incoming;
+    if (!target) {
+      card.hidden = !state.historyDrawerOpen;
+      return;
+    }
+    card.hidden = false;
+
+    const newBanner = el('latest-call-new-banner');
+    if (!fromUserAction && isCallCardReadingProtected(incoming)) {
+      if (incoming && (!state.pendingLatestCallRecord || buildCallDisplaySignature(incoming) !== buildCallDisplaySignature(state.pendingLatestCallRecord))) {
+        state.pendingLatestCallRecord = incoming;
+      }
+      if (newBanner) newBanner.hidden = false;
+      if (state.pinnedCallRecord && lastCallCardLang !== currentPanelLanguage) {
+        applyLatestCallRecordToDom(state.pinnedCallRecord, { playAnim: false });
+        lastCallCardLang = currentPanelLanguage;
+      }
+      syncLatestCallDetailsVisibility();
+      return;
+    }
+
+    if (newBanner) newBanner.hidden = true;
+    state.pendingLatestCallRecord = null;
+
+    const nextSig = buildCallDisplaySignature(target);
+    const langChanged = lastCallCardLang !== currentPanelLanguage;
+    if (nextSig === state.displayedCallSig && !langChanged) {
+      syncLatestCallDetailsVisibility();
+      return;
+    }
+
+    const hadPrev = Boolean(state.displayedCallRecord);
+    const isRealReplacement = hadPrev && nextSig !== state.lastAnimatedCallSig && target.status !== 'streaming';
+    const shouldAnimate = !skipAnim && isRealReplacement && nextSig !== state.displayedCallSig;
+
+    state.displayedCallRecord = target;
+    state.displayedCallSig = nextSig;
+    if (target.status !== 'streaming') {
+      state.lastAnimatedCallSig = nextSig;
+    }
+    lastCallCardLang = currentPanelLanguage;
+    applyLatestCallRecordToDom(target, { playAnim: shouldAnimate });
+    syncLatestCallDetailsVisibility();
+  }
+
+  function renderSessionTimeline() {
+    const drawer = el('session-timeline-drawer');
+    const toggleBtn = el('btn-session-history-toggle');
+    if (toggleBtn) {
+      toggleBtn.textContent = state.historyDrawerOpen ? t('session.timeline.hideHistory') : t('session.timeline.viewHistory');
+      toggleBtn.setAttribute?.('aria-expanded', state.historyDrawerOpen ? 'true' : 'false');
+    }
+    if (!drawer) return;
+    drawer.style.display = state.historyDrawerOpen ? 'flex' : 'none';
+    if (!state.historyDrawerOpen) return;
+
+    const sumEl = el('session-timeline-summary');
+    const listEl = el('session-timeline-list');
+    const unlinkedEl = el('session-timeline-unlinked');
+    const moreWrap = el('session-timeline-more-wrap');
+    const moreBtn = el('btn-timeline-load-more');
+
+    if (state.timelineLoading && !state.sessionTimeline) {
+      if (sumEl) sumEl.textContent = t('session.timeline.loading');
+      if (listEl) listEl.replaceChildren();
+      if (unlinkedEl) unlinkedEl.hidden = true;
+      if (moreWrap) moreWrap.hidden = true;
+      return;
+    }
+
+    const tl = state.sessionTimeline;
+    if (!tl || (!tl.turns?.length && !tl.unlinkedSubagentCalls?.length)) {
+      if (sumEl) sumEl.textContent = state.timelineError ? translateBackendText(state.timelineError) : t('session.timeline.empty');
+      if (listEl) listEl.replaceChildren();
+      if (unlinkedEl) unlinkedEl.hidden = true;
+      if (moreWrap) moreWrap.hidden = true;
+      return;
+    }
+
+    const turns = Array.isArray(tl.turns) ? tl.turns : [];
+    const cacheText = tl.cacheSummary && tl.cacheSummary.cacheStatus !== 'missing'
+      ? (tl.cacheSummary.cacheStatus === 'zero_input' ? t('session.latestCall.naVal') : `${tl.cacheSummary.cacheReadPct}%`)
+      : t('session.latestCall.unknownVal');
+    if (sumEl) {
+      sumEl.replaceChildren();
+      const sLine = document.createElement('div');
+      sLine.textContent = t('session.timeline.summary', {
+        turns: turns.length,
+        calls: tl.totalCalls || 0,
+        main: tl.mainCallsCount || 0,
+        sub: tl.subagentCallsCount || 0,
+        cache: cacheText
+      });
+      const noteLine = document.createElement('div');
+      noteLine.style.marginTop = '2px';
+      noteLine.textContent = t('session.timeline.windowNote');
+      sumEl.appendChild(sLine);
+      sumEl.appendChild(noteLine);
+      if (tl.subagentNote) {
+        const dbNoteLine = document.createElement('div');
+        dbNoteLine.style.marginTop = '2px';
+        dbNoteLine.textContent = t('session.timeline.dbMissingNote', { reason: tl.subagentNote });
+        sumEl.appendChild(dbNoteLine);
+      }
+    }
+
+    if (listEl) {
+      const curRouteKey = state.route || '';
+      const sameTimelineRoute = state.timelineRenderedRoute === curRouteKey;
+      const prevScrollTop = sameTimelineRoute ? Number(listEl.scrollTop || 0) : 0;
+      listEl.replaceChildren();
+      state.timelineRenderedRoute = curRouteKey;
+      const resolveTurnKey = (tObj) => tObj?.turnKey || `turn-${tObj?.turnIndex ?? 'x'}-${tObj?.stepIndex ?? 'na'}`;
+      const descTurns = [...turns].reverse();
+      if (descTurns.length > 0 && state.timelineAutoExpandedRoute !== curRouteKey) {
+        state.timelineAutoExpandedRoute = curRouteKey;
+        if (state.expandedTurnKeys.size === 0) {
+          state.expandedTurnKeys.add(resolveTurnKey(descTurns[0]));
+        }
+      }
+      const limit = Math.max(5, Number(state.timelinePageLimit) || 10);
+      const visibleTurns = descTurns.slice(0, limit);
+
+      const createCallRow = (call) => {
+        const row = document.createElement('div');
+        const isSelected = state.pinnedCallRecord && state.pinnedCallRecord.callId === call.callId;
+        row.className = `timeline-call-row${call.agentRole === 'subagent' ? ' is-subagent' : ''}${isSelected ? ' is-selected' : ''}`;
+        row.setAttribute('role', 'button');
+        row.setAttribute('tabindex', '0');
+
+        const main = document.createElement('div');
+        main.className = 'timeline-call-main';
+        const roleBadge = document.createElement('span');
+        roleBadge.className = `call-agent-badge${call.agentRole === 'subagent' ? ' is-subagent' : (call.attributionConfidence === 'unidentified' ? ' is-unknown' : '')}`;
+        roleBadge.textContent = call.agentRole === 'subagent'
+          ? (call.subagentType ? `${t('session.latestCall.agentSub')}·${call.subagentType}` : t('session.latestCall.agentSub'))
+          : (call.attributionConfidence === 'unidentified' ? t('session.latestCall.agentUnknown') : t('session.latestCall.agentMain'));
+        const mName = document.createElement('span');
+        mName.className = 'timeline-turn-prompt';
+        const baseModelTitle = formatCallModelTitle(call);
+        const effortText = call.effort ? String(call.effort).trim() : '';
+        const hasEffortParen = effortText && baseModelTitle.trim().toLowerCase().endsWith(`(${effortText.toLowerCase()})`);
+        mName.textContent = (effortText && !hasEffortParen) ? `${baseModelTitle} (${effortText})` : baseModelTitle;
+        main.appendChild(roleBadge);
+        main.appendChild(mName);
+
+        const stats = document.createElement('div');
+        stats.className = 'timeline-call-stats';
+        const st = resolveCallStatusDisplay(call);
+        const inpTxt = call.hasInputCacheFields ? short(call.totalInputTokens) : t('session.latestCall.unknownVal');
+        const eTag = (call.eScore != null && call.eGrade)
+          ? (currentPanelLanguage === 'en' ? ` · ${call.eScore}pt(${call.eGrade})` : ` · ${call.eScore}分(${call.eGrade})`)
+          : '';
+        if (currentPanelLanguage === 'en') {
+          stats.textContent = `${formatCallTimeStr(call)} · In ${inpTxt}/Out ${short(call.outputTokens || 0)} · Cache ${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        } else if (currentPanelLanguage === 'zh-TW') {
+          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 緩${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        } else {
+          stats.textContent = `${formatCallTimeStr(call)} · 入${inpTxt}/出${short(call.outputTokens || 0)} · 缓${formatCallCachePctText(call)}${eTag} · ${st.text}`;
+        }
+
+        row.appendChild(main);
+        row.appendChild(stats);
+        const inspectCall = () => {
+          state.pinnedCallRecord = call;
+          state.latestCallDetailOpen = true;
+          renderLatestCallCard({ fromUserAction: true, skipAnim: false });
+          renderSessionTimeline();
+        };
+        row.addEventListener('click', inspectCall);
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inspectCall(); }
+        });
+        return row;
+      };
+
+      for (const turn of visibleTurns) {
+        const turnKey = resolveTurnKey(turn);
+        const isOpen = state.expandedTurnKeys.has(turnKey);
+        const cardEl = document.createElement('div');
+        cardEl.className = 'timeline-turn-card';
+
+        const hdrBtn = document.createElement('button');
+        hdrBtn.type = 'button';
+        hdrBtn.className = 'timeline-turn-hdr';
+        hdrBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+
+        const left = document.createElement('div');
+        left.className = 'timeline-turn-left';
+        const idxEl = document.createElement('span');
+        idxEl.className = 'timeline-turn-idx';
+        idxEl.textContent = t('session.timeline.turnLabel', { n: turn.turnIndex });
+        const rawTurnPrompt = turn.preview || turn.userPromptPreview || '';
+        const promptText = typeof sanitizeTurnPreviewText === 'function' ? sanitizeTurnPreviewText(rawTurnPrompt, 120) : rawTurnPrompt;
+        const promptEl = document.createElement('span');
+        promptEl.className = 'timeline-turn-prompt';
+        promptEl.textContent = promptText || t('session.timeline.turnNoPrompt');
+        if (promptText) promptEl.title = promptText;
+        left.appendChild(idxEl);
+        left.appendChild(promptEl);
+
+        const metaEl = document.createElement('span');
+        metaEl.className = 'timeline-turn-meta';
+        metaEl.textContent = t('session.timeline.turnSummary', {
+          calls: turn.calls?.length || 0,
+          inp: short(turn.inputTokens || 0),
+          cap: short(turn.cacheReadTokens || 0),
+          out: short(turn.outputTokens || 0)
+        });
+
+        hdrBtn.appendChild(left);
+        hdrBtn.appendChild(metaEl);
+        hdrBtn.addEventListener('click', () => {
+          if (state.expandedTurnKeys.has(turnKey)) state.expandedTurnKeys.delete(turnKey);
+          else state.expandedTurnKeys.add(turnKey);
+          renderSessionTimeline();
+        });
+        cardEl.appendChild(hdrBtn);
+
+        if (isOpen && Array.isArray(turn.calls)) {
+          const bodyEl = document.createElement('div');
+          bodyEl.className = 'timeline-turn-body';
+          for (const call of turn.calls) {
+            bodyEl.appendChild(createCallRow(call));
+          }
+          cardEl.appendChild(bodyEl);
+        }
+        listEl.appendChild(cardEl);
+      }
+
+      if (moreWrap && moreBtn) {
+        const remaining = descTurns.length - visibleTurns.length;
+        if (remaining > 0) {
+          moreWrap.hidden = false;
+          moreBtn.textContent = t('session.timeline.loadMore', { n: remaining });
+        } else {
+          moreWrap.hidden = true;
+        }
+      }
+
+      if (unlinkedEl) {
+        const unlinked = Array.isArray(tl.unlinkedSubagentCalls) ? tl.unlinkedSubagentCalls : [];
+        if (unlinked.length > 0) {
+          unlinkedEl.hidden = false;
+          unlinkedEl.replaceChildren();
+          const uTitle = document.createElement('div');
+          uTitle.className = 'session-timeline-unlinked-title';
+          uTitle.textContent = t('session.timeline.unlinkedTitle', { n: unlinked.length });
+          unlinkedEl.appendChild(uTitle);
+          for (const uCall of unlinked) {
+            unlinkedEl.appendChild(createCallRow(uCall));
+          }
+        } else {
+          unlinkedEl.hidden = true;
+          unlinkedEl.replaceChildren();
+        }
+      }
+      if (prevScrollTop > 0) {
+        const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
+        listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
+      }
+    }
+  }
+
+  async function fetchSessionTimeline(id, { force = false } = {}) {
+    if (!id || state.disposed || id !== state.route) return null;
+    if (!force && state.timelineLoading) return null;
+    const seq = ++timelineFetchSeq;
+    const gen = state.generation;
+    state.timelineLoading = true;
+    state.timelineError = '';
+    if (state.historyDrawerOpen) renderSessionTimeline();
+
+    try {
+      if (timelineFetchController) {
+        try { timelineFetchController.abort(); } catch { }
+      }
+      timelineFetchController = typeof AbortController === 'function' ? new AbortController() : null;
+      const liveCalls = Array.isArray(state.sessionCalls) ? state.sessionCalls : [];
+      const configs = state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [];
+      const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getSessionTimeline === 'function';
+      let timelineData = null;
+
+      if (hasIpc || hasLiveHttpBridge()) {
+        const out = await callBackendWithPriority({
+          ipcCall: hasIpc ? () => window.contextMeterAPI.getSessionTimeline(id, { force, liveCalls, cascadeModelConfigs: configs }) : null,
+          liveRoute: '/session-timeline',
+          liveBody: { id, force, liveCalls, cascadeModelConfigs: configs },
+          liveFetchOpts: timelineFetchController ? { signal: timelineFetchController.signal } : {}
+        });
+        const res = out?.result;
+        if (res?.ok && res.data) {
+          timelineData = res.data;
+        } else if (res && !res.ok) {
+          state.timelineError = res.error || '';
+        }
+      } else if (typeof groupSessionCallsByTurns === 'function') {
+        timelineData = groupSessionCallsByTurns([], liveCalls, { cascadeId: id, cascadeModelConfigs: configs });
+      }
+
+      if (gen !== state.generation || seq !== timelineFetchSeq || state.disposed) return null;
+      if (timelineData) {
+        state.sessionTimeline = timelineData;
+        state.lastTimelineFetchAt = Date.now();
+      }
+    } catch (e) {
+      if (e?.name !== 'AbortError' && gen === state.generation && !state.disposed) {
+        state.timelineError = e?.message || String(e || '');
+      }
+    } finally {
+      if (seq === timelineFetchSeq && !state.disposed) {
+        state.timelineLoading = false;
+        if (state.historyDrawerOpen) renderSessionTimeline();
+      }
+    }
+    return state.sessionTimeline;
+  }
+
+  function scheduleLatestCallRefresh({ allowTimelineRefresh = false } = {}) {
+    if (state.disposed) return;
+    if (allowTimelineRefresh && state.historyDrawerOpen && state.route) {
+      const latest = resolveLatestSessionCallRecord();
+      const sig = buildCallDisplaySignature(latest);
+      if (sig && sig !== state.lastTimelineCallSig && Date.now() - state.lastTimelineFetchAt > 1200) {
+        state.lastTimelineCallSig = sig;
+        void fetchSessionTimeline(state.route);
+      }
+    }
+    renderLatestCallCard();
+  }
+
   // 渲染上下文与全局状态（无论在主页 / 还是会话页 /c/<id>，始终保持插件栏挂载与可用）
   function render() {
     host.hidden = false;
@@ -20673,10 +25467,12 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (barFill) barFill.style.width = '0%';
       setContextBadgeDisplay('--%', '');
       el('amount').textContent = t('badge.noSession');
-      setHoverExtra(showCliButton ? t('badge.clickOpenCli') : ' · 点击查看统计明细');
+      setHoverExtra(showCliButton ? t('badge.clickOpenCli') : t('badge.clickOpenDetails'));
       syncSpeedBadgeText();
       el('badge-tokens').title = t('badge.tokensTitle');
       syncContextModelSelectionFromState();
+      renderLatestCallCard({ skipAnim: true });
+      renderSessionTimeline();
       return;
     }
     renderSessionCost();
@@ -20856,43 +25652,48 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
 
     if (el('speed-summary')) {
-      const spBadge = el('speed-badge');
-      const spVal = el('speed-val');
-      const spDur = el('speed-duration');
-      const spTtft = el('speed-ttft');
-      const spTokens = el('speed-tokens');
-      const spTakeaway = el('speed-takeaway');
-
-      if (sp?.tps != null) {
-        if (spBadge) {
-          if (sp.tps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
-          else if (sp.tps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
-          else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
-        }
-        if (spVal) spVal.textContent = `${sp.tps} tok/s`;
-        if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
-        if (spTtft) spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—';
-        if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
-        if (spTakeaway) {
-          const modelStr = d?.model ? `（${d.model}）` : '';
-          const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
-          spTakeaway.textContent = t('speed.takeaway.ok', {
-            tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
-            tps: sp.tps,
-            stream: streamInfo,
-            dur: sp.duration,
-            tok: fmt(sp.outputTokens),
-            model: modelStr
-          });
-        }
+      if (typeof evaluateGenerationExperience === 'function') {
+        const evalRes = state.lastSpeedEval || evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
+        renderSpeedExperienceInPlace(evalRes);
       } else {
-        if (spBadge) { spBadge.textContent = state.requestBusy ? t('speed.pill.calc') : t('speed.pill.idle'); spBadge.className = 'key-pill pill-muted'; }
-        if (spVal) spVal.textContent = '—';
-        if (spDur) spDur.textContent = '—';
-        if (spTtft) spTtft.textContent = '—';
-        if (spTokens) spTokens.textContent = '—';
-        if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.idle');
+        const spBadge = el('speed-badge');
+        const spVal = el('speed-val');
+        const spDur = el('speed-duration');
+        const spTtft = el('speed-ttft');
+        const spTokens = el('speed-tokens');
+        const spTakeaway = el('speed-takeaway');
+
+        if (sp?.tps != null) {
+          if (spBadge) {
+            if (sp.tps >= 80) { spBadge.textContent = t('speed.pill.fast'); spBadge.className = 'key-pill pill-good'; }
+            else if (sp.tps >= 35) { spBadge.textContent = t('speed.pill.smooth'); spBadge.className = 'key-pill pill-good'; }
+            else if (sp.tps >= 15) { spBadge.textContent = t('speed.pill.good'); spBadge.className = 'key-pill pill-warn'; }
+            else { spBadge.textContent = t('speed.pill.slow'); spBadge.className = 'key-pill pill-danger'; }
+          }
+          if (spVal) spVal.textContent = `${sp.tps} tok/s`;
+          if (spDur) spDur.textContent = sp.duration ? `${sp.duration}s` : '—';
+          if (spTtft) spTtft.textContent = sp.ttft ? `${sp.ttft}s` : '—';
+          if (spTokens) spTokens.textContent = `${fmt(sp.outputTokens)} tok`;
+          if (spTakeaway) {
+            const modelStr = d?.model ? `（${d.model}）` : '';
+            const streamInfo = sp.streamingTps ? t('speed.streamPart', { tps: sp.streamingTps }) : '';
+            spTakeaway.textContent = t('speed.takeaway.ok', {
+              tone: sp.tps >= 35 ? t('speed.tone.smooth') : t('speed.tone.steady'),
+              tps: sp.tps,
+              stream: streamInfo,
+              dur: sp.duration,
+              tok: fmt(sp.outputTokens),
+              model: modelStr
+            });
+          }
+        } else {
+          if (spBadge) { spBadge.textContent = state.requestBusy ? t('speed.pill.calc') : t('speed.pill.idle'); spBadge.className = 'key-pill pill-muted'; }
+          if (spVal) spVal.textContent = '—';
+          if (spDur) spDur.textContent = '—';
+          if (spTtft) spTtft.textContent = '—';
+          if (spTokens) spTokens.textContent = '—';
+          if (spTakeaway) spTakeaway.textContent = t('speed.takeaway.idle');
+        }
       }
     }
 
@@ -20926,6 +25727,8 @@ function renderHeatmapGrid(forceRebuild = false) {
       scan: state.scan ? new Date(state.scan.scannedAt).toLocaleTimeString() : t('tech.unfinished')
     });
     el('refresh').disabled = state.scanBusy;
+    scheduleLatestCallRefresh({ allowTimelineRefresh: false });
+    if (state.historyDrawerOpen) renderSessionTimeline();
   }
 
   const MAX_FLUSH_BATCH_CALLS = 500;
@@ -21347,6 +26150,18 @@ function renderHeatmapGrid(forceRebuild = false) {
           let effectiveCall = (prevSessionCall && call.status === 'final' && prevSessionCall.status === 'final')
             ? mergePendingCallData(prevSessionCall, call)
             : call;
+          const isNewLiveObservation = Boolean(
+            (wasHydrated && !prevSessionCall) ||
+            prevSessionCall?.liveRealtimeConfirmed === true ||
+            (state.livePendingRequest && state.livePendingRequest.cascadeId === id && call.callId !== state.livePendingRequest.baselineCallId)
+          );
+          if (isNewLiveObservation) {
+            effectiveCall = {
+              ...effectiveCall,
+              liveRealtimeConfirmed: true,
+              liveObservedAtMs: prevSessionCall?.liveObservedAtMs || Date.now()
+            };
+          }
           if (prevPending && effectiveCall.status === 'final' && prevPending.status === 'final') {
             effectiveCall = mergePendingCallData(prevPending, effectiveCall);
           }
@@ -21444,6 +26259,19 @@ function renderHeatmapGrid(forceRebuild = false) {
       state.callsHydrated = true;
       state.sessionCalls = Array.from(state.sessionCallsMap.values());
       state.sessionCostTotal = state.sessionCalls.reduce((sum, c) => sum + (c.isPriced ? (c.costUSD || 0) : 0), 0);
+
+      // 清除等待首字计时器（禁止用 1000ms 轮询步进时间戳伪造服务器分块流式间隔，避免误判为“输出平稳”）
+      const newestPollCall = state.sessionCalls.length ? state.sessionCalls[state.sessionCalls.length - 1] : null;
+      if (newestPollCall) {
+        if (state.livePendingRequest && state.livePendingRequest.cascadeId === id) {
+          const isNewCall = newestPollCall.callId !== state.livePendingRequest.baselineCallId;
+          const gotFirstToken = (newestPollCall.outputTokens || 0) > 0 || newestPollCall.ttftSec != null || newestPollCall.status === 'final';
+          if ((isNewCall && gotFirstToken) || (state.count > (state.livePendingRequest.baselineCount || 0) && gotFirstToken) || newestPollCall.error) {
+            clearLivePendingRequestWait();
+          }
+        }
+      }
+
       if (hasNewOrProgressedPending) {
         state.nextFlushRetryAt = 0;
       }
@@ -21464,8 +26292,20 @@ function renderHeatmapGrid(forceRebuild = false) {
         }
       }
       state.requestAt = Date.now(); state.requestError = '';
+      if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
     } catch (e) { if (generation === state.generation && !state.disposed) state.requestError = e.name === 'AbortError' ? '读取超时' : e.message; }
-    finally { clearTimeout(timeout); state.controllers.delete(controller); if (generation === state.generation && !state.disposed) { state.requestBusy = false; state.requestNext = Date.now() + (document.hidden ? 15000 : 3000); render(); } }
+    finally {
+      clearTimeout(timeout);
+      state.controllers.delete(controller);
+      if (generation === state.generation && !state.disposed) {
+        state.requestBusy = false;
+        const latestRecNow = resolveLatestSessionCallRecord();
+        const isStreamingNow = Boolean(latestRecNow && latestRecNow.status === 'streaming');
+        const nextDelay = document.hidden ? 15000 : (isStreamingNow ? 1000 : 3000);
+        state.requestNext = Date.now() + nextDelay;
+        render();
+      }
+    }
   }
 
   async function scan(generation, id, force = false) {
@@ -21514,6 +26354,7 @@ function renderHeatmapGrid(forceRebuild = false) {
       }
       state.latest = withStepError(state.latest);
       renderFiles(result.data.session);
+      if (state.historyDrawerOpen) scheduleLatestCallRefresh({ allowTimelineRefresh: true });
     } catch (e) { if (generation === state.generation && !state.disposed) state.scanError = e.message; }
     finally { if (generation === state.generation && !state.disposed) { state.scanBusy = false; state.scanNext = Date.now() + (document.hidden ? 60000 : 20000); render(); } }
   }
@@ -22008,8 +26849,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       if (m > 0) return `${m}m`;
       return `${s}s`;
     }
-    if (d > 0) return `${d}天${h}小时`;
-    if (h > 0) return `${h}小时${m}分`;
+    const hrUnit = currentPanelLanguage === 'zh-TW' ? '小時' : '小时';
+    if (d > 0) return `${d}天${h}${hrUnit}`;
+    if (h > 0) return `${h}${hrUnit}${m}分`;
     if (m > 0) return `${m}分`;
     return `${s}秒`;
   }
@@ -22190,8 +27032,13 @@ function renderHeatmapGrid(forceRebuild = false) {
           isResetPassed: rm.isResetPassed
         };
       });
-      const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
-      const pb = priced[0] || nextBuckets[0] || p.primaryBucket || null;
+      const sel = (typeof selectPrimaryQuotaBucket === 'function')
+        ? selectPrimaryQuotaBucket(nextBuckets)
+        : (() => {
+            const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
+            return { primaryBucket: priced[0] || nextBuckets[0] || null, selectionReason: priced.length <= 1 ? 'single_window' : 'tighter_window' };
+          })();
+      const pb = sel.primaryBucket || p.primaryBucket || null;
 
       let nextModels = Array.isArray(p.models) ? p.models : [];
       let nextNoPerm = Boolean(p.noPermission);
@@ -22251,6 +27098,7 @@ function renderHeatmapGrid(forceRebuild = false) {
           };
         });
 
+        const priced = nextBuckets.filter(b => b.remainingFraction !== null).sort((a, b) => a.remainingFraction - b.remainingFraction);
         if (nextNoPerm && nextModels.some(m => !m.noPermission)) {
           nextNoPerm = false;
           nextReason = null;
@@ -22281,18 +27129,22 @@ function renderHeatmapGrid(forceRebuild = false) {
         }
       }
 
+      const finalRem = pb?.remainingFraction ?? nextRem ?? p.remainingFraction ?? null;
+      const finalPct = pb?.percentText ?? nextPct ?? p.percentText ?? null;
+      const finalExh = pb ? Boolean(pb.isExhausted || pb.remainingFraction === 0) : Boolean(nextExh);
       return {
         ...p,
         models: nextModels,
         noPermission: nextNoPerm,
         unavailabilityReason: nextReason,
-        remainingFraction: nextRem,
-        percentText: nextPct,
-        isExhausted: nextExh,
         status: nextStatus,
         statusLabel: nextStatusLabel,
         buckets: nextBuckets,
         primaryBucket: pb,
+        selectionReason: sel.selectionReason || p.selectionReason || 'single_window',
+        remainingFraction: finalRem,
+        percentText: finalPct,
+        isExhausted: finalExh,
         hasResetTime: Boolean(pb?.hasResetTime ?? p.hasResetTime),
         resetTimeIso: pb?.resetTimeIso ?? p.resetTimeIso ?? null,
         resetAtMs: pb?.resetAtMs ?? p.resetAtMs ?? null,
@@ -22699,10 +27551,30 @@ function renderHeatmapGrid(forceRebuild = false) {
     if (bQuota) {
       setQuotaAttrIfChanged(bQuota, 'data-quota-state', view.activeStatus || 'unknown');
       const tipModel = view.currentModel?.productLabel || t('quota.current.unmatched');
+      const matchedPoolObj = (view.pools || []).find(p => p.poolKey === view.currentModel?.poolKey) || null;
+      const reasonMap = {
+        tighter_window: currentPanelLanguage === 'en' ? 'tightest window' : (currentPanelLanguage === 'zh-TW' ? '最緊縮視窗優先' : '最紧缩窗口优先'),
+        tie_window: currentPanelLanguage === 'en' ? '5h priority on tie' : (currentPanelLanguage === 'zh-TW' ? '同餘量優先短視窗' : '同余量优先短窗口'),
+        single_window: currentPanelLanguage === 'en' ? 'single window' : (currentPanelLanguage === 'zh-TW' ? '單一限額視窗' : '单一限额窗口')
+      };
+      const winLines = (matchedPoolObj?.buckets || []).map(b => {
+        const wTag = b.windowShort || formatQuotaWindowTitle(b);
+        const wReset = b.hasResetTime ? `${b.resetTimeText} (${formatCountdownMsCompact((b.resetAtMs || 0) - nowMs)})` : t('quota.time.unknown');
+        return `${wTag}: ${b.percentText || t('quota.time.unknown')} (${wReset})`;
+      });
+      const selNote = matchedPoolObj?.primaryBucket
+        ? `${matchedPoolObj.primaryBucket.windowShort || formatQuotaWindowTitle(matchedPoolObj.primaryBucket)} · ${reasonMap[matchedPoolObj.selectionReason] || ''}`
+        : '';
+      const updatedStr = view.fetchedAtMs ? new Date(view.fetchedAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : t('quota.time.unknown');
+      const poolHeader = matchedPoolObj?.title ? ` · ${matchedPoolObj.title}` : '';
       const tipReset = view.activeReset?.hasResetTime
         ? `${view.activeReset.resetTimeText} (${formatCountdownMsCompact((view.activeReset.resetAtMs || 0) - nowMs)})`
         : t('quota.time.unknown');
-      const nextTitle = `${tipModel} · ${view.activeStatusLabel} (${view.badge.text}) · ${t('quota.time.reset')}: ${tipReset}`;
+      const nextTitle = [
+        `${tipModel}${poolHeader} · ${view.activeStatusLabel} (${view.badge.text})${selNote ? ` [${selNote}]` : ''}`,
+        winLines.length ? winLines.join(' | ') : `${t('quota.time.reset')}: ${tipReset}`,
+        `${currentPanelLanguage === 'en' ? 'Updated' : '更新'}: ${updatedStr}`
+      ].filter(Boolean).join('\n');
       if (bQuota.title !== nextTitle) bQuota.title = nextTitle;
       setQuotaAttrIfChanged(bQuota, 'aria-label', `${t('badge.quota.aria')}: ${view.badge.text} (${view.activeStatusLabel})`);
     }
@@ -23385,6 +28257,9 @@ function renderHeatmapGrid(forceRebuild = false) {
       } else {
         scheduleQuotaAutoRefresh();
       }
+      if (typeof refreshAccountsOverview === 'function') {
+        void refreshAccountsOverview({ silent: !isManual, refreshAllRemote: Boolean(isManual) });
+      }
       renderQuotaBoard(nowMs, { animate: shouldAnimateChange, chargeBars: shouldChargeBars });
       return quotaState.snapshot;
     })();
@@ -23397,11 +28272,694 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
   }
 
+  el('btn-speed-breakdown-toggle')?.addEventListener('click', () => {
+    state.speedBreakdownOpen = !state.speedBreakdownOpen;
+    if (typeof evaluateGenerationExperience === 'function') {
+      renderSpeedExperienceInPlace(evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage));
+    }
+    positionFloatingPanels();
+  });
+
+  el('latest-call-summary-row')?.addEventListener('click', () => {
+    state.latestCallDetailOpen = !state.latestCallDetailOpen;
+    if (!state.latestCallDetailOpen && state.pinnedCallRecord) {
+      state.pinnedCallRecord = null;
+      renderSessionTimeline();
+    }
+    if (!state.latestCallDetailOpen && state.pendingLatestCallRecord) {
+      renderLatestCallCard({ fromUserAction: true });
+    } else {
+      syncLatestCallDetailsVisibility();
+    }
+    positionFloatingPanels();
+  });
+  el('latest-call-summary-row')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      el('latest-call-summary-row')?.click();
+    }
+  });
+  el('latest-call-new-banner')?.addEventListener('click', () => {
+    state.pinnedCallRecord = null;
+    state.pendingLatestCallRecord = null;
+    renderLatestCallCard({ fromUserAction: true });
+    if (state.historyDrawerOpen) renderSessionTimeline();
+    positionFloatingPanels();
+  });
+  el('btn-session-history-toggle')?.addEventListener('click', () => {
+    state.historyDrawerOpen = !state.historyDrawerOpen;
+    if (!state.historyDrawerOpen && state.pinnedCallRecord) {
+      state.pinnedCallRecord = null;
+      renderLatestCallCard({ fromUserAction: true, skipAnim: true });
+    }
+    renderSessionTimeline();
+    if (state.historyDrawerOpen && state.route) {
+      void fetchSessionTimeline(state.route, { force: !state.sessionTimeline });
+    }
+    positionFloatingPanels();
+  });
+  el('btn-timeline-load-more')?.addEventListener('click', () => {
+    state.timelinePageLimit = (Number(state.timelinePageLimit) || 10) + 10;
+    renderSessionTimeline();
+    positionFloatingPanels();
+  });
+
   el('btn-quota-refresh')?.addEventListener('click', () => {
     void syncQuotaFromHost(true, { manual: true });
   });
   el('btn-quota-banner-retry')?.addEventListener('click', () => {
     void syncQuotaFromHost(true, { manual: true });
+  });
+
+  // =========================================================================
+  // 多账号账本筛选、切号交互、ELV-57 配额对照表与 ELV-52 保活保障渲染
+  // =========================================================================
+
+  function syncTokenAccountFilterOptions(payload = null) {
+    const sel = el('token-account-select');
+    const noteEl = el('token-account-scope-note');
+    if (!sel) return;
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+    const ov = accountsUiState.overview;
+    const acctList = Array.isArray(ov?.accounts) ? ov.accounts : [];
+    const usageMap = payload?.usageByAccount || ANTIGRAVITY_TOKEN_DATA.rawPayload?.usageByAccount || {};
+    const curScope = payload?.accountScopeKey || ov?.activeAccountScopeKey || '';
+
+    const knownMap = new Map();
+    for (const a of acctList) {
+      knownMap.set(a.accountScopeKey, a.maskedEmail || a.email || a.accountScopeKey);
+    }
+    for (const scopeK of Object.keys(usageMap)) {
+      if (!knownMap.has(scopeK)) knownMap.set(scopeK, scopeK);
+    }
+
+    const optsHtml = [];
+    optsHtml.push({ val: 'all', label: t('accounts.filterAll') });
+    for (const [scopeK, disp] of knownMap.entries()) {
+      const isCur = scopeK === curScope;
+      const suffix = isCur ? ` (${t('accounts.activeTag')})` : '';
+      optsHtml.push({ val: scopeK, label: `${disp}${suffix}` });
+    }
+    optsHtml.push({ val: 'unattributed', label: t('accounts.filterUnattributed') });
+
+    const prevVal = activeTokenAccountFilter || 'all';
+    sel.replaceChildren();
+    for (const item of optsHtml) {
+      const opt = document.createElement('option');
+      opt.value = item.val;
+      opt.textContent = item.label;
+      if (item.val === prevVal) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    if (!optsHtml.some(o => o.val === prevVal)) {
+      activeTokenAccountFilter = 'all';
+      sel.value = 'all';
+    } else {
+      sel.value = prevVal;
+    }
+
+    if (noteEl) {
+      if (activeTokenAccountFilter === 'unattributed') {
+        const unAttrTot = Number(payload?.unattributedUsage?.totalTokens ?? ANTIGRAVITY_TOKEN_DATA.rawPayload?.unattributedUsage?.totalTokens ?? 0);
+        noteEl.textContent = isEn
+          ? `Unattributed history (${formatTokensK(unAttrTot)}): offline Desktop/CLI/IDE files without verified email.`
+          : (isTw ? `歷史未歸屬 (${formatTokensK(unAttrTot)})：無帳號依據的舊檔案不計入當前帳號。` : `历史未归属 (${formatTokensK(unAttrTot)}): 无账号依据的旧文件不计入当前账号。`);
+      } else if (activeTokenAccountFilter !== 'all') {
+        const b = usageMap[activeTokenAccountFilter];
+        const bTot = Number(b?.totalTokens || 0);
+        const kaReqs = Number(b?.keepaliveRequests || 0);
+        const kaTok = Number(b?.keepaliveTokens || 0);
+        if (bTot <= 0 && kaReqs <= 0) {
+          noteEl.textContent = t('accounts.filterNoData');
+        } else if (kaReqs > 0) {
+          noteEl.textContent = t('accounts.filterKeepaliveNote', { reqs: kaReqs, tok: formatTokensK(kaTok) });
+        } else {
+          noteEl.textContent = isEn ? 'Isolated account ledger (zero cross-account mixing).' : (isTw ? '單帳號獨立帳本（零跨號混算）。' : '单账号独立账本（零跨号混算）。');
+        }
+      } else {
+        const attrCount = Object.keys(usageMap).length;
+        noteEl.textContent = attrCount > 0
+          ? (isEn ? `${attrCount} attributed account(s) + isolated legacy history.` : (isTw ? `含 ${attrCount} 個已歸屬帳號 + 獨立未歸屬歷史。` : `含 ${attrCount} 个已归属账号 + 独立未归属历史。`))
+          : '';
+      }
+    }
+    if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+      enhancedDropdowns.get('token-account-select')?.refresh?.();
+    }
+  }
+
+  el('token-account-select')?.addEventListener('change', (ev) => {
+    activeTokenAccountFilter = ev.target?.value || 'all';
+    resetAccountScopedViewOffsets();
+    if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
+      applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+    }
+  });
+
+  function isEditingAutoSwitchDraft() {
+    try {
+      const ae = shadow?.activeElement;
+      if (!ae) return false;
+      const body = el('auto-switch-config-body');
+      return Boolean(body && body.contains?.(ae));
+    } catch {
+      return false;
+    }
+  }
+
+  function renderAccountsOverviewSection() {
+    const ov = accountsUiState.overview || {
+      accounts: [],
+      autoSwitch: {},
+      autoSwitchStatus: { state: 'disabled' },
+      keepalive: {},
+      keepaliveState: {},
+      quotaIntervals: [],
+      protocolEvidence: {
+        checkedVersion: '2.32.1',
+        rpcCountChecked: 375,
+        conclusion: '在已检查的 Antigravity 2.32.1 语言服务 375 个 RPC 和响应中，未发现明确的 Prompt Cache 续期或 TTL 接口，响应亦未见 cacheWriteTokens 或 cacheTtl；因此不展示虚构到期倒计时，缓存保活保持待验证/默认关闭。',
+        minimalExperimentPlan: {
+          targetModel: 'Gemini 4 Hydrogen (High)',
+          totalRequestsPlanned: 5,
+          groupB: '实验组（3 次请求，含 1 次 "ok" 心跳）对比对照组（2 次请求，无保活），约 20K 固定只读前缀、预计总输出 60~150 tok，待维护者确认后再发实验请求。'
+        }
+      }
+    };
+    const isEn = currentPanelLanguage === 'en';
+    const isTw = currentPanelLanguage === 'zh-TW';
+
+    // 1. 工具按钮显隐与反馈横幅
+    const toolsBtn = el('btn-acct-import-tools');
+    if (toolsBtn) {
+      toolsBtn.hidden = !(accountsUiState.toolsPreview?.available && (accountsUiState.toolsPreview.count || 0) > 0);
+    }
+    const fbEl = el('quota-acct-feedback');
+    const lr = ov.autoSwitchStatus?.lastResult;
+    const rawLastErr = (lr?.ok === false && lr?.error) ? lr.error : ov.autoSwitchStatus?.lastError;
+    const formatPersistedError = (raw) => {
+      if (!raw) return '';
+      const txt = typeof translateBackendText === 'function' ? translateBackendText(raw) : String(raw);
+      if (lr?.rolledBack && !/(回滚|回滾|rolled back)/i.test(txt)) {
+        return t('accounts.lastSwitchRolledBack', { detail: txt });
+      }
+      return txt;
+    };
+    const hasRecentPersistedResult = Boolean(
+      !accountsUiState.feedback
+      && !accountsUiState.busy
+      && lr
+      && (lr.ok === false || (lr.atMs != null && Math.abs(Date.now() - Number(lr.atMs)) <= 15 * 60 * 1000))
+    );
+    let displayFeedback = accountsUiState.feedback || '';
+    let displayTone = accountsUiState.feedbackTone;
+    if (!displayFeedback && hasRecentPersistedResult) {
+      if (lr.ok === false) {
+        displayFeedback = formatPersistedError(rawLastErr || t('accounts.actionFail'));
+        displayTone = 'error';
+      } else if (lr.ok === true && (lr.message || lr.toEmail)) {
+        displayFeedback = lr.message
+          ? (typeof translateBackendText === 'function' ? translateBackendText(lr.message) : lr.message)
+          : t('accounts.lastSwitchedTo', { email: lr.toEmail });
+        displayTone = 'success';
+      }
+    }
+    if (fbEl) {
+      fbEl.hidden = !displayFeedback;
+      fbEl.textContent = displayFeedback;
+      fbEl.className = `quota-acct-feedback${displayTone === 'error' ? ' is-error' : (displayTone === 'success' ? ' is-success' : '')}`;
+    }
+
+    // 2. 账号清单
+    const listEl = el('quota-accounts-list');
+    if (listEl) {
+      const prevScrollTop = Number(listEl.scrollTop || 0);
+      listEl.replaceChildren();
+      const accts = Array.isArray(ov.accounts) ? ov.accounts : [];
+      if (!accts.length) {
+        const empty = document.createElement('div');
+        empty.className = 'quota-muted-note';
+        empty.textContent = t('accounts.empty');
+        listEl.appendChild(empty);
+      } else {
+        for (const acc of accts) {
+          const card = document.createElement('div');
+          card.className = `quota-acct-card${acc.isActive ? ' is-active' : ''}`;
+          const topRow = document.createElement('div');
+          topRow.className = 'quota-subcard-row';
+          const left = document.createElement('span');
+          left.className = 'quota-acct-email';
+          left.textContent = `${acc.email}${acc.tierId ? ` · ${acc.tierId}` : ''}`;
+          left.title = acc.email;
+          const right = document.createElement('div');
+          right.className = 'quota-subsec-actions';
+          if (acc.hasRefreshToken) {
+            const refBtn = document.createElement('button');
+            refBtn.className = 'switch-pill-btn quota-acct-refresh-btn';
+            refBtn.type = 'button';
+            refBtn.disabled = accountsUiState.busy;
+            refBtn.textContent = t('accounts.retryQuota');
+            refBtn.addEventListener('click', () => void performAccountAction('refresh_quota', { email: acc.email }));
+            right.appendChild(refBtn);
+          }
+          if (acc.isActive) {
+            const pill = document.createElement('span');
+            pill.className = 'key-pill pill-good';
+            pill.textContent = t('accounts.activeTag');
+            right.appendChild(pill);
+          } else {
+            const swBtn = document.createElement('button');
+            swBtn.className = 'switch-pill-btn';
+            swBtn.type = 'button';
+            swBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy) || !acc.hasRefreshToken || Boolean(acc.authInvalid);
+            swBtn.textContent = t('accounts.switchBtn');
+            swBtn.addEventListener('click', () => void performAccountAction('switch', { email: acc.email }));
+            right.appendChild(swBtn);
+          }
+          const rmBtn = document.createElement('button');
+          rmBtn.className = 'quota-acct-remove-btn';
+          rmBtn.type = 'button';
+          rmBtn.disabled = accountsUiState.busy || Boolean(accountsUiState.removeModal?.busy);
+          rmBtn.textContent = t('accounts.removeBtn');
+          if (rmBtn.dataset) rmBtn.dataset.removeEmail = acc.email;
+          rmBtn.addEventListener('click', () => openRemoveAccountModal(acc));
+          right.appendChild(rmBtn);
+          topRow.appendChild(left);
+          topRow.appendChild(right);
+          card.appendChild(topRow);
+
+          const poolSummaries = (acc.quotaSnapshot?.pools || []).map(p => {
+            const pName = p.poolKey === 'shared_gemini_main' ? 'Hydrogen' : (p.poolKey === 'shared_3p_pool' ? 'Claude/3P' : (p.poolKey === 'shared_gemini_argon' ? 'Argon' : 'Carbon'));
+            const pVal = p.noPermission
+              ? t('accounts.poolNoAccess')
+              : (p.percentText && p.percentText !== '未知' ? p.percentText : t('accounts.poolUnknown'));
+            return `${pName}: ${pVal}`;
+          });
+          const metaRow = document.createElement('div');
+          metaRow.className = 'quota-acct-meta';
+          const updRaw = acc.lastQuotaUpdatedAtMs ? new Date(acc.lastQuotaUpdatedAtMs).toLocaleTimeString() : '—';
+          const upd = (acc.quotaSnapshot && acc.lastQuotaError && acc.lastQuotaUpdatedAtMs)
+            ? t('accounts.lastSnapshotTime', { time: updRaw })
+            : updRaw;
+          const authNote = acc.authInvalid ? ` · ${t('accounts.reauthRequired')}` : '';
+          const emptyPoolText = acc.lastQuotaError ? t('accounts.poolPending') : t('accounts.poolUnknown');
+          metaRow.textContent = `${poolSummaries.length ? poolSummaries.join(' | ') : emptyPoolText} · ${upd}${authNote}`;
+          card.appendChild(metaRow);
+          if (acc.lastQuotaError) {
+            const errRow = document.createElement('div');
+            errRow.className = 'quota-acct-error';
+            const meta = acc.lastQuotaErrorMeta;
+            const detailParts = [];
+            if (meta?.stage) detailParts.push(meta.stage);
+            if (meta?.targetHost) detailParts.push(meta.targetHost);
+            if (meta?.httpStatus != null) detailParts.push(`HTTP ${meta.httpStatus}`);
+            const translatedErr = typeof translateBackendText === 'function' ? translateBackendText(acc.lastQuotaError) : acc.lastQuotaError;
+            const detailStr = detailParts.length ? `[${detailParts.join(' · ')}] ${translatedErr}` : translatedErr;
+            errRow.textContent = t('accounts.quotaStageErr', { detail: detailStr });
+            card.appendChild(errRow);
+          }
+          listEl.appendChild(card);
+        }
+      }
+      if (prevScrollTop > 0) {
+        const maxScroll = Math.max(0, (listEl.scrollHeight || 0) - (listEl.clientHeight || 0));
+        listEl.scrollTop = maxScroll > 0 ? Math.min(prevScrollTop, maxScroll) : prevScrollTop;
+      }
+    }
+
+    // 3. 自动切号状态与控件回填（编辑时跳过输入项覆盖，防破坏草稿）
+    const stPill = el('auto-switch-status-pill');
+    const lastNote = el('auto-switch-last-note');
+    const stKeys = new Set(['disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown', 'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota', 'error']);
+    if (stPill) {
+      const sKey = ov.autoSwitchStatus?.state || (ov.autoSwitch?.enabled ? 'watching' : 'disabled');
+      stPill.textContent = stKeys.has(sKey) ? t(`accounts.status.${sKey}`) : sKey;
+      stPill.className = `key-pill ${sKey === 'watching' ? 'pill-good' : (sKey === 'error' || sKey === 'all_candidates_exhausted' ? 'pill-warn' : 'pill-muted')}`;
+    }
+    if (lastNote) {
+      if (rawLastErr) {
+        lastNote.textContent = formatPersistedError(rawLastErr);
+      } else if (lr?.ok === false) {
+        lastNote.textContent = formatPersistedError(t('accounts.actionFail'));
+      } else {
+        lastNote.textContent = lr?.toEmail ? t('accounts.lastSwitchedTo', { email: lr.toEmail }) : '';
+      }
+    }
+
+    if (!isEditingAutoSwitchDraft()) {
+      const cfg = ov.autoSwitch || {};
+      const chk = el('chk-auto-switch-enabled');
+      const poolSel = el('sel-auto-switch-pool');
+      const modeSel = el('sel-auto-switch-mode');
+      const winSel = el('sel-auto-switch-window');
+      const thInp = el('inp-auto-switch-threshold');
+      if (chk) chk.checked = Boolean(cfg.enabled);
+      if (poolSel && cfg.poolKey) poolSel.value = cfg.poolKey;
+      if (modeSel && cfg.metricMode) modeSel.value = cfg.metricMode;
+      if (winSel && cfg.windowKey) winSel.value = cfg.windowKey;
+      if (thInp && cfg.thresholdPct != null) thInp.value = String(cfg.thresholdPct);
+      if (typeof enhancedDropdowns !== 'undefined' && enhancedDropdowns?.get) {
+        enhancedDropdowns.get('sel-auto-switch-pool')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-mode')?.refresh?.();
+        enhancedDropdowns.get('sel-auto-switch-window')?.refresh?.();
+      }
+
+      const candWrap = el('auto-switch-candidates-list');
+      if (candWrap) {
+        candWrap.replaceChildren();
+        const selectedSet = new Set(Array.isArray(cfg.candidates) ? cfg.candidates : []);
+        for (const acc of (ov.accounts || [])) {
+          const lbl = document.createElement('label');
+          lbl.className = 'auto-switch-cand-chip';
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.value = acc.email;
+          box.checked = selectedSet.has(acc.email);
+          box.className = 'auto-switch-cand-checkbox';
+          const span = document.createElement('span');
+          span.textContent = acc.maskedEmail || acc.email;
+          lbl.appendChild(box);
+          lbl.appendChild(span);
+          candWrap.appendChild(lbl);
+        }
+      }
+    }
+
+    // 4. ELV-57 配额变化对照表
+    const cmpEl = el('quota-compare-list');
+    if (cmpEl) {
+      cmpEl.replaceChildren();
+      const intervals = Array.isArray(ov.quotaIntervals) ? ov.quotaIntervals.slice(0, 8) : [];
+      if (!intervals.length) {
+        const emp = document.createElement('div');
+        emp.className = 'quota-muted-note';
+        emp.textContent = t('quota.compareEmpty');
+        cmpEl.appendChild(emp);
+      } else {
+        for (const iv of intervals) {
+          const card = document.createElement('div');
+          card.className = 'quota-compare-card';
+          const deltaLabel = iv.deltaPp < 0
+            ? (isEn ? `-${Math.abs(iv.deltaPp)} pp` : (isTw ? `下降 ${Math.abs(iv.deltaPp)} 個百分點` : `下降 ${Math.abs(iv.deltaPp)} 个百分点`))
+            : (iv.deltaPp > 0 ? (isEn ? `+${iv.deltaPp} pp` : (isTw ? `回升 ${iv.deltaPp} 個百分點` : `回升 ${iv.deltaPp} 个百分点`)) : (isEn ? '0 pp' : (isTw ? '無變化' : '无变化')));
+          const splitText = iv.splitReason
+            ? (t(`quota.split.${iv.splitReason}`) !== `quota.split.${iv.splitReason}` ? t(`quota.split.${iv.splitReason}`) : iv.splitReason)
+            : '';
+          const splitBadge = splitText ? ` [${splitText}]` : '';
+          const sTime = new Date(iv.startAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const eTime = new Date(iv.endAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const head = document.createElement('div');
+          head.className = 'quota-subcard-row';
+          head.innerHTML = '';
+          const hLeft = document.createElement('strong');
+          hLeft.textContent = `${iv.poolTitle} (${iv.windowShort || iv.windowKey}) · ${iv.startRemainingPct}% → ${iv.endRemainingPct}% (${deltaLabel})`;
+          const hRight = document.createElement('span');
+          hRight.className = 'quota-acct-meta';
+          hRight.textContent = `${sTime}–${eTime}${splitBadge}`;
+          head.appendChild(hLeft);
+          head.appendChild(hRight);
+
+          const body = document.createElement('div');
+          body.className = 'quota-acct-meta';
+          body.textContent = isEn
+            ? `Account: ${iv.email} · Local reqs: ${iv.requestCount} | Uncached In: ${formatTokensK(iv.uncachedInputTokens)} · Cache Read: ${formatTokensK(iv.cacheReadTokens)} · Out: ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · Sampling gap split' : ''}`
+            : (isTw
+              ? `帳號: ${iv.email} · 本機請求 ${iv.requestCount} 次 | 未快取輸入 ${formatTokensK(iv.uncachedInputTokens)} · 快取讀取 ${formatTokensK(iv.cacheReadTokens)} · 輸出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含採樣缺口已切分' : ''}`
+              : `账号: ${iv.email} · 本机请求 ${iv.requestCount} 次 | 未缓存输入 ${formatTokensK(iv.uncachedInputTokens)} · 缓存读取 ${formatTokensK(iv.cacheReadTokens)} · 输出 ${formatTokensK(iv.outputTokens)}${iv.hasSamplingGap ? ' · 含采样缺口已切分' : ''}`);
+          card.appendChild(head);
+          card.appendChild(body);
+          cmpEl.appendChild(card);
+        }
+      }
+    }
+
+    // 5. ELV-52 保活协议证据与安全控制
+    const kaPill = el('keepalive-status-pill');
+    const kaProto = el('keepalive-protocol-summary');
+    const kaExp = el('keepalive-experiment-summary');
+    const kaRun = el('keepalive-runtime-note');
+    const kaStopBtn = el('btn-keepalive-stop');
+    const ka = ov.keepalive || {};
+    const ks = ov.keepaliveState || {};
+    if (kaPill) {
+      kaPill.textContent = ks.running
+        ? (isEn ? 'Running' : (isTw ? '保活執行中' : '保活运行中'))
+        : (isEn ? 'Unverified · Off' : (isTw ? '待驗證 · 預設關閉' : '待验证 · 默认关闭'));
+      kaPill.className = `key-pill ${ks.running ? 'pill-warn' : 'pill-muted'}`;
+    }
+    if (kaProto && ov.protocolEvidence) {
+      kaProto.textContent = t('keepalive.protocolSummary', {
+        ver: ov.protocolEvidence.checkedVersion || '2.32.1',
+        rpcs: ov.protocolEvidence.rpcCountChecked || 375
+      });
+    }
+    if (kaExp && ov.protocolEvidence?.minimalExperimentPlan) {
+      const plan = ov.protocolEvidence.minimalExperimentPlan;
+      kaExp.textContent = t('keepalive.experimentSummary', {
+        reqs: plan.totalRequestsPlanned || 5,
+        model: plan.targetModel || 'Gemini 4 Hydrogen (High)'
+      });
+    }
+    if (kaRun) {
+      const blockedTxt = ks.blockedReason && typeof translateBackendText === 'function' ? translateBackendText(ks.blockedReason) : ks.blockedReason;
+      const stopTxt = ks.stopReason && typeof translateBackendText === 'function' ? translateBackendText(ks.stopReason) : ks.stopReason;
+      kaRun.textContent = blockedTxt
+        ? t('keepalive.blockedReason', { reason: blockedTxt })
+        : (stopTxt ? t('keepalive.stopReason', { reason: stopTxt }) : t('keepalive.defaultNote'));
+    }
+    if (kaStopBtn) kaStopBtn.hidden = !ks.running;
+
+    syncTokenAccountFilterOptions(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+    if (accountsUiState.removeModal?.open) renderAccountRemoveModal();
+  }
+
+  async function refreshAccountsOverview({ silent = true, refreshAllRemote = false } = {}) {
+    if (state.disposed) return null;
+    try {
+      const hasIpc = typeof window !== 'undefined' && typeof window.contextMeterAPI?.getAccountsOverview === 'function';
+      const hasLive = hasLiveHttpBridge() && hasLiveRouteCapability('/accounts-overview');
+      if (!hasIpc && !hasLive) return null;
+      if (refreshAllRemote) {
+        const res = await callBackendWithPriority({
+          ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+            ? () => window.contextMeterAPI.accountsAction({ action: 'refresh_quota' })
+            : null,
+          liveRoute: '/accounts-action',
+          liveBody: { action: 'refresh_quota' }
+        });
+        const out = res?.result || {};
+        const data = out.overview || out;
+        if (data?.accounts) accountsUiState.overview = data;
+        if (out.ok === false) {
+          const errRaw = out.error || out.message || t('accounts.actionFail');
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errRaw) : errRaw;
+          accountsUiState.feedbackTone = 'error';
+        } else if (out.ok === true && accountsUiState.feedbackTone === 'error') {
+          const msgRaw = out.message || t('accounts.actionDone');
+          accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(msgRaw) : msgRaw;
+          accountsUiState.feedbackTone = 'success';
+        }
+      } else {
+        const res = await callBackendWithPriority({
+          ipcCall: hasIpc ? () => window.contextMeterAPI.getAccountsOverview() : null,
+          liveRoute: '/accounts-overview',
+          liveBody: {}
+        });
+        const data = res?.result;
+        if (data?.ok) accountsUiState.overview = data;
+      }
+      if (!accountsUiState.toolsPreview) {
+        const prevRes = await callBackendWithPriority({
+          ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+            ? () => window.contextMeterAPI.accountsAction({ action: 'preview_tools' })
+            : null,
+          liveRoute: '/accounts-action',
+          liveBody: { action: 'preview_tools' }
+        }).catch(() => null);
+        if (prevRes?.result?.ok) accountsUiState.toolsPreview = prevRes.result;
+      }
+      renderAccountsOverviewSection();
+      return accountsUiState.overview;
+    } catch (e) {
+      if (!silent) {
+        accountsUiState.feedback = e.message;
+        accountsUiState.feedbackTone = 'error';
+        renderAccountsOverviewSection();
+      }
+      return null;
+    }
+  }
+
+  function renderAccountRemoveModal() {
+    const modal = el('account-remove-modal');
+    const titleEl = el('modal-account-remove-title');
+    const textEl = el('modal-account-remove-text');
+    const fbEl = el('modal-account-remove-feedback');
+    const cancelBtn = el('btn-modal-account-remove-cancel');
+    const confirmBtn = el('btn-modal-account-remove-confirm');
+    const st = accountsUiState.removeModal || {};
+    if (!modal) return;
+    modal.hidden = !st.open;
+    if (!st.open) return;
+    if (titleEl) titleEl.textContent = t('accounts.removeModal.title');
+    if (textEl) {
+      textEl.textContent = st.isActive
+        ? t('accounts.removeModal.bodyActive', { email: st.email || '' })
+        : t('accounts.removeModal.body', { email: st.email || '' });
+    }
+    if (fbEl) {
+      fbEl.hidden = !st.error;
+      fbEl.textContent = st.error || '';
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = t('accounts.removeModal.cancel');
+      cancelBtn.disabled = Boolean(st.busy);
+    }
+    if (confirmBtn) {
+      confirmBtn.textContent = st.busy ? t('accounts.removeModal.removing') : t('accounts.removeModal.confirm');
+      confirmBtn.disabled = Boolean(st.busy) || !st.email;
+    }
+  }
+
+  function openRemoveAccountModal(acc) {
+    if (!acc || !acc.email || accountsUiState.busy || accountsUiState.removeModal?.busy) return;
+    const scopeKey = acc.accountScopeKey || String(acc.email).trim().toLowerCase();
+    accountsUiState.removeModal = {
+      open: true,
+      email: acc.email,
+      scopeKey,
+      isActive: Boolean(acc.isActive),
+      busy: false,
+      error: ''
+    };
+    renderAccountRemoveModal();
+  }
+
+  function closeRemoveAccountModal(forceClose = false) {
+    if (!forceClose && accountsUiState.removeModal?.busy) return;
+    accountsUiState.removeModal = {
+      open: false,
+      email: '',
+      scopeKey: '',
+      isActive: false,
+      busy: false,
+      error: ''
+    };
+    renderAccountRemoveModal();
+  }
+
+  async function confirmRemoveAccountModal() {
+    const st = accountsUiState.removeModal;
+    if (!st?.open || !st.email || st.busy || accountsUiState.busy) return null;
+    const targetEmail = st.email;
+    const targetScopeKey = st.scopeKey || String(targetEmail).trim().toLowerCase();
+    st.busy = true;
+    st.error = '';
+    renderAccountRemoveModal();
+    renderAccountsOverviewSection();
+    try {
+      const out = await performAccountAction('remove', { email: targetEmail });
+      if (out && out.ok) {
+        const effectiveRemovedScope = out.removedScopeKey || targetScopeKey;
+        closeRemoveAccountModal(true);
+        accountsUiState.feedback = t('accounts.removeSuccess', { email: targetEmail });
+        accountsUiState.feedbackTone = 'success';
+        if (activeTokenAccountFilter && activeTokenAccountFilter === effectiveRemovedScope) {
+          activeTokenAccountFilter = 'all';
+          resetAccountScopedViewOffsets();
+        }
+        if (ANTIGRAVITY_TOKEN_DATA.rawPayload) {
+          applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+        }
+        renderAccountsOverviewSection();
+        void refreshAccountsOverview({ silent: true });
+        void syncTokenHistoryFromHost(true);
+        return out;
+      }
+      const errDetail = translateBackendText(out?.error || t('accounts.actionFail'));
+      accountsUiState.removeModal = {
+        ...accountsUiState.removeModal,
+        open: true,
+        busy: false,
+        error: t('accounts.removeModal.failed', { detail: errDetail })
+      };
+      renderAccountRemoveModal();
+      return out || { ok: false, error: errDetail };
+    } catch (err) {
+      const errDetail = translateBackendText(err?.message || t('accounts.actionFail'));
+      accountsUiState.removeModal = {
+        ...accountsUiState.removeModal,
+        open: true,
+        busy: false,
+        error: t('accounts.removeModal.failed', { detail: errDetail })
+      };
+      renderAccountRemoveModal();
+      return { ok: false, error: errDetail };
+    }
+  }
+
+  el('btn-modal-account-remove-cancel')?.addEventListener('click', () => closeRemoveAccountModal());
+  el('btn-modal-account-remove-confirm')?.addEventListener('click', () => void confirmRemoveAccountModal());
+  el('account-remove-modal')?.addEventListener('click', (ev) => {
+    if (ev.target === el('account-remove-modal')) closeRemoveAccountModal();
+  });
+
+  async function performAccountAction(action, extraPayload = {}) {
+    if (accountsUiState.busy) return null;
+    accountsUiState.busy = true;
+    accountsUiState.feedback = t('accounts.actionBusy');
+    accountsUiState.feedbackTone = 'info';
+    renderAccountsOverviewSection();
+    try {
+      const res = await callBackendWithPriority({
+        ipcCall: typeof window?.contextMeterAPI?.accountsAction === 'function'
+          ? () => window.contextMeterAPI.accountsAction({ action, ...extraPayload })
+          : null,
+        liveRoute: '/accounts-action',
+        liveBody: { action, ...extraPayload }
+      });
+      const out = res?.result || {};
+      if (out.overview) accountsUiState.overview = out.overview;
+      const isOk = out.ok === true;
+      const isPartialOAuthQuotaWarn = isOk && action === 'oauth_login' && out.quotaOk === false && Boolean(out.quotaError);
+      const rawFb = isPartialOAuthQuotaWarn
+        ? `${out.account?.email ? `${out.account.email} ` : ''}${translateBackendText(out.quotaError)}`
+        : (isOk
+          ? (out.message || t('accounts.actionDone'))
+          : (out.error || out.message || t('accounts.actionFail')));
+      accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(rawFb) : rawFb;
+      accountsUiState.feedbackTone = isOk ? (isPartialOAuthQuotaWarn ? 'info' : 'success') : 'error';
+      if (action === 'switch' && isOk) {
+        void syncQuotaFromHost(true, { manual: false });
+        void syncTokenHistoryFromHost(true);
+      }
+      return out;
+    } catch (e) {
+      const errTxt = e.message || t('accounts.actionFail');
+      accountsUiState.feedback = typeof translateBackendText === 'function' ? translateBackendText(errTxt) : errTxt;
+      accountsUiState.feedbackTone = 'error';
+      return { ok: false, error: e.message };
+    } finally {
+      accountsUiState.busy = false;
+      renderAccountsOverviewSection();
+    }
+  }
+
+  el('btn-acct-import-current')?.addEventListener('click', () => void performAccountAction('import_current'));
+  el('btn-acct-import-tools')?.addEventListener('click', () => void performAccountAction('import_tools'));
+  el('btn-acct-oauth-add')?.addEventListener('click', () => void performAccountAction('oauth_login'));
+  el('btn-keepalive-stop')?.addEventListener('click', () => void performAccountAction('stop_keepalive', { reason: 'manual_button' }));
+  el('btn-save-auto-switch')?.addEventListener('click', () => {
+    const enabled = Boolean(el('chk-auto-switch-enabled')?.checked);
+    const poolKey = el('sel-auto-switch-pool')?.value || 'shared_gemini_main';
+    const metricMode = el('sel-auto-switch-mode')?.value || 'remaining_pct';
+    const windowKey = el('sel-auto-switch-window')?.value || 'primary';
+    const thresholdPct = Number(el('inp-auto-switch-threshold')?.value) || 10;
+    const candidates = Array.from(shadow.querySelectorAll('.auto-switch-cand-checkbox:checked')).map(n => n.value);
+    void performAccountAction('update_auto_switch', {
+      config: { enabled, poolKey, metricMode, windowKey, thresholdPct, candidates }
+    });
   });
   const btnQuotaBannerRestartInit = el('btn-quota-banner-restart');
   if (btnQuotaBannerRestartInit) {
@@ -23425,11 +28983,25 @@ function renderHeatmapGrid(forceRebuild = false) {
     const id = route();
     if (id !== state.route) {
       for (const controller of state.controllers) controller.abort(); state.controllers.clear(); state.generation++;
+      if (timelineFetchController) {
+        try { timelineFetchController.abort(); } catch { }
+        timelineFetchController = null;
+      }
+      if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
+      if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
+      clearLivePendingRequestWait();
       if (state.sessionCallsMap) state.sessionCallsMap.clear();
+      if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
       Object.assign(state, {
         route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
         callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
-        scanBusy: false, scanNext: 0, scanError: '', scan: null
+        scanBusy: false, scanNext: 0, scanError: '', scan: null,
+        displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
+        pinnedCallRecord: null, latestCallDetailOpen: false, lastAnimatedCallSig: '',
+        historyDrawerOpen: false, sessionTimeline: null, timelineLoading: false,
+        timelineError: '', timelinePageLimit: 10, timelineAutoExpandedRoute: null, timelineRenderedRoute: null,
+        lastTimelineFetchAt: 0, lastTimelineCallSig: '',
+        speedBreakdownOpen: false, streamSampleTracker: null, lastSpeedEval: null, speedOverrideForTest: null
       });
       // 避免切换会话后立刻撞上 15s 周期历史刷新，若已做过同步则确保至少留出 7s 窗口给当前会话优先加载
       if (lastHistorySync > 0) {
@@ -23887,11 +29459,132 @@ function renderHeatmapGrid(forceRebuild = false) {
       backendVersionMismatch: backendStatus.backendVersionMismatch,
       lastQuotaDurationMs: backendStatus.lastQuotaDurationMs
     }),
+    getLatestCallCardStateForTest: () => ({
+      route: state.route,
+      displayedCall: state.displayedCallRecord,
+      pendingLatestCall: state.pendingLatestCallRecord,
+      pinnedCall: state.pinnedCallRecord,
+      detailOpen: state.latestCallDetailOpen,
+      historyOpen: state.historyDrawerOpen,
+      bannerVisible: Boolean(el('latest-call-new-banner') && !el('latest-call-new-banner').hidden),
+      isEntering: Boolean(el('latest-call-body')?.classList?.contains?.('is-entering'))
+    }),
+    setSessionCallsForTest: (calls, opts = {}) => {
+      if (opts.route && state.route !== opts.route) {
+        state.route = opts.route;
+        state.displayedCallRecord = null;
+        state.displayedCallSig = '';
+        state.pendingLatestCallRecord = null;
+        state.pinnedCallRecord = null;
+        state.latestCallDetailOpen = false;
+        state.lastAnimatedCallSig = '';
+      }
+      if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
+      if (opts.replace) state.sessionCallsMap.clear();
+      for (const c of (Array.isArray(calls) ? calls : [])) {
+        if (c && c.callId) state.sessionCallsMap.set(c.callId, c);
+      }
+      state.sessionCalls = Array.from(state.sessionCallsMap.values());
+      render();
+      return {
+        displayedCall: state.displayedCallRecord,
+        pendingLatestCall: state.pendingLatestCallRecord,
+        bannerVisible: Boolean(el('latest-call-new-banner') && !el('latest-call-new-banner').hidden)
+      };
+    },
+    setSessionTimelineForTest: (tl) => {
+      state.sessionTimeline = tl;
+      if (state.historyDrawerOpen) renderSessionTimeline();
+    },
+    toggleSessionHistoryForTest: (open) => {
+      state.historyDrawerOpen = open !== undefined ? Boolean(open) : !state.historyDrawerOpen;
+      renderSessionTimeline();
+      return state.historyDrawerOpen;
+    },
+    setSpeedEvaluationForTest: (mockInput, opts = {}) => {
+      state.speedOverrideForTest = mockInput || null;
+      if (opts.openBreakdown !== undefined) state.speedBreakdownOpen = Boolean(opts.openBreakdown);
+      if (typeof evaluateGenerationExperience === 'function') {
+        const res = evaluateGenerationExperience(resolveSpeedEvaluationInput(), currentPanelLanguage);
+        renderSpeedExperienceInPlace(res);
+        return res;
+      }
+      return null;
+    },
+    getSpeedPanelStateForTest: () => ({
+      badgeText: el('speed-badge')?.textContent || '',
+      badgeColor: el('speed-badge')?.style?.color || '',
+      boltColor: el('badge-speed-icon')?.style?.color || '',
+      summaryBoltColor: el('speed-summary-bolt')?.style?.color || '',
+      speedVal: el('speed-val')?.textContent || '',
+      durationVal: el('speed-duration')?.textContent || '',
+      ttftVal: el('speed-ttft')?.textContent || '',
+      tokensVal: el('speed-tokens')?.textContent || '',
+      subLabel: el('speed-sub-label')?.textContent || '',
+      takeaway: el('speed-takeaway')?.textContent || '',
+      breakdownOpen: state.speedBreakdownOpen,
+      lastEval: state.lastSpeedEval
+    }),
+    getTokenCacheBreakdownForTest: () => ({
+      input: el('tcb-input-val')?.textContent || '',
+      cacheRead: el('tcb-cache-val')?.textContent || '',
+      totalInput: el('tcb-total-input-val')?.textContent || '',
+      output: el('tcb-output-val')?.textContent || '',
+      ratio: el('tcb-ratio-val')?.textContent || '',
+      ratioBarWidth: el('tcb-ratio-bar-fill')?.style?.width || '',
+      note: el('tcb-note')?.textContent || ''
+    }),
+    getModelUsageScaleForTest: () => ({
+      scaleMode: modelUsageScaleMode,
+      lockedKey: modelUsageLockedKey,
+      setScaleMode: (m) => { modelUsageScaleMode = m === 'linear' ? 'linear' : 'mixed'; renderModelUsageView(); },
+      setLockedKey: (k) => { modelUsageLockedKey = k || null; renderModelUsageView(); }
+    }),
+    getCumulativeViewStateForTest: () => ({
+      summary: _lastCumSummary,
+      lockedKey: cumLockedKey,
+      expandedWeekKey: cumExpandedWeekKey,
+      linkedDailyDate: cumLinkedDailyDate,
+      pressEscape: () => escape({ key: 'Escape' })
+    }),
+    setTokenAccountFilterForTest: (scopeKey) => {
+      activeTokenAccountFilter = scopeKey || 'all';
+      resetAccountScopedViewOffsets();
+      if (ANTIGRAVITY_TOKEN_DATA.rawPayload) applyTokenHistoryPayload(ANTIGRAVITY_TOKEN_DATA.rawPayload);
+      return activeTokenAccountFilter;
+    },
+    getRemoveAccountModalStateForTest: () => ({ ...(accountsUiState.removeModal || {}) }),
+    openRemoveAccountModalForTest: (acc) => openRemoveAccountModal(acc),
+    confirmRemoveAccountModalForTest: () => confirmRemoveAccountModal(),
+    closeRemoveAccountModalForTest: () => closeRemoveAccountModal(),
+    setAccountsOverviewForTest: (overview) => {
+      accountsUiState.overview = overview || null;
+      renderAccountsOverviewSection();
+      return accountsUiState.overview;
+    },
+    getAccountsPanelStateForTest: () => ({
+      activeFilter: activeTokenAccountFilter,
+      filterOptions: Array.from(el('token-account-select')?.children || []).map(o => ({ val: o.value, label: o.textContent })),
+      scopeNote: el('token-account-scope-note')?.textContent || '',
+      feedback: accountsUiState.feedback || '',
+      feedbackTone: accountsUiState.feedbackTone || 'info',
+      accountCount: el('quota-accounts-list')?.children?.length || 0,
+      compareCount: el('quota-compare-list')?.children?.length || 0,
+      autoSwitchStatus: el('auto-switch-status-pill')?.textContent || '',
+      keepaliveStatus: el('keepalive-status-pill')?.textContent || ''
+    }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {
       earlyForceDispose();
       clearQuotaTimers();
       clearInterval(timer);
+      clearLivePendingRequestWait();
+      if (timelineFetchController) {
+        try { timelineFetchController.abort(); } catch { }
+        timelineFetchController = null;
+      }
+      if (state.callRenderTimer) { clearTimeout(state.callRenderTimer); state.callRenderTimer = null; }
+      if (state.callEnterAnimTimer) { clearTimeout(state.callEnterAnimTimer); state.callEnterAnimTimer = null; }
       try { globalThis.removeEventListener?.('popstate', scheduleImmediateRouteTick); } catch { }
       try {
         if (wrappedPushState && globalThis.history?.pushState === wrappedPushState && origPushState) {
@@ -23930,6 +29623,7 @@ function renderHeatmapGrid(forceRebuild = false) {
     }
   });
   installRequestInterceptor();
+  __chartsReady = true;
   render();
   tick();
 })();

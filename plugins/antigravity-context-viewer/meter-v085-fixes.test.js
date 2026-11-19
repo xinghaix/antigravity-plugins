@@ -155,7 +155,7 @@ function createSelfSignedLocalhostCert() {
 
   const tbs = seq(
     tlv(0xa0, intBuf(2)),
-    intBuf(crypto.randomBytes(8).map((b, idx) => (idx === 0 ? b & 0x7f : b))),
+    intBuf(crypto.randomBytes(8).map((b, idx) => (idx === 0 ? ((b & 0x7f) || 0x01) : b))),
     sha256WithRsaAlg,
     name,
     validity,
@@ -220,14 +220,19 @@ test('1. 配置损坏 fail-closed：不静默迁移旧代理/旧汉化、保留�
   const sb = makeTempSandbox('ag-v085-cfg-');
   try {
     withIsolatedEnv(sb, () => {
-      // 先埋入遗留旧代理与旧汉化配置（开启态，对应 LOCALAPPDATA 路径规范）
-      const legacyProxyDir = path.join(sb.localAppData, 'AntigravityProxyNoTun');
+      // 先埋入遗留旧代理与旧汉化配置（按当前平台对应遗留目录写入）
+      const legacyBaseDir = process.platform === 'win32'
+        ? sb.localAppData
+        : (process.platform === 'darwin'
+          ? path.join(sb.homeDir, 'Library', 'Application Support')
+          : sb.stateDir);
+      const legacyProxyDir = path.join(legacyBaseDir, 'AntigravityProxyNoTun');
       fs.mkdirSync(legacyProxyDir, { recursive: true });
       fs.writeFileSync(path.join(legacyProxyDir, 'config.json'), JSON.stringify({
         enabled: true,
         proxyUrl: 'http://127.0.0.1:19999'
       }), 'utf8');
-      const legacyZhDir = path.join(sb.localAppData, 'AntigravityChinese');
+      const legacyZhDir = path.join(legacyBaseDir, 'AntigravityChinese');
       fs.mkdirSync(legacyZhDir, { recursive: true });
       fs.writeFileSync(path.join(legacyZhDir, 'config.json'), JSON.stringify({ enabled: true }), 'utf8');
 
@@ -383,8 +388,12 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
   let httpConnectHits = 0;
   let socks5Hits = 0;
   let forceTruncateNext = false;
+  const seenSniHosts = [];
+  const seenHostHeaders = [];
 
   const tlsServer = https.createServer({ key, cert }, (req, res) => {
+    if (req.socket?.servername) seenSniHosts.push(req.socket.servername);
+    if (req.headers?.host) seenHostHeaders.push(req.headers.host);
     if (req.url === '/ok-json') {
       directHitCount++;
       const body = JSON.stringify([{ tag_name: 'v0.8.9', ok: true }]);
@@ -422,7 +431,8 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
   httpProxyServer.on('connect', (req, clientSocket, head) => {
     httpConnectHits++;
     const [host, portStr] = String(req.url || '').split(':');
-    const upstream = net.connect(Number(portStr), host, () => {
+    const dialHost = host === 'proxy-only-check.invalid' ? '127.0.0.1' : host;
+    const upstream = net.connect(Number(portStr), dialHost, () => {
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head && head.length) upstream.write(head);
       upstream.pipe(clientSocket);
@@ -503,7 +513,8 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
           stage = 'tunnel';
           socks5Hits++;
           clientSocket.removeListener('data', handleData);
-          upstream = net.connect(port, host, () => {
+          const dialHost = host === 'proxy-only-check.invalid' ? '127.0.0.1' : host;
+          upstream = net.connect(port, dialHost, () => {
             clientSocket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0]));
             if (leftover.length) upstream.write(leftover);
             upstream.pipe(clientSocket);
@@ -538,22 +549,37 @@ test('3. 更新器真实代理隧道：HTTP CONNECT / SOCKS5(RFC1928) / bypassLi
       cfg.modules.proxy.enabled = true;
       cfg.modules.proxy.bypassList = 'localhost';
 
-      // A. HTTP CONNECT 代理下载与 SHA-256 校验
+      // A. HTTP CONNECT 代理下载与 SHA-256 校验（使用不可直连的 .invalid 域名确保流量真经隧道 Agent 转发）
       cfg.modules.proxy.proxyUrl = `http://127.0.0.1:${httpProxyPort}`;
       saveModulesConfig(cfg);
       const outHttpZip = path.join(sb.root, 'dl-http.zip');
       const wsHttp = fs.createWriteStream(outHttpZip);
-      await requestGithubUrl(`https://127.0.0.1:${tlsPort}/zip`, { ca: cert, streamTo: wsHttp });
+      await requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/zip`, { rejectUnauthorized: false, streamTo: wsHttp });
       assert.equal(httpConnectHits, 1);
       assert.equal(sha256(outHttpZip), payloadSha);
+      assert.ok(seenSniHosts.includes('proxy-only-check.invalid'));
+      assert.ok(seenHostHeaders.includes(`proxy-only-check.invalid:${tlsPort}`));
 
-      // B. SOCKS5 认证代理 + 无认证 SOCKS5h
+      // B. SOCKS5 认证代理 + 无认证 SOCKS5h（同样使用不可直连 .invalid 域名断言真走代理隧道）
       requireSocksAuth = true;
       cfg.modules.proxy.proxyUrl = `socks5h://u1:p1@127.0.0.1:${socksPort}`;
       saveModulesConfig(cfg);
-      const jsonViaSocks = await requestGithubUrl(`https://127.0.0.1:${tlsPort}/ok-json`, { ca: cert });
+      const jsonViaSocks = await requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/ok-json`, { rejectUnauthorized: false });
       assert.equal(socks5Hits, 1);
       assert.equal(JSON.parse(jsonViaSocks)[0].tag_name, 'v0.8.9');
+      assert.equal(seenSniHosts.filter(h => h === 'proxy-only-check.invalid').length, 2);
+
+      // 无代理直连 .invalid 必败，反证只有经过代理隧道才能连接成功
+      cfg.modules.proxy.bypassList = 'proxy-only-check.invalid';
+      saveModulesConfig(cfg);
+      const beforeDirectInvalidCalls = directHitCount;
+      await assert.rejects(
+        () => requestGithubUrl(`https://proxy-only-check.invalid:${tlsPort}/ok-json`, { rejectUnauthorized: false, timeout: 800 }),
+        /ENOTFOUND|EAI_AGAIN|getaddrinfo|请求超时|直连/i
+      );
+      assert.equal(directHitCount, beforeDirectInvalidCalls);
+      cfg.modules.proxy.bypassList = 'localhost';
+      saveModulesConfig(cfg);
 
       // C. 重定向按新目标域名判定 bypassList（127.0.0.1 走 SOCKS5 -> 302 到 localhost 命中 bypass 直连）
       const socksBeforeRedir = socks5Hits;
@@ -1044,6 +1070,66 @@ test('7. Windows 中文/带空格路径 .cmd UTF-8 编码、install 误传参数
       // 同版重装
       await install({ path: customAsar });
       assert.ok(fs.existsSync(path.join(customAsar + '.unpacked', 'custom-addon', 'build', 'addon.node')), '二次同版重装后不得丢失宿主自定义 unpacked');
+    });
+  } finally {
+    try { fs.rmSync(sb.root, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('8. PR #40 补充: builtinAsar.createPackage 与测试 ASAR 路径透传至启动快照及运行时元信息', async () => {
+  const sb = makeTempSandbox('ag-pr40-asar-');
+  try {
+    await withIsolatedEnv(sb, async () => {
+      // 1. 复用 builtinAsar.createPackage 打包两个不同状态的隔离宿主 ASAR（A: 待安装注入；B: 保持纯净未注入）
+      const dirA = path.join(sb.root, 'host-a');
+      const dirB = path.join(sb.root, 'host-b');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+      const baseA = await createHostAsarFixture(dirA, { version: '2.32.2', includeExtraFile: true });
+      const baseB = await createHostAsarFixture(dirB, { version: '2.32.2', includeExtraFile: true });
+      const asarA = path.join(dirA, 'packaged-a.asar');
+      const asarB = path.join(dirB, 'packaged-b.asar');
+      const extA = path.join(dirA, 'ext-a');
+      const extB = path.join(dirB, 'ext-b');
+      asar.extractAll(baseA, extA);
+      asar.extractAll(baseB, extB);
+      await builtinAsar.createPackage(extA, asarA);
+      await builtinAsar.createPackage(extB, asarB);
+      assert.ok(fs.existsSync(asarA) && fs.existsSync(asarB));
+
+      // 对 asarA 完成安装，使 asarA 具备完整插件+汉化磁盘能力，而 asarB 保持未注入状态
+      await install({ path: asarA });
+      const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
+      const initCfg = loadModulesConfig();
+      initCfg.modules.chinese.enabled = true;
+      initCfg.modules.chinese.language = 'zh-CN';
+      saveModulesConfig(initCfg);
+      const fakeEvent = { senderFrame: { url: 'https://127.0.0.1:12345/' } };
+
+      // 2. 分别向 handleModulesStatus 和 handleToggleModule 传入显式 ASAR 路径，校验各自独立启动快照与运行时缓存不串
+      const statusA = await handleModulesStatus(fakeEvent, asarA);
+      assert.equal(statusA.ok, true);
+      assert.equal(statusA.disk.chineseReady, true);
+      assert.equal(statusA.runtime.chineseActive, true, '显式 asarA 具备汉化组件时启动快照与运行时应为激活');
+
+      const statusB = await handleModulesStatus(fakeEvent, asarB);
+      assert.equal(statusB.ok, true);
+      assert.equal(statusB.disk.chineseReady, false);
+      assert.equal(statusB.runtime.chineseActive, false, '未注入的 asarB 不得串用 asarA 的启动汉化快照缓存');
+
+      const stToggleA = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: asarA, language: 'zh-CN' });
+      assert.equal(stToggleA.ok, true);
+      assert.equal(stToggleA.runtime.chineseActive, true);
+
+      const toggleFailB = await handleToggleModule(fakeEvent, 'chinese', true, { asarPath: asarB, language: 'zh-CN' });
+      assert.equal(toggleFailB.ok, false);
+      assert.equal(toggleFailB.status, 'install_failed');
+      assert.equal(toggleFailB.runtime.chineseActive, false);
+
+      // 3. 验证默认宿主路径探测仍正常（不传 customAsar 时不抛错且返回结构完整）
+      const defaultStatus = await handleModulesStatus(fakeEvent);
+      assert.equal(defaultStatus.ok, true);
+      assert.equal(typeof defaultStatus.runtime.chineseActive, 'boolean');
     });
   } finally {
     try { fs.rmSync(sb.root, { recursive: true, force: true }); } catch {}

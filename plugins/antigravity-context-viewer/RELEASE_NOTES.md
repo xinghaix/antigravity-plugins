@@ -1,3 +1,19 @@
+## v0.8.8-1
+
+基于上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) **`v0.8.8`**（发布展示标识 `0.8.8 α`）完成同步适配与升级，并继续加强 **Google Antigravity `2.33+` 免 CDP 原生兼容性**：
+
+- **上游 `v0.8.8` 核心更新全量同步**：
+  - **多账号用量隔离与共享池对照**（`meter-accounts.js`、`meter-collector.js`）：支持多账号账本隔离分区记录，历史未归属请求保留在未归属账本；新增按模型共享池与阈值的可控自动切号（默认关闭，含冷却/生成中等待/多窗口锁与失败回滚保护）。
+  - **按模型每日堆叠统计与历史清洗**：支持 `7 天 / 30 天`、按模型 / 思考档位及桌面端 / CLI 来源筛选；新增 `Orchestrator`（Carbon / Argon）及后台 `worker` 映射与配色、对话 `.db` 缺失模型名回填、旧版归档按总量守恒重新归类清洗，以及 Windows 下 WSL 发行版用量采集。
+  - **累计总量改版、混合对数刻度与 ELV-91 速度评分**：统一混合对数-幂律图表刻度（年度气泡 >1B 封顶 58px 并带发光外环），全新「累计总量」摘要卡片与比例时间带、缓存读取占比统计、按轮次可折叠请求时间线与 `elv91-v1` 速度体验评分（S/A/B/C/D）。
+  - **多语言货币汇率、自研日期选择器与守护模式**：全面完善 `zh-CN` / `zh-TW` / `en` 三语言键完整性与日期选择器，CLI 新增 `node cli.js watch` / `stop-watch` 免改盘守护模式与 `runtime-check.js`，完善 Apple Silicon (`arm64`) Mach-O `fixed` / `dynamic` / `default` 上下文解锁与增强适配。
+- **Antigravity `2.33+` Daemon 直连与 Aux Pane Sidecar 增强**：
+  - `local-api.js` 与 `cli.js` 在无 `DevToolsActivePort` 时新增对 Antigravity `2.33+` **`~/.gemini/antigravity/daemon/hub_*.json`**（优先探测活跃 PID 与 `httpsPort`，回退 `httpPort` 与 `main.log`）的自动发现与本地直连；
+  - `sidecars/live-loader/ui-server.js` 同步适配 `v0.8.8` 上下文解锁字段（`configuredMode` / `configuredLimitTokens`），在右侧 Aux Pane Sidecar（`sidecar://antigravity-context-viewer/live-loader/`）准确展示当前解锁模式与实时 `elv91-v1` 评分、配额及历史 Token；
+  - 严格保持所有提示词/标题改写选项（`promptTier: null`、`chineseTitle: null`、`#chk-rec-prompt` / `#chk-rec-title`）**默认关闭**，并完整保留双圆环克制顶栏、紧致上下文胶囊、CLI 默认隐藏开关及中文热注入开关。
+
+---
+
 ## v0.8.7-2
 
 适配 **Google Antigravity `2.33+`** 默认关闭 `DevToolsActivePort` 导致的失效问题，并修复 `0.8.7-1` 回归缺陷：

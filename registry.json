@@ -8,7 +8,7 @@
       "dirName": "antigravity-context-viewer",
       "path": "plugins/antigravity-context-viewer",
       "displayName": "Context Viewer",
-      "version": "0.8.7-2",
+      "version": "0.8.8-1",
       "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, quota & cost analytics via Aux Pane Sidecar UI (Antigravity 2.33+ ready) or CDP topbar.",
       "logo": "assets/logo.svg",
       "components": {

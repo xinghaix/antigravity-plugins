@@ -8,6 +8,7 @@ const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api
 const {
   collect,
   collectTokenHistoryAsync,
+  collectSessionTimelineAsync,
   fetchQuotaSnapshotFromHost,
   checkUpdateAsync,
   applyUpdateAsync,
@@ -21,7 +22,7 @@ const {
 } = require('./meter-collector');
 const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
-const { PROJECT_VERSION } = require('./modules-config');
+const { PROJECT_VERSION, getHostCoreBuildId } = require('./modules-config');
 
 const liveBootProxySnapshot = (() => {
   const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
@@ -99,6 +100,7 @@ const ALLOWED_ROUTES = [
   '/runtime-info',
   '/scan',
   '/token-history',
+  '/session-timeline',
   '/quota',
   '/record-calls',
   '/get-settings',
@@ -116,15 +118,19 @@ const ALLOWED_ROUTES = [
   '/test-proxy',
   '/check-update',
   '/apply-update',
+  '/accounts-overview',
+  '/accounts-action',
   '/shutdown',
   '/restart-host',
   '/sidecar-chinese-toggle'
 ];
 
 const LIVE_HOST_STARTED_AT = Date.now();
+const LIVE_HOST_BUILD_ID = getHostCoreBuildId(__dirname);
 const LIVE_CAPABILITIES = {
   scan: true,
   tokenHistory: true,
+  sessionTimeline: true,
   quota: true,
   recordCalls: true,
   settings: true,
@@ -132,6 +138,7 @@ const LIVE_CAPABILITIES = {
   contextUnlock: true,
   enhance: true,
   modules: true,
+  accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: false,
@@ -212,7 +219,29 @@ function createLiveRequestHandler(arg1, arg2) {
             res.end(JSON.stringify({ ok: false, error: `单次入账记录数超出上限（最多 ${MAX_RECORD_CALLS} 条）` }));
             return;
           }
-          const resCall = recordModelCalls(calls);
+          let recOpts = {};
+          try {
+            const { getSharedAccountsManager } = require('./meter-accounts');
+            const mgr = getSharedAccountsManager({ origin: reqOrigin });
+            const ov = mgr.getOverviewState();
+            const activeEmail = ov?.activeAccountEmail || null;
+            const sessions = Array.isArray(ov?.accountSessions) ? ov.accountSessions : [];
+            const openSess = activeEmail
+              ? sessions.slice().reverse().find(s => String(s.email).toLowerCase() === String(activeEmail).toLowerCase() && s.endAtMs == null)
+              : null;
+            recOpts = {
+              accountSessions: sessions,
+              ...(activeEmail ? {
+                confirmedAccountEmail: activeEmail,
+                liveConfirmedAccount: {
+                  email: activeEmail,
+                  verifiedAtMs: openSess?.lastVerifiedAtMs || Date.now(),
+                  sessionStartMs: openSess?.startAtMs || Date.now()
+                }
+              } : {})
+            };
+          } catch { }
+          const resCall = recordModelCalls(calls, recOpts);
           if (resCall && typeof resCall === 'object' && resCall.ok === false) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -477,6 +506,7 @@ function createLiveRequestHandler(arg1, arg2) {
           res.end(JSON.stringify({
             ok: true,
             backendVersion: PROJECT_VERSION,
+            hostBuildId: LIVE_HOST_BUILD_ID,
             backendSource: 'live-host',
             pid: process.pid,
             startedAt,
@@ -518,6 +548,30 @@ function createLiveRequestHandler(arg1, arg2) {
           res.end(JSON.stringify({ ok: true, data }));
           return;
         }
+        if (req.url === '/session-timeline') {
+          const tlOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const targetOrigin = allowedSet.has(tlOrigin) ? tlOrigin : reqOrigin;
+          const opts = request?.options && typeof request.options === 'object' ? request.options : request;
+          const safeOpts = {
+            origin: targetOrigin,
+            force: opts?.force === true,
+            ...(Array.isArray(opts?.liveSteps) ? { liveSteps: opts.liveSteps } : {}),
+            ...(Array.isArray(opts?.liveCalls) ? { liveCalls: opts.liveCalls } : {}),
+            ...(Array.isArray(opts?.cascadeModelConfigs) ? { cascadeModelConfigs: opts.cascadeModelConfigs } : {}),
+            ...(opts?.userStatus && typeof opts.userStatus === 'object' ? { userStatus: opts.userStatus } : {})
+          };
+          const data = await collectSessionTimelineAsync(request?.id || '', safeOpts);
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            ok: true,
+            data: {
+              ...(data || {}),
+              backendVersion: PROJECT_VERSION,
+              backendSource: 'live-host'
+            }
+          }));
+          return;
+        }
         if (req.url === '/quota') {
           const reqTargetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const targetOrigin = allowedSet.has(reqTargetOrigin) ? reqTargetOrigin : reqOrigin;
@@ -529,8 +583,44 @@ function createLiveRequestHandler(arg1, arg2) {
             browsePoolKey: request.browsePoolKey || null
           });
           const { _raw, ...safeData } = resData || {};
+          let accountSyncResult = null;
+          try {
+            const { getSharedAccountsManager } = require('./meter-accounts');
+            const mgr = getSharedAccountsManager({ origin: targetOrigin });
+            const email = resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
+            if (email && resData?.snapshot) {
+              mgr.syncActiveHostQuotaSnapshot(resData, email);
+              const ov = mgr.getOverviewState();
+              if (ov.autoSwitch?.enabled && !resData.error) {
+                accountSyncResult = await mgr.evaluateAutoSwitch({
+                  activeEmail: email,
+                  activeSnapshot: resData.snapshot,
+                  syncState: 'fresh',
+                  isGenerating: Boolean(request?.isGenerating)
+                });
+              }
+            }
+          } catch { }
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data: safeData }));
+          res.end(JSON.stringify({ ok: true, data: safeData, accountSyncResult }));
+          return;
+        }
+        if (req.url === '/accounts-overview') {
+          const { getSharedAccountsManager } = require('./meter-accounts');
+          const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const mgr = getSharedAccountsManager({ origin: targetOrigin });
+          await mgr.detectCurrentActiveAccount();
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(mgr.getOverviewState()));
+          return;
+        }
+        if (req.url === '/accounts-action') {
+          const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
+          const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
+          const mgr = getSharedAccountsManager({ origin: targetOrigin });
+          const outRes = await dispatchAccountsAction(mgr, request || {});
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(outRes));
           return;
         }
         const scanOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
@@ -592,7 +682,7 @@ function discoverCdpPageOrigins() {
             const pages = JSON.parse(d);
             const list = Array.from(new Set(
               (Array.isArray(pages) ? pages : [])
-                .filter(item => item && item.type === 'page' && /^https:\/\/127\.0\.0\.1:\d+\//.test(item.url))
+                .filter(item => item && item.type === 'page' && /^https?:\/\/127\.0\.0\.1:\d+\//.test(item.url))
                 .map(item => normalizeLoopbackOrigin(item.url))
                 .filter(Boolean)
             ));
@@ -611,8 +701,10 @@ function discoverCdpPageOrigins() {
 function probeOriginAlive(origin) {
   return new Promise((resolve) => {
     try {
-      const https = require('https');
-      const req = https.request(origin + '/', { agent: false, rejectUnauthorized: false, method: 'GET' }, res => {
+      const safeOrigin = normalizeLoopbackOrigin(origin);
+      if (!safeOrigin) return resolve(false);
+      const transport = safeOrigin.startsWith('https:') ? require('https') : http;
+      const req = transport.request(safeOrigin + '/', { agent: false, rejectUnauthorized: false, method: 'GET' }, res => {
         res.resume();
         resolve(res.statusCode >= 200 && res.statusCode < 500);
       });
@@ -692,6 +784,7 @@ async function startLiveHost() {
       origin: api.origin,
       origins: currentOrigins,
       version: PROJECT_VERSION,
+      hostBuildId: LIVE_HOST_BUILD_ID,
       backendSource: 'live-host',
       hasQuota: true,
       hasRuntimeInfo: true,
@@ -827,7 +920,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ALLOWED_ROUTES,
   LIVE_CAPABILITIES,
+  LIVE_HOST_BUILD_ID,
   buildLiveRuntimeModulesMeta,
   createLiveRequestHandler,
   parseInitialOriginsEnv,

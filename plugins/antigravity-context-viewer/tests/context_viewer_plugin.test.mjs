@@ -31,7 +31,7 @@ for (const asset of ['ui-server.js', 'index.html', 'styles.css', 'app.js']) {
 }
 execFileSync(process.execPath, ['--check', join(dirname(sidecarPath), 'ui-server.js')], { stdio: 'inherit' });
 
-// 2. Run all 16 unit test suites inside plugins/antigravity-context-viewer
+// 2. Run all 20 unit test suites inside plugins/antigravity-context-viewer
 const pkg = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf-8'));
 const testFiles = [
   'meter-core.test.js',
@@ -49,6 +49,10 @@ const testFiles = [
   'meter-model-context-isolation.test.js',
   'meter-v085-fixes.test.js',
   'meter-hotload.test.js',
+  'meter-macos-watch.test.js',
+  'meter-v089-usage.test.js',
+  'meter-elv91-speed.test.js',
+  'meter-accounts.test.js',
   'sidecar-live.test.js',
 ];
 

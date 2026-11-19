@@ -18,6 +18,16 @@ const { execFile, execFileSync } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const contextUnlock = require('./meter-context-unlock');
 const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
+const {
+  isMachO64Buffer,
+  parseMachO64,
+  getMachODataSearchRanges,
+  atomicWriteMachOBinarySync,
+  atomicWriteMachOBinaryAsync,
+  isExactMacLanguageServerProcess,
+  listMacProcessesSync,
+  listMacProcessesAsync
+} = require('./macos-binary-utils');
 
 const { performance } = require('perf_hooks');
 const ORIG_ENHANCE_FS_READ_SYNC = fs.readFileSync;
@@ -214,8 +224,21 @@ function normalizeChineseTitleMode(input) {
 
 const standalonePathCache = new Map();
 
-function resolveStandaloneAgyPath(localAppData, homeDir) {
+function resolveStandaloneAgyPath(localAppData, homeDir, platform = process.platform) {
   const home = homeDir || os.homedir();
+  if (platform === 'darwin') {
+    const macCandidates = [
+      path.join(home, '.local', 'bin', 'agy'),
+      path.join(home, '.gemini', 'bin', 'agy'),
+      '/opt/homebrew/bin/agy',
+      '/usr/local/bin/agy'
+    ];
+    for (const c of macCandidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return macCandidates[0];
+  }
+
   const candidates = [
     path.join(home, '.gemini', 'bin', 'agy.exe'),
     path.join(localAppData, 'agy', 'bin', 'agy.exe')
@@ -271,15 +294,36 @@ function resolveTargetBinaries(options = {}) {
   }
 
   const platform = options.platform || process.platform;
+  const home = options.homeDir || os.homedir();
+
+  if (platform === 'darwin') {
+    const macDesktopCandidates = [
+      '/Applications/Antigravity.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server'),
+      '/Applications/Antigravity IDE.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Antigravity IDE.app', 'Contents', 'Resources', 'bin', 'language_server'),
+      '/Applications/Google Antigravity.app/Contents/Resources/bin/language_server',
+      path.join(home, 'Applications', 'Google Antigravity.app', 'Contents', 'Resources', 'bin', 'language_server')
+    ];
+    const desktopPath = macDesktopCandidates.find((p) => fs.existsSync(p)) || macDesktopCandidates[0];
+    const cliPath = resolveStandaloneAgyPath('', home, 'darwin');
+    const targets = [
+      { id: 'desktop', label: 'Antigravity 桌面端内核 (language_server)', path: desktopPath }
+    ];
+    if (cliPath && fs.existsSync(cliPath)) {
+      targets.push({ id: 'cli', label: 'Antigravity 独立 CLI 内核 (agy)', path: cliPath });
+    }
+    return targets;
+  }
+
   if (platform !== 'win32') {
     return [];
   }
 
-  const home = options.homeDir || os.homedir();
   const localAppData = options.localAppData || process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
 
   const desktopPath = path.join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe');
-  const standalonePath = resolveStandaloneAgyPath(localAppData, home);
+  const standalonePath = resolveStandaloneAgyPath(localAppData, home, 'win32');
   const ideExtPath = path.join(localAppData, 'Programs', 'antigravity', 'resources', 'app', 'extensions', 'antigravity', 'bin', 'language_server_windows_x64.exe');
 
   const targets = [
@@ -310,7 +354,18 @@ function computeActiveBytes(rawStr) {
  * 提取 PE64 构建指纹与只读数据区段偏移范围（避免对 .text 等代码节反复全文件扫描）
  */
 function parsePeSectionSummary(buf) {
-  if (!Buffer.isBuffer(buf) || buf.length < 0x100 || buf.toString('ascii', 0, 2) !== 'MZ') {
+  if (!Buffer.isBuffer(buf) || buf.length < 0x40) return null;
+  if (isMachO64Buffer(buf)) {
+    const macho = parseMachO64(buf);
+    if (!macho) return null;
+    return {
+      peBuildKey: macho.buildKey,
+      format: 'Mach-O',
+      arch: macho.arch,
+      sections: macho.sections
+    };
+  }
+  if (buf.length < 0x100 || buf.toString('ascii', 0, 2) !== 'MZ') {
     return null;
   }
   const peOffset = buf.readUInt32LE(0x3c);
@@ -350,6 +405,9 @@ function parsePeSectionSummary(buf) {
 }
 
 function getPeDataSearchRanges(buf) {
+  if (isMachO64Buffer(buf)) {
+    return getMachODataSearchRanges(buf);
+  }
   const pe = parsePeSectionSummary(buf);
   if (!pe || !pe.sections.length) {
     return [{ start: 0, end: buf.length }];
@@ -367,58 +425,73 @@ function getPeDataSearchRanges(buf) {
 }
 
 function parsePeEmbedTemplates(buf) {
-  if (!Buffer.isBuffer(buf) || buf.length < 0x100 || buf.toString('ascii', 0, 2) !== 'MZ') {
-    throw new Error('不是有效的 Windows PE64 可执行文件');
-  }
-  const peOffset = buf.readUInt32LE(0x3c);
-  if (peOffset + 24 > buf.length || buf.toString('ascii', peOffset, peOffset + 4) !== 'PE\x00\x00') {
-    throw new Error('无效的 PE 文件头');
-  }
-  const machine = buf.readUInt16LE(peOffset + 4);
-  if (machine !== 0x8664) {
-    throw new Error('当前仅支持 x64 (AMD64) PE 二进制文件');
-  }
-  const numSections = buf.readUInt16LE(peOffset + 6);
-  const optSize = buf.readUInt16LE(peOffset + 20);
-  const optStart = peOffset + 24;
-  if (optSize < 32 || optStart + optSize > buf.length) {
-    throw new Error('PE Optional Header 损坏');
-  }
-  const imageBase = buf.readBigUInt64LE(optStart + 24);
-  const sectionTableStart = optStart + optSize;
-  const sections = [];
-  for (let i = 0; i < numSections; i++) {
-    const off = sectionTableStart + i * 40;
-    if (off + 40 > buf.length) break;
-    sections.push({
-      vSize: buf.readUInt32LE(off + 8),
-      vAddr: buf.readUInt32LE(off + 12),
-      rawSize: buf.readUInt32LE(off + 16),
-      rawPtr: buf.readUInt32LE(off + 20)
-    });
-  }
+  let fileOffsetToVA;
+  let vaToFileOffset;
 
-  const fileOffsetToVA = (foff) => {
-    for (const s of sections) {
-      if (foff >= s.rawPtr && foff < s.rawPtr + s.rawSize) {
-        return imageBase + BigInt(s.vAddr + (foff - s.rawPtr));
-      }
+  if (isMachO64Buffer(buf)) {
+    const macho = parseMachO64(buf);
+    if (!macho || !macho.arch) {
+      throw new Error('不是有效的 64 位 Mach-O 可执行文件（或头部/段偏移损坏）');
     }
-    return 0n;
-  };
+    if (macho.arch !== 'arm64') {
+      throw new Error(`暂未开放对 Intel Mac (Mach-O ${macho.arch}) 的内核修改，当前 macOS 仅完成 Apple Silicon (arm64) 验证`);
+    }
+    fileOffsetToVA = macho.fileOffsetToVA;
+    vaToFileOffset = macho.vaToFileOffset;
+  } else {
+    if (!Buffer.isBuffer(buf) || buf.length < 0x100 || buf.toString('ascii', 0, 2) !== 'MZ') {
+      throw new Error('不是有效的 Windows PE64 或 macOS Mach-O 可执行文件');
+    }
+    const peOffset = buf.readUInt32LE(0x3c);
+    if (peOffset + 24 > buf.length || buf.toString('ascii', peOffset, peOffset + 4) !== 'PE\x00\x00') {
+      throw new Error('无效的 PE 文件头');
+    }
+    const machine = buf.readUInt16LE(peOffset + 4);
+    if (machine !== 0x8664) {
+      throw new Error('当前仅支持 x64 (AMD64) PE 二进制文件');
+    }
+    const numSections = buf.readUInt16LE(peOffset + 6);
+    const optSize = buf.readUInt16LE(peOffset + 20);
+    const optStart = peOffset + 24;
+    if (optSize < 32 || optStart + optSize > buf.length) {
+      throw new Error('PE Optional Header 损坏');
+    }
+    const imageBase = buf.readBigUInt64LE(optStart + 24);
+    const sectionTableStart = optStart + optSize;
+    const sections = [];
+    for (let i = 0; i < numSections; i++) {
+      const off = sectionTableStart + i * 40;
+      if (off + 40 > buf.length) break;
+      sections.push({
+        vSize: buf.readUInt32LE(off + 8),
+        vAddr: buf.readUInt32LE(off + 12),
+        rawSize: buf.readUInt32LE(off + 16),
+        rawPtr: buf.readUInt32LE(off + 20)
+      });
+    }
 
-  const vaToFileOffset = (va) => {
-    if (va < imageBase) return -1;
-    const rva = Number(va - imageBase);
-    for (const s of sections) {
-      const span = Math.max(s.vSize, s.rawSize);
-      if (rva >= s.vAddr && rva < s.vAddr + span) {
-        const off = s.rawPtr + (rva - s.vAddr);
-        return off >= 0 && off <= buf.length ? off : -1;
+    fileOffsetToVA = (foff) => {
+      for (const s of sections) {
+        if (foff >= s.rawPtr && foff < s.rawPtr + s.rawSize) {
+          return imageBase + BigInt(s.vAddr + (foff - s.rawPtr));
+        }
       }
-    }
-    return -1;
-  };
+      return 0n;
+    };
+
+    vaToFileOffset = (va) => {
+      if (va < imageBase) return -1;
+      const rva = Number(va - imageBase);
+      for (const s of sections) {
+        const span = Math.max(s.vSize, s.rawSize);
+        if (rva >= s.vAddr && rva < s.vAddr + span) {
+          const off = s.rawPtr + (rva - s.vAddr);
+          return off >= 0 && off <= buf.length ? off : -1;
+        }
+      }
+      return -1;
+    };
+  }
 
   const anchorName = 'google3/third_party/jetski/prompt/template_provider/templates/system_prompts/identity.tmpl';
   const foff = buf.indexOf(anchorName);
@@ -631,6 +704,16 @@ function applyPromptTierToBuffer(buf, bakBuf, tierNum, dirtyRanges = null) {
 function isSamePeBuild(bufA, bufB) {
   try {
     if (!Buffer.isBuffer(bufA) || !Buffer.isBuffer(bufB)) return false;
+    if (isMachO64Buffer(bufA) && isMachO64Buffer(bufB)) {
+      const mA = parseMachO64(bufA);
+      const mB = parseMachO64(bufB);
+      if (!mA || !mB || mA.buildKey !== mB.buildKey) return false;
+      const tA = parsePeEmbedTemplates(bufA);
+      const tB = parsePeEmbedTemplates(bufB);
+      const idA = tA.get('system_prompts/identity.tmpl');
+      const idB = tB.get('system_prompts/identity.tmpl');
+      return Boolean(idA && idB && idA.dataOffset === idB.dataOffset && idA.dataLength === idB.dataLength);
+    }
     if (bufA.length !== bufB.length || bufA.length < 0x100) return false;
     const peA = bufA.readUInt32LE(0x3c);
     const peB = bufB.readUInt32LE(0x3c);
@@ -851,13 +934,24 @@ function countChangedBytes(oldBuf, newBuf, precomputedDiffs = null) {
   return diff;
 }
 
-function writeBinarySafely(targetPath, oldBuf, newBuf, dirtyRanges = null) {
+function writeBinarySafely(targetPath, oldBuf, newBuf, dirtyRanges = null, writeOpts = {}) {
   let diffs = null;
   if (Array.isArray(dirtyRanges) && oldBuf.length === newBuf.length) {
     diffs = getEffectiveDiffRanges(oldBuf, newBuf, dirtyRanges);
     if (diffs.length === 0) return { writtenBytes: 0, method: 'unchanged' };
   } else if (Buffer.compare(oldBuf, newBuf) === 0) {
     return { writtenBytes: 0, method: 'unchanged' };
+  }
+
+  if (isMachO64Buffer(newBuf)) {
+    atomicWriteMachOBinarySync(targetPath, newBuf, {
+      entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
+      skipCodesign: writeOpts.skipCodesign === true,
+      forceCodesign: writeOpts.forceCodesign === true,
+      codesignBin: writeOpts.codesignBin,
+      _execFileSync: writeOpts._execFileSync
+    });
+    return { writtenBytes: countChangedBytes(oldBuf, newBuf, diffs), method: 'rename-swap' };
   }
 
   try {
@@ -934,13 +1028,24 @@ async function writeChangedRangesInPlaceAsync(targetPath, oldBuf, newBuf, precom
   return totalWritten;
 }
 
-async function writeBinarySafelyAsync(targetPath, oldBuf, newBuf, dirtyRanges = null) {
+async function writeBinarySafelyAsync(targetPath, oldBuf, newBuf, dirtyRanges = null, writeOpts = {}) {
   let diffs = null;
   if (Array.isArray(dirtyRanges) && oldBuf.length === newBuf.length) {
     diffs = getEffectiveDiffRanges(oldBuf, newBuf, dirtyRanges);
     if (diffs.length === 0) return { writtenBytes: 0, method: 'unchanged' };
   } else if (Buffer.compare(oldBuf, newBuf) === 0) {
     return { writtenBytes: 0, method: 'unchanged' };
+  }
+
+  if (isMachO64Buffer(newBuf)) {
+    await atomicWriteMachOBinaryAsync(targetPath, newBuf, {
+      entitlementsSourcePath: writeOpts.entitlementsSourcePath || targetPath,
+      skipCodesign: writeOpts.skipCodesign === true,
+      forceCodesign: writeOpts.forceCodesign === true,
+      codesignBin: writeOpts.codesignBin,
+      _execFile: writeOpts._execFile
+    });
+    return { writtenBytes: countChangedBytes(oldBuf, newBuf, diffs), method: 'rename-swap' };
   }
 
   try {
@@ -984,6 +1089,10 @@ async function writeBinarySafelyAsync(targetPath, oldBuf, newBuf, dirtyRanges = 
 let lsProcCache = { ts: 0, running: false, startTimeMs: null };
 
 function checkLanguageServerRunning() {
+  if (process.platform === 'darwin') {
+    const procs = listMacProcessesSync();
+    return procs.some((p) => isExactMacLanguageServerProcess(p.path));
+  }
   if (process.platform !== 'win32') return false;
   try {
     const out = execFileSync('tasklist.exe', ['/NH', '/FO', 'CSV'], {
@@ -1003,7 +1112,7 @@ function checkLanguageServerRunning() {
 }
 
 async function checkLanguageServerRunningAsync(options = {}) {
-  if (process.platform !== 'win32' || options.skipProcessCheck) {
+  if ((process.platform !== 'win32' && process.platform !== 'darwin') || options.skipProcessCheck) {
     return { running: false, startTimeMs: null };
   }
   const now = Date.now();
@@ -1013,27 +1122,58 @@ async function checkLanguageServerRunningAsync(options = {}) {
   const targets = resolveTargetBinaries(options).filter((t) => fs.existsSync(t.path));
   let running = false;
   let earliestStartMs = null;
-  for (const t of targets) {
-    try {
-      const info = await contextUnlock.getRunningLanguageServerInfoAsync(t.path, options.forceRefresh === true);
-      if (info && info.isRunning) {
+  if (process.platform === 'darwin') {
+    const procs = await listMacProcessesAsync();
+    const targetPaths = new Set(targets.map((t) => path.resolve(t.path)));
+    for (const p of procs) {
+      if (targetPaths.has(path.resolve(p.path))) {
         running = true;
-        if (info.startTimeMs && (!earliestStartMs || info.startTimeMs < earliestStartMs)) {
-          earliestStartMs = info.startTimeMs;
+        if (p.startTimeMs && (!earliestStartMs || p.startTimeMs < earliestStartMs)) {
+          earliestStartMs = p.startTimeMs;
         }
       }
-    } catch {}
+    }
+  } else {
+    for (const t of targets) {
+      try {
+        const info = await contextUnlock.getRunningLanguageServerInfoAsync(t.path, options.forceRefresh === true);
+        if (info && info.isRunning) {
+          running = true;
+          if (info.startTimeMs && (!earliestStartMs || info.startTimeMs < earliestStartMs)) {
+            earliestStartMs = info.startTimeMs;
+          }
+        }
+      } catch {}
+    }
   }
   lsProcCache = { ts: Date.now(), running, startTimeMs: earliestStartMs };
   return { running, startTimeMs: earliestStartMs };
 }
 
-function restartLanguageServers() {
-  if (process.platform !== 'win32') {
-    return { ok: false, killed: [], error: '仅支持 Windows 平台重启后台语言服务' };
+function restartLanguageServers(options = {}) {
+  const includeCli = options?.includeCli !== false;
+  if (process.platform === 'darwin') {
+    const procs = listMacProcessesSync();
+    const killed = [];
+    for (const p of procs) {
+      if (isExactMacLanguageServerProcess(p.path)) {
+        try {
+          process.kill(p.pid, 'SIGTERM');
+          killed.push(`${path.basename(p.path)}#${p.pid}`);
+        } catch {}
+      }
+    }
+    lsProcCache = { ts: 0, running: false, startTimeMs: null };
+    return { ok: true, killed };
   }
+  if (process.platform !== 'win32') {
+    return { ok: false, killed: [], error: '仅支持 Windows / macOS 平台重启后台语言服务' };
+  }
+  const images = includeCli
+    ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
+    : ['language_server.exe', 'language_server_windows_x64.exe'];
   const killed = [];
-  for (const img of ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']) {
+  for (const img of images) {
     try {
       execFileSync('taskkill.exe', ['/F', '/IM', img], {
         encoding: 'utf8',
@@ -1048,11 +1188,28 @@ function restartLanguageServers() {
   return { ok: true, killed };
 }
 
-async function restartLanguageServersAsync() {
-  if (process.platform !== 'win32') {
-    return { ok: false, killed: [], error: '仅支持 Windows 平台重启后台语言服务' };
+async function restartLanguageServersAsync(options = {}) {
+  const includeCli = options?.includeCli !== false;
+  if (process.platform === 'darwin') {
+    const procs = await listMacProcessesAsync();
+    const killed = [];
+    for (const p of procs) {
+      if (isExactMacLanguageServerProcess(p.path)) {
+        try {
+          process.kill(p.pid, 'SIGTERM');
+          killed.push(`${path.basename(p.path)}#${p.pid}`);
+        } catch {}
+      }
+    }
+    lsProcCache = { ts: 0, running: false, startTimeMs: null };
+    return { ok: true, killed };
   }
-  const images = ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe'];
+  if (process.platform !== 'win32') {
+    return { ok: false, killed: [], error: '仅支持 Windows / macOS 平台重启后台语言服务' };
+  }
+  const images = includeCli
+    ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
+    : ['language_server.exe', 'language_server_windows_x64.exe'];
   const killed = [];
   await Promise.all(images.map((img) => new Promise((resolve) => {
     execFile('taskkill.exe', ['/F', '/IM', img], {
@@ -1465,16 +1622,29 @@ function finalizeEnhanceStatus(platform, arch, binaries, procInfo, options = {})
   };
 }
 
+function isSupportedEnhancePlatform(platform, arch) {
+  if (platform === 'win32' && arch === 'x64') return true;
+  if (platform === 'darwin' && arch === 'arm64') return true;
+  return false;
+}
+
+function getUnsupportedEnhanceReason(platform, arch) {
+  if (platform === 'darwin' && arch !== 'arm64') {
+    return `系统提示词精简与中文标题内核原位补丁目前仅完成 Windows x64 与 Apple Silicon (macOS arm64) 验证，暂不支持 Intel Mac (${arch})`;
+  }
+  return '系统提示词精简与中文标题内核原位补丁目前仅支持 Windows x64 与 Apple Silicon (macOS arm64) 客户端';
+}
+
 function getEnhanceStatus(options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
-  if (!Array.isArray(options.targets) && (platform !== 'win32' || arch !== 'x64')) {
+  if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
     return {
       ok: true,
       supported: false,
       platform,
       arch,
-      reason: '系统提示词精简与中文标题内核原位补丁目前仅支持 Windows x64 客户端',
+      reason: getUnsupportedEnhanceReason(platform, arch),
       binaries: [],
       summary: null
     };
@@ -1496,13 +1666,13 @@ function getEnhanceStatus(options = {}) {
 async function getEnhanceStatusAsync(options = {}) {
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
-  if (!Array.isArray(options.targets) && (platform !== 'win32' || arch !== 'x64')) {
+  if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
     return {
       ok: true,
       supported: false,
       platform,
       arch,
-      reason: '系统提示词精简与中文标题内核原位补丁目前仅支持 Windows x64 客户端',
+      reason: getUnsupportedEnhanceReason(platform, arch),
       binaries: [],
       summary: null
     };
@@ -1576,9 +1746,13 @@ function validateEnhanceApplyInputs(payload = {}, options = {}) {
     return { ok: false, code: 'MISSING_TARGETS', error: '未提供有效的目标二进制文件 (options.targets 为空)' };
   }
 
+  if (!Array.isArray(options.targets) && !isSupportedEnhancePlatform(platform, arch)) {
+    return { ok: false, error: getUnsupportedEnhanceReason(platform, arch) };
+  }
+
   const targets = resolveTargetBinaries(options).filter((t) => fs.existsSync(t.path));
   if (targets.length === 0) {
-    return { ok: false, error: '未检测到本机已安装的 Antigravity 内核文件 (language_server.exe / agy.exe)' };
+    return { ok: false, error: '未检测到本机已安装的 Antigravity 内核文件 (language_server / agy)' };
   }
 
   return {
@@ -1705,7 +1879,13 @@ function applyEnhancePatch(payload = {}, options = {}) {
           }
 
           const { nextBuf, titleMatchedCount, dirtyRanges } = patchSingleEnhanceBuffer(target, origDiskBuf, bakBuf, promptTier, chineseTitle, logs);
-          const writeRes = writeBinarySafely(target.path, origDiskBuf, nextBuf, dirtyRanges);
+          const writeRes = writeBinarySafely(target.path, origDiskBuf, nextBuf, dirtyRanges, {
+            entitlementsSourcePath: bakPath,
+            skipCodesign: options.skipCodesign === true,
+            forceCodesign: options.forceCodesign === true,
+            codesignBin: options.codesignBin,
+            _execFileSync: options._execFileSync
+          });
           invalidateBinaryCache(target.path);
           if (writeRes.method !== 'unchanged') {
             needsRestart = true;
@@ -1864,7 +2044,7 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
         bakBuf = Buffer.from(origDiskBuf);
         const bakDirty = [];
         applyChineseTitlePatchToBuffer(bakBuf, false, bakDirty);
-        await writeBinarySafelyAsync(bakPath, origDiskBuf, bakBuf, bakDirty);
+        await writeBinarySafelyAsync(bakPath, origDiskBuf, bakBuf, bakDirty, { skipCodesign: true });
       } else {
         bakBuf = origDiskBuf;
       }
@@ -1887,7 +2067,16 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
   let needWriteAndPatch = !(tierMatched && titleMatched);
   if (!needWriteAndPatch && !bakPreparedFresh && fs.existsSync(bakPath)) {
     const existingBakStat = await fs.promises.stat(bakPath);
-    if (existingBakStat.size === origDiskBuf.length) {
+    if (isMachO64Buffer(origDiskBuf)) {
+      const bakHead = Buffer.alloc(Math.min(4096, existingBakStat.size));
+      const fh = await fs.promises.open(bakPath, 'r');
+      try { await fh.read(bakHead, 0, bakHead.length, 0); } finally { await fh.close(); }
+      const mOrig = parseMachO64(origDiskBuf);
+      const mBak = parseMachO64(bakHead);
+      if (!mOrig || !mBak || mOrig.buildKey !== mBak.buildKey) {
+        needWriteAndPatch = true;
+      }
+    } else if (existingBakStat.size === origDiskBuf.length) {
       const bakHead = Buffer.alloc(Math.min(4096, existingBakStat.size));
       const fh = await fs.promises.open(bakPath, 'r');
       try { await fh.read(bakHead, 0, bakHead.length, 0); } finally { await fh.close(); }
@@ -1919,7 +2108,7 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
           const cleanStockBuf = Buffer.from(origDiskBuf);
           const bakDirty = [];
           applyChineseTitlePatchToBuffer(cleanStockBuf, false, bakDirty);
-          await writeBinarySafelyAsync(bakPath, origDiskBuf, cleanStockBuf, bakDirty);
+          await writeBinarySafelyAsync(bakPath, origDiskBuf, cleanStockBuf, bakDirty, { skipCodesign: true });
           bakBuf = cleanStockBuf;
         } else {
           bakBuf = origDiskBuf;
@@ -1946,7 +2135,13 @@ async function applySingleEnhanceTargetCoreAsync(target, promptTier, chineseTitl
     await yieldEventLoop();
 
     const w0 = performance.now();
-    writeRes = await writeBinarySafelyAsync(target.path, origDiskBuf, resultBuf, patched.dirtyRanges);
+    writeRes = await writeBinarySafelyAsync(target.path, origDiskBuf, resultBuf, patched.dirtyRanges, {
+      entitlementsSourcePath: bakPath,
+      skipCodesign: options.skipCodesign === true,
+      forceCodesign: options.forceCodesign === true,
+      codesignBin: options.codesignBin,
+      _execFile: options._execFile
+    });
     writeMs = performance.now() - w0;
   } else {
     if (promptTier !== null) {
@@ -2240,6 +2435,14 @@ let enhanceWorkerIdleTimer = null;
 
 function canUseEnhanceWorker(options = {}) {
   if (!isMainThread || enhanceWorkerDisabled || options._inWorker === true || options.useMainThread === true) {
+    return false;
+  }
+  if (
+    typeof options._execFile === 'function' ||
+    typeof options._execFileSync === 'function' ||
+    options.forceCodesign === true ||
+    options.codesignBin !== undefined
+  ) {
     return false;
   }
   if (fs.readFileSync !== ORIG_ENHANCE_FS_READ_SYNC || fs.promises.readFile !== ORIG_ENHANCE_FS_READ_ASYNC) {

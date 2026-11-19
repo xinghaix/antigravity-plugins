@@ -41,7 +41,8 @@ const PANEL_I18N = {
 
   // 上下文面板头部与分页
   'panel.ctx.aria': { 'zh-CN': '会话与上下文详情', 'zh-TW': '對話與 Context 詳細資訊', en: 'Session & Context Details' },
-  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: '💬 Current Session Context' },
+  'panel.ctx.title': { 'zh-CN': '💬 当前会话上下文', 'zh-TW': '💬 目前對話 Context', en: 'ACM' },
+  'panel.ctx.fullName': { 'zh-CN': 'Antigravity Context Meter', 'zh-TW': 'Antigravity Context Meter', en: 'Antigravity Context Meter' },
   'panel.ctx.viewModel': { 'zh-CN': '查看模型', 'zh-TW': '檢視模型', en: 'Model' },
   'panel.ctx.viewModelTitle': { 'zh-CN': '按厂商查看不同模型的上下文设置', 'zh-TW': '依廠商檢視不同模型的上下文設定', en: 'Inspect context settings by vendor and model' },
   'panel.ctx.loadingModels': { 'zh-CN': '正在读取模型…', 'zh-TW': '正在讀取模型…', en: 'Loading models…' },
@@ -117,6 +118,7 @@ const PANEL_I18N = {
   'models.list.aria': { 'zh-CN': '按厂商分组的模型产品列表', 'zh-TW': '依廠商分組的模型產品清單', en: 'Models grouped by vendor' },
   'models.list.empty': { 'zh-CN': '暂无已知模型，发一条消息或等待模型列表加载后显示。', 'zh-TW': '暫無已知模型，發送一則訊息或等待模型清單載入後顯示。', en: 'No models detected yet. Send a message or wait for the model list to load.' },
   'models.restartBtn': { 'zh-CN': '重启客户端使设置生效', 'zh-TW': '重新啟動用戶端使設定生效', en: 'Restart client to apply' },
+  'models.btnRestartHost': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'models.manualRestart': { 'zh-CN': '请手动重启：关闭所有 Antigravity 窗口（包括托盘图标里的“退出”），再重新打开 Antigravity。', 'zh-TW': '請手動重新啟動：關閉所有 Antigravity 視窗（包含系統匣圖示中的「結束」），再重新開啟 Antigravity。', en: 'Please restart manually: close all Antigravity windows (including Quit from the tray icon) and reopen Antigravity.' },
   'models.restartConfirm.text': { 'zh-CN': '重启会中断正在运行的任务。请先保存未保存的内容。', 'zh-TW': '重新啟動會中斷正在執行的任務。請先儲存未儲存的內容。', en: 'Restarting will interrupt active tasks. Please save any unsaved work first.' },
   'models.restartConfirm.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
@@ -132,6 +134,7 @@ const PANEL_I18N = {
   'models.card.saved': { 'zh-CN': '已保存', 'zh-TW': '已儲存', en: 'Saved' },
   'models.card.savedSide': { 'zh-CN': '为这个模型记下的长度', 'zh-TW': '為此模型記下的長度', en: 'Saved limit for this model' },
   'models.card.request': { 'zh-CN': '请求携带', 'zh-TW': '請求攜帶', en: 'Request Attached' },
+  'models.card.requestDefault': { 'zh-CN': '恢复客户端默认', 'zh-TW': '還原用戶端預設', en: 'Client Default' },
   'models.mode.aria': { 'zh-CN': '上下文设置模式', 'zh-TW': '上下文設定模式', en: 'Context setting mode' },
   'models.mode.unifiedTitle': { 'zh-CN': '所有模型统一设置', 'zh-TW': '所有模型統一設定', en: 'Unified for All Models' },
   'models.mode.unifiedDesc': { 'zh-CN': '设置一次，所有模型使用相同的上下文长度。', 'zh-TW': '設定一次，所有模型使用相同的上下文長度。', en: 'Set once; all models use the same context length.' },
@@ -148,11 +151,14 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.summary.unconfirmed': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
   'models.summary.pendingRestart': { 'zh-CN': '待重启生效', 'zh-TW': '待重啟生效', en: 'Pending Restart' },
+  'models.status.pendingRestart': { 'zh-CN': '待重启生效', 'zh-TW': '待重啟生效', en: 'Pending Restart' },
   'models.summary.modelDefault': { 'zh-CN': '使用模型默认值', 'zh-TW': '使用模型預設值', en: 'Use model default' },
   'models.summary.unifiedTarget': { 'zh-CN': '所有模型（统一生效）', 'zh-TW': '所有模型（統一生效）', en: 'All models (unified)' },
   'models.card.detailsToggle': { 'zh-CN': '详细信息（配置来源、请求参数与预算验证）', 'zh-TW': '詳細資訊（設定來源、請求參數與預算驗證）', en: 'Details (Source, request params & budget)' },
@@ -220,7 +226,9 @@ const PANEL_I18N = {
   'models.meta.backup': { 'zh-CN': '原版备份状态', 'zh-TW': '原版備份狀態', en: 'Original Backup' },
   'models.credit.source': { 'zh-CN': '方案来源：', 'zh-TW': '方案來源：', en: 'Source:' },
   'models.credit.author': { 'zh-CN': '原作者帖子 (Linux.do @23375) ↗', 'zh-TW': '原作者文章 (Linux.do @23375) ↗', en: 'Original Post (Linux.do @23375) ↗' },
+  'models.credit.authorTitle': { 'zh-CN': '点击在系统默认浏览器中打开原作者帖子', 'zh-TW': '點擊在系統預設瀏覽器中開啟原作者文章', en: 'Open original post in default browser' },
   'models.credit.copy': { 'zh-CN': '📋 复制链接', 'zh-TW': '📋 複製連結', en: '📋 Copy Link' },
+  'models.credit.copyTitle': { 'zh-CN': '复制原作者帖子链接', 'zh-TW': '複製原作者文章連結', en: 'Copy original post link' },
   'models.credit.adapter': { 'zh-CN': '本项目负责 Node.js 适配与集成', 'zh-TW': '本專案負責 Node.js 適配與整合', en: 'Node.js adaptation & integration by this project' },
 
   // 状态与反馈通用
@@ -333,12 +341,108 @@ const PANEL_I18N = {
   'tokens.src.desktop': { 'zh-CN': '桌面端', 'zh-TW': '桌面端', en: 'Desktop' },
   'tokens.src.cli': { 'zh-CN': 'CLI', 'zh-TW': 'CLI', en: 'CLI' },
   'tokens.view.tokens': { 'zh-CN': 'Token 统计', 'zh-TW': 'Token 統計', en: 'Token Stats' },
+  'tokens.view.models': { 'zh-CN': '按模型', 'zh-TW': '依模型', en: 'By Model' },
   'tokens.view.cost': { 'zh-CN': 'API 参考金额', 'zh-TW': 'API 參考金額', en: 'API Est. Cost' },
+  'tokens.titleModels': { 'zh-CN': '按模型 Token 用量', 'zh-TW': '依模型 Token 用量', en: 'Model Usage History' },
+  'modelsUsage.title': { 'zh-CN': '按模型 Token 用量', 'zh-TW': '依模型 Token 用量', en: 'Usage history' },
+  'modelsUsage.subtitle': { 'zh-CN': '查看桌面端与 CLI 各模型每日 Token 消耗及占比分布。', 'zh-TW': '檢視桌面端與 CLI 各模型每日 Token 消耗及佔比分布。', en: 'Daily token consumption and share by model across Desktop and CLI.' },
+  'modelsUsage.groupModel': { 'zh-CN': '按模型', 'zh-TW': '依模型', en: 'By model' },
+  'modelsUsage.groupVariant': { 'zh-CN': '按档位', 'zh-TW': '依檔位', en: 'By variant' },
+  'modelsUsage.metricTotal': { 'zh-CN': '含缓存', 'zh-TW': '含快取', en: 'All tokens' },
+  'modelsUsage.metricNoCache': { 'zh-CN': '不含缓存', 'zh-TW': '不含快取', en: 'Excl. cache' },
+  'modelsUsage.hideUnattr': { 'zh-CN': '隐藏未标明', 'zh-TW': '隱藏未標明', en: 'Hide unattributed' },
+  'modelsUsage.showUnattr': { 'zh-CN': '仅已标明 ✓', 'zh-TW': '僅已標明 ✓', en: 'Attributed only ✓' },
+  'modelsUsage.unattributed': { 'zh-CN': '未标明模型', 'zh-TW': '未標明模型', en: 'Unattributed' },
+  'modelsUsage.prevTitle': { 'zh-CN': '查看更早时间段', 'zh-TW': '檢視更早時段', en: 'Previous period' },
+  'modelsUsage.nextTitle': { 'zh-CN': '查看更新时间段', 'zh-TW': '檢視更新時段', en: 'Next period' },
+  'modelsUsage.empty': { 'zh-CN': '当前时间窗暂无 Token 用量记录', 'zh-TW': '目前時間窗尚無 Token 用量紀錄', en: 'No token usage recorded in this period' },
+  'modelsUsage.stepsSuffix': { 'zh-CN': '{n} 次', 'zh-TW': '{n} 次', en: '{n} reqs' },
+  'modelsUsage.scaleMixed': { 'zh-CN': '量级刻度', 'zh-TW': '量級刻度', en: 'Log-Pow Scale' },
+  'modelsUsage.scaleLinear': { 'zh-CN': '线性比例', 'zh-TW': '線性比例', en: 'Linear Scale' },
+  'modelsUsage.otherSeries': { 'zh-CN': '其他模型/档位', 'zh-TW': '其他模型/檔位', en: 'Other' },
+  'cost.card.shareFmt': { 'zh-CN': '占总费用 {pct}%', 'zh-TW': '佔總費用 {pct}%', en: '{pct}% of cost' },
   'tokens.card.total': { 'zh-CN': '累计处理 Token', 'zh-TW': '累計處理 Token', en: 'Total Tokens' },
   'tokens.card.includeCache': { 'zh-CN': '含缓存读取', 'zh-TW': '含快取讀取', en: 'Incl. cache reads' },
   'tokens.card.today': { 'zh-CN': '今日使用', 'zh-TW': '今日使用', en: 'Today' },
   'tokens.card.month': { 'zh-CN': '本月使用', 'zh-TW': '本月使用', en: 'This Month' },
   'tokens.card.year': { 'zh-CN': '年度使用', 'zh-TW': '年度使用', en: 'This Year' },
+  'tokens.cache.uncachedInput': { 'zh-CN': '输入(未缓存)', 'zh-TW': '輸入(未快取)', en: 'Uncached In' },
+  'tokens.cache.cacheRead': { 'zh-CN': '缓存读取', 'zh-TW': '快取讀取', en: 'Cache Read' },
+  'tokens.cache.totalInput': { 'zh-CN': '总输入(输入+缓存)', 'zh-TW': '總輸入(輸入+快取)', en: 'Total In (In+Cache)' },
+  'tokens.cache.output': { 'zh-CN': '输出', 'zh-TW': '輸出', en: 'Output' },
+  'tokens.cache.ratio': { 'zh-CN': '缓存读取占比', 'zh-TW': '快取讀取佔比', en: 'Cache Read Ratio' },
+  'tokens.cache.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'tokens.cache.na': { 'zh-CN': '不适用', 'zh-TW': '不適用', en: 'N/A' },
+  'tokens.cache.partialNote': { 'zh-CN': '按可拆分输入/缓存读取的 Token 总量加权计算；{n} 条历史缺失细分未计入分母。', 'zh-TW': '依可拆分輸入/快取讀取的 Token 總量加權計算；{n} 筆歷史缺少細分未計入分母。', en: 'Token-weighted over records with split input/cache fields; {n} legacy record(s) without split excluded.' },
+  'tokens.cache.weightedNote': { 'zh-CN': '按当前来源总缓存读取 / 总输入（未命中缓存输入 + 缓存读取）加权计算。', 'zh-TW': '依目前來源總快取讀取 / 總輸入（未命中快取輸入 + 快取讀取）加權計算。', en: 'Token-weighted: cache read / total input (uncached input + cache read) for active source.' },
+  'tokens.cache.missingNote': { 'zh-CN': '当前来源记录缺少输入/缓存细分字段，不作零缓存推断。', 'zh-TW': '目前來源紀錄缺少輸入/快取細分欄位，不作零快取推論。', en: 'Input/cache split fields unavailable for active source; not assumed 0%.' },
+  'tokens.cache.zeroInputNote': { 'zh-CN': '当前来源总输入为 0，缓存读取占比不适用。', 'zh-TW': '目前來源總輸入為 0，快取讀取佔比不適用。', en: 'Total input is 0 for active source; cache ratio is N/A.' },
+
+  // 生成体验面板多语标签
+  'session.speedSummary.titleNoBolt': { 'zh-CN': '最新生成体验与速度', 'zh-TW': '最新生成體驗與速度', en: 'Latest Generation Experience' },
+  'session.speed.streamRate': { 'zh-CN': '纯流式速度', 'zh-TW': '純流式速度', en: 'Stream Speed' },
+  'session.speed.shortSampleBadge': { 'zh-CN': '短样本', 'zh-TW': '短樣本', en: 'Short sample' },
+  'session.speed.shortWindowEst': { 'zh-CN': '短窗口估算 (参考)', 'zh-TW': '短視窗估算 (參考)', en: 'Short-Window Est. (Ref)' },
+  'session.speed.shortWindowNote': { 'zh-CN': '流式窗口过短（可能包含思考 Token 集中吐出），未作主速度高亮展示。', 'zh-TW': '流式視窗過短（可能含思考 Token 集中吐出），未作主速度高亮展示。', en: 'Short streaming window (may include buffered thinking tokens); omitted from headline speed.' },
+  'session.speed.details': { 'zh-CN': '拆解', 'zh-TW': '拆解', en: 'Details' },
+  'session.speed.hideDetails': { 'zh-CN': '收起', 'zh-TW': '收起', en: 'Hide' },
+  'session.speed.breakdown.eScore': { 'zh-CN': '综合效率评分', 'zh-TW': '綜合效率評分', en: 'Efficiency E' },
+  'session.speed.breakdown.ttft': { 'zh-CN': '首字延迟档位', 'zh-TW': '首字延遲檔位', en: 'TTFT Tier' },
+  'session.speed.breakdown.stream': { 'zh-CN': '纯流式速度档位', 'zh-TW': '純流式速度檔位', en: 'Stream Speed Tier' },
+  'session.speed.breakdown.overall': { 'zh-CN': '整体平均速率 (对照)', 'zh-TW': '整體平均速率 (對照)', en: 'Overall Avg (Ref)' },
+  'session.speed.breakdown.duration': { 'zh-CN': '总生成耗时档位', 'zh-TW': '總生成耗時檔位', en: 'Total Duration Tier' },
+  'session.speed.breakdown.stability': { 'zh-CN': '流式稳定性评估', 'zh-TW': '流式穩定性評估', en: 'Stream Stability' },
+  'session.speed.breakdown.basis': { 'zh-CN': '体量调节依据', 'zh-TW': '體量調節依據', en: 'Scale Basis' },
+  'session.speed.stabilityOk': { 'zh-CN': '输出平稳 ({n} 块 · CV {cv})', 'zh-TW': '輸出平穩 ({n} 塊 · CV {cv})', en: 'Steady ({n} chunks · CV {cv})' },
+  'session.speed.stabilityHighVar': { 'zh-CN': '波动较大 ({n} 块 · CV {cv})', 'zh-TW': '波動較大 ({n} 塊 · CV {cv})', en: 'High variance ({n} chunks · CV {cv})' },
+  'session.speed.stabilityUnverified': { 'zh-CN': '暂无法评估 (未采集到足够真实流式分块间隔)', 'zh-TW': '暫無法評估 (未採集到足夠真實流式分塊間隔)', en: 'Unable to evaluate (insufficient real chunk intervals)' },
+  'session.speed.scoreSkippedSparse': { 'zh-CN': '样本不足 · 跳过综合评分', 'zh-TW': '樣本不足 · 略過綜合評分', en: 'Insufficient sample · Skipped' },
+  'session.speed.scoreSkippedMissing': { 'zh-CN': '指标缺失 · 不补造评分', 'zh-TW': '指標缺失 · 不補造評分', en: 'Missing metrics · Skipped' },
+  'session.speed.mockTag': { 'zh-CN': '模拟验收', 'zh-TW': '模擬驗收', en: 'Mock Verification' },
+  'session.latestCall.unknownMappedModel': { 'zh-CN': '未知模型 (无映射 · 原始 {id})', 'zh-TW': '未知模型 (無對映 · 原始 {id})', en: 'Unknown Model (Unmapped · {id})' },
+  'session.latestCall.rawIdNote': { 'zh-CN': '原始 ID: {id}', 'zh-TW': '原始 ID: {id}', en: 'Raw ID: {id}' },
+
+  // 最新调用卡片与会话时间线
+  'session.latestCall.title': { 'zh-CN': '最新调用', 'zh-TW': '最新呼叫', en: 'Latest Call' },
+  'session.latestCall.newAvailable': { 'zh-CN': '有新调用完成 · 点击查看最新', 'zh-TW': '有新呼叫完成 · 點擊檢視最新', en: 'New call available · Click to view latest' },
+  'session.latestCall.statusSuccess': { 'zh-CN': '成功', 'zh-TW': '成功', en: 'Done' },
+  'session.latestCall.statusStreaming': { 'zh-CN': '生成中', 'zh-TW': '產生中', en: 'Streaming' },
+  'session.latestCall.statusCanceled': { 'zh-CN': '已取消', 'zh-TW': '已取消', en: 'Canceled' },
+  'session.latestCall.statusFailed': { 'zh-CN': '失败', 'zh-TW': '失敗', en: 'Failed' },
+  'session.latestCall.statusUnknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'session.latestCall.agentMain': { 'zh-CN': '主代理', 'zh-TW': '主代理', en: 'Main' },
+  'session.latestCall.agentSub': { 'zh-CN': '子代理', 'zh-TW': '子代理', en: 'Subagent' },
+  'session.latestCall.agentUnknown': { 'zh-CN': '未知归属 (缺可靠身份字段)', 'zh-TW': '未知歸屬 (缺可靠身分欄位)', en: 'Unattributed (missing agent field)' },
+  'session.latestCall.missingParentStep': { 'zh-CN': '缺可靠父步骤字段', 'zh-TW': '缺可靠父步驟欄位', en: 'missing parent step field' },
+  'session.latestCall.inlineTokens': { 'zh-CN': '入 {inp} · 出 {out}', 'zh-TW': '入 {inp} · 出 {out}', en: 'In {inp} · Out {out}' },
+  'session.latestCall.inlineCache': { 'zh-CN': '缓存 {val}', 'zh-TW': '快取 {val}', en: 'Cache {val}' },
+  'session.latestCall.fieldTime': { 'zh-CN': '调用时间', 'zh-TW': '呼叫時間', en: 'Call Time' },
+  'session.latestCall.fieldModelId': { 'zh-CN': '稳定模型标识', 'zh-TW': '穩定模型識別碼', en: 'Model ID' },
+  'session.latestCall.fieldModelLabel': { 'zh-CN': '展示名与档位', 'zh-TW': '顯示名稱與檔位', en: 'Display & Effort' },
+  'session.latestCall.fieldInput': { 'zh-CN': '输入 (未缓存)', 'zh-TW': '輸入 (未快取)', en: 'Input (Uncached)' },
+  'session.latestCall.fieldCacheRead': { 'zh-CN': '缓存读取', 'zh-TW': '快取讀取', en: 'Cache Read' },
+  'session.latestCall.fieldTotalInput': { 'zh-CN': '总输入 (输入+缓存)', 'zh-TW': '總輸入 (輸入+快取)', en: 'Total Input' },
+  'session.latestCall.fieldOutput': { 'zh-CN': '输出 (含思考)', 'zh-TW': '輸出 (含思考)', en: 'Output (incl. think)' },
+  'session.latestCall.fieldCacheRatio': { 'zh-CN': '缓存读取占比', 'zh-TW': '快取讀取佔比', en: 'Cache Read Ratio' },
+  'session.latestCall.fieldTtft': { 'zh-CN': '首字延迟', 'zh-TW': '首字延遲', en: 'TTFT' },
+  'session.latestCall.fieldDuration': { 'zh-CN': '总耗时', 'zh-TW': '總耗時', en: 'Duration' },
+  'session.latestCall.fieldSpeed': { 'zh-CN': '输出速度', 'zh-TW': '輸出速度', en: 'Speed' },
+  'session.latestCall.fieldAgent': { 'zh-CN': '代理归属', 'zh-TW': '代理歸屬', en: 'Agent Attribution' },
+  'session.latestCall.fieldStatus': { 'zh-CN': '调用状态', 'zh-TW': '呼叫狀態', en: 'Status' },
+  'session.latestCall.unknownVal': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
+  'session.latestCall.naVal': { 'zh-CN': '不适用', 'zh-TW': '不適用', en: 'N/A' },
+  'session.timeline.viewHistory': { 'zh-CN': '查看历史', 'zh-TW': '檢視歷史', en: 'History' },
+  'session.timeline.hideHistory': { 'zh-CN': '收起历史', 'zh-TW': '收合歷史', en: 'Hide History' },
+  'session.timeline.loading': { 'zh-CN': '正在读取当前会话请求时间线…', 'zh-TW': '正在讀取目前工作階段請求時間線…', en: 'Loading session timeline…' },
+  'session.timeline.empty': { 'zh-CN': '当前会话暂无可展示的历史请求记录。', 'zh-TW': '目前工作階段尚無可顯示的歷史請求紀錄。', en: 'No recorded calls found in this session yet.' },
+  'session.timeline.loadMore': { 'zh-CN': '加载更早轮次 ({n})', 'zh-TW': '載入更早輪次 ({n})', en: 'Load earlier turns ({n})' },
+  'session.timeline.summary': { 'zh-CN': '{turns} 轮 · {calls} 次调用（主 {main} / 子 {sub}） · 会话缓存占比 {cache}', 'zh-TW': '{turns} 輪 · {calls} 次呼叫（主 {main} / 子 {sub}） · 工作階段快取佔比 {cache}', en: '{turns} turn(s) · {calls} call(s) (main {main} / sub {sub}) · Session cache {cache}' },
+  'session.timeline.windowNote': { 'zh-CN': '注：单次与整轮累计 Token 为处理量统计，不等同于当前上下文窗口占用。', 'zh-TW': '註：單次與整輪累計 Token 為處理量統計，不等同於目前上下文視窗佔用。', en: 'Note: Per-call & turn cumulative tokens measure usage, not active context window occupancy.' },
+  'session.timeline.turnLabel': { 'zh-CN': '第 {n} 轮', 'zh-TW': '第 {n} 輪', en: 'Turn {n}' },
+  'session.timeline.turnNoPrompt': { 'zh-CN': '（用户轮次记录）', 'zh-TW': '（使用者輪次紀錄）', en: '(User turn)' },
+  'session.timeline.turnSummary': { 'zh-CN': '{calls} 次 · 入 {inp} / 缓 {cap} / 出 {out}', 'zh-TW': '{calls} 次 · 入 {inp} / 快 {cap} / 出 {out}', en: '{calls} · In {inp} / Cache {cap} / Out {out}' },
+  'session.timeline.unlinkedTitle': { 'zh-CN': '未归属到具体轮次的调用 / 子代理 ({n})', 'zh-TW': '未歸屬至具體輪次的呼叫 / 子代理 ({n})', en: 'Unlinked / Unattributed Calls ({n})' },
+  'session.timeline.dbMissingNote': { 'zh-CN': '缺可靠子代理库字段（{reason}），仅展示已确认调用。', 'zh-TW': '缺可靠子代理庫欄位（{reason}），僅顯示已確認呼叫。', en: 'Missing subagent DB evidence ({reason}); showing confirmed calls only.' },
   'tokens.heat.title': { 'zh-CN': 'Token 活动', 'zh-TW': 'Token 活動', en: 'Token Activity' },
   'tokens.heat.daily': { 'zh-CN': '每天', 'zh-TW': '每天', en: 'Daily' },
   'tokens.heat.weekly': { 'zh-CN': '每周', 'zh-TW': '每週', en: 'Weekly' },
@@ -354,6 +458,33 @@ const PANEL_I18N = {
   'tokens.heat.tip': { 'zh-CN': '点击或悬浮格子查看当日详细 Token 构成', 'zh-TW': '點擊或懸停格子查看當日詳細 Token 結構', en: 'Click or hover a cell to view daily token breakdown' },
   'tokens.heat.less': { 'zh-CN': '少', 'zh-TW': '少', en: 'Less' },
   'tokens.heat.more': { 'zh-CN': '多', 'zh-TW': '多', en: 'More' },
+  'tokens.heat.unactivatedTip': { 'zh-CN': '未开启记录', 'zh-TW': '未開啟紀錄', en: 'Before first record' },
+  'tokens.heat.futureTip': { 'zh-CN': '未来日期', 'zh-TW': '未來日期', en: 'Future' },
+  'tokens.heat.peakBadge': { 'zh-CN': '峰值', 'zh-TW': '峰值', en: 'Peak' },
+  'tokens.heat.cumDeltaLbl': { 'zh-CN': '当日增量', 'zh-TW': '當日增量', en: 'Daily' },
+  'tokens.heat.cumTotalLbl': { 'zh-CN': '截止累计', 'zh-TW': '截止累計', en: 'Cumulative' },
+  'tokens.cum.daysMeta': { 'zh-CN': '{start} – {end} · {total} 天', 'zh-TW': '{start} – {end} · {total} 天', en: '{start} – {end} · {total}d' },
+  'tokens.cum.activeMeta': { 'zh-CN': '活跃 {active} 天 · 0 用量 {zero} 天', 'zh-TW': '活躍 {active} 天 · 0 用量 {zero} 天', en: '{active} active · {zero} zero' },
+  'tokens.cum.recordDaysShort': { 'zh-CN': '记录 {total} 天', 'zh-TW': '紀錄 {total} 天', en: 'Recorded {total}d' },
+  'tokens.cum.rulerLabel': { 'zh-CN': '跨账号量级尺', 'zh-TW': '跨帳號量級尺', en: 'Magnitude' },
+  'tokens.cum.belowMin': { 'zh-CN': '<10M ({val})', 'zh-TW': '<10M ({val})', en: '<10M ({val})' },
+  'tokens.cum.aboveMax': { 'zh-CN': '>100B ({val})', 'zh-TW': '>100B ({val})', en: '>100B ({val})' },
+  'tokens.cum.zeroVal': { 'zh-CN': '0 用量', 'zh-TW': '0 用量', en: '0 Tokens' },
+  'tokens.cum.zeroDayBadge': { 'zh-CN': '0 用量', 'zh-TW': '0 用量', en: '0 Tokens' },
+  'tokens.cum.peakSpanFmt': { 'zh-CN': '高峰 {range} 占 {pct}%', 'zh-TW': '高峰 {range} 佔 {pct}%', en: 'Peak {range} ({pct}%)' },
+  'tokens.cum.concLine': { 'zh-CN': '50% 用量集中在 {start} – {end}（{n} 天 · 占 {pct}%）', 'zh-TW': '50% 用量集中在 {start} – {end}（{n} 天 · 佔 {pct}%）', en: '50% usage in {start} – {end} ({n}d · {pct}%)' },
+  'tokens.cum.concInsufficient': { 'zh-CN': '记录不足 7 天，暂不计算集中度', 'zh-TW': '紀錄不足 7 天，暫不計算集中度', en: 'Under 7 days; concentration omitted' },
+  'tokens.cum.peakDayFmt': { 'zh-CN': '峰值 {date} {val} ({pct}%)', 'zh-TW': '峰值 {date} {val} ({pct}%)', en: 'Peak {date} {val} ({pct}%)' },
+  'tokens.cum.peakWeekFmt': { 'zh-CN': '峰值周 {range} {val} ({pct}%)', 'zh-TW': '峰值週 {range} {val} ({pct}%)', en: 'Peak wk {range} {val} ({pct}%)' },
+  'tokens.cum.emptyTitle': { 'zh-CN': '当前区间暂无 Token 用量记录', 'zh-TW': '目前區間尚無 Token 用量紀錄', en: 'No token usage in this interval' },
+  'tokens.cum.emptySub': { 'zh-CN': '共 {days} 天 · 0 用量 {days} 天', 'zh-TW': '共 {days} 天 · 0 用量 {days} 天', en: '{days} days · {days} zero' },
+  'tokens.cum.shareLbl': { 'zh-CN': '占比', 'zh-TW': '佔比', en: 'Share' },
+  'tokens.cum.locateDaily': { 'zh-CN': '定位到「每天」', 'zh-TW': '定位至「每天」', en: 'Locate in Daily' },
+  'tokens.cum.clearLock': { 'zh-CN': '取消 (Esc)', 'zh-TW': '取消 (Esc)', en: 'Clear (Esc)' },
+  'tokens.cum.expandDays': { 'zh-CN': '展开日明细 ({n}天)', 'zh-TW': '展開日明細 ({n}天)', en: 'Show {n} days' },
+  'tokens.cum.collapseDays': { 'zh-CN': '收起日明细', 'zh-TW': '收合日明細', en: 'Hide days' },
+  'tokens.cum.weekGroupHint': { 'zh-CN': '按 7 天分组 ({n} 段)', 'zh-TW': '依 7 天分組 ({n} 段)', en: 'Grouped 7d ({n} segs)' },
+  'tokens.cum.weekSumLbl': { 'zh-CN': '周增量', 'zh-TW': '週增量', en: 'Weekly' },
   'tokens.colors.title': { 'zh-CN': '🎨 热力图色阶与面板外观自定义（默认跟随主题）', 'zh-TW': '🎨 熱力圖色階與面板外觀自訂（預設跟隨佈景主題）', en: '🎨 Heatmap Palette & Panel Appearance' },
   'tokens.update.title': { 'zh-CN': '更新设置', 'zh-TW': '更新設定', en: 'Update Settings' },
   'tokens.update.auto': { 'zh-CN': '启动时自动检查更新（不自动安装）', 'zh-TW': '啟動時自動檢查更新（不自動安裝）', en: 'Check for updates on startup (manual install)' },
@@ -401,7 +532,7 @@ const PANEL_I18N = {
   'mod.zh.descActive': { 'zh-CN': '客户端简体中文运行中：DOM 监听器正常工作，左侧边栏与核心菜单已翻译。', 'zh-TW': '用戶端簡體中文執行中：DOM 監聽器正常運作，左側邊欄與核心選單已翻譯。', en: 'Client zh-CN localization is active.' },
   'mod.zh.descNeedInject': { 'zh-CN': '配置已开启简体中文，但当前磁盘 ASAR 未注入汉化资源；需退出客户端后通过命令行运行 node cli.js chinese:enable 完成注入。', 'zh-TW': '設定已開啟簡體中文，但目前磁碟 ASAR 未注入中文化資源；需結束用戶端後執行 node cli.js chinese:enable 完成注入。', en: 'zh-CN is enabled in config, but ASAR lacks localization injection. Quit Antigravity and run: node cli.js chinese:enable' },
   'mod.zh.descPendingRestart': { 'zh-CN': '简体中文代码已注入且配置已开启；需完全退出并重新打开 Antigravity 客户端加载生效。', 'zh-TW': '簡體中文程式碼已注入且設定已開啟；需完全結束並重新開啟 Antigravity 用戶端載入生效。', en: 'zh-CN localization is injected and enabled; quit and reopen Antigravity to take effect.' },
-  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js chinese:enable 补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js chinese:enable 補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js chinese:enable from the package directory.' },
+  'mod.zh.descPartialInject': { 'zh-CN': '磁盘 ASAR 仅包含部分汉化代码但资源或门禁不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js chinese:enable）补装。', 'zh-TW': '磁碟 ASAR 僅包含部分漢化程式碼但資源或門禁不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js chinese:enable）補裝。', en: 'Localization module in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js chinese:enable on macOS/Linux) from the package directory.' },
   'mod.zh.savedEnableRestart': { 'zh-CN': '✔ 已开启客户端简体中文并保存配置，完全退出并重启 Antigravity 后生效。', 'zh-TW': '✔ 已開啟用戶端簡體中文並儲存設定，完全結束並重啟 Antigravity 後生效。', en: '✔ Simplified Chinese saved; quit and restart Antigravity to apply.' },
   'mod.zh.savedDisableRestart': { 'zh-CN': '✔ 已切换为官方英文并保存配置，完全退出并重启 Antigravity 后恢复英文。', 'zh-TW': '✔ 已切換為官方英文並儲存設定，完全結束並重啟 Antigravity 後恢復英文。', en: '✔ Native English saved; quit and restart Antigravity to restore English.' },
   'mod.zh.btnDisable': { 'zh-CN': '切换为官方英文 (需重启)', 'zh-TW': '切換為官方英文 (需重啟)', en: 'Switch to English (Restart)' },
@@ -414,7 +545,7 @@ const PANEL_I18N = {
   'mod.proxy.badgeOff': { 'zh-CN': '⚪ 未启用', 'zh-TW': '⚪ 未啟用', en: '⚪ Disabled' },
   'mod.proxy.descOn': { 'zh-CN': '已启用本地网络直连（代理: {url}）。注意：模型请求连通性待实际在线对话验证，未验证前不代表公网直连必定成功。', 'zh-TW': '已啟用本機網路直連（代理: {url}）。注意：模型請求連通性待實際線上對話驗證。', en: 'Local proxy enabled ({url}). Connectivity should be verified with a live chat request.' },
   'mod.proxy.descNeedInject': { 'zh-CN': '配置已开启代理，但当前磁盘 ASAR 未注入代理拦截逻辑；需退出客户端后通过命令行运行 node cli.js proxy:enable 完成注入。', 'zh-TW': '設定已開啟代理，但目前磁碟 ASAR 未注入代理攔截邏輯；需結束用戶端後執行 node cli.js proxy:enable 完成注入。', en: 'Proxy enabled in config, but ASAR lacks proxy hook. Quit Antigravity and run: node cli.js proxy:enable' },
-  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请从系统托盘彻底退出 Antigravity 后，在安装包目录运行 install.bat 或 node cli.js proxy:enable 补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請從系統匣徹底結束 Antigravity 後，在安裝包目錄執行 install.bat 或 node cli.js proxy:enable 補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity (including tray) and run install.bat / node cli.js proxy:enable from the package directory.' },
+  'mod.proxy.descPartialInject': { 'zh-CN': '磁盘 ASAR 代理拦截组件不完整（{reason}）；请彻底退出 Antigravity 后，在安装包目录运行 install.bat（macOS/Linux 执行 node cli.js proxy:enable）补装。', 'zh-TW': '磁碟 ASAR 代理攔截元件不完整（{reason}）；請徹底結束 Antigravity 後，在安裝包目錄執行 install.bat（macOS/Linux 執行 node cli.js proxy:enable）補裝。', en: 'Proxy hook in app.asar is incomplete ({reason}). Fully quit Antigravity and run install.bat (or node cli.js proxy:enable on macOS/Linux) from the package directory.' },
   'mod.proxy.descOff': { 'zh-CN': '未启用本地网络直连，网络请求跟随系统默认/TUN 设置。', 'zh-TW': '未啟用本機網路直連，網路請求跟隨系統預設/TUN 設定。', en: 'Local proxy disabled; requests follow system/TUN settings.' },
   'mod.proxy.btnDisable': { 'zh-CN': '关闭免 TUN 直连', 'zh-TW': '關閉免 TUN 直連', en: 'Disable Local Proxy' },
   'mod.proxy.btnEnable': { 'zh-CN': '开启免 TUN 直连', 'zh-TW': '開啟免 TUN 直連', en: 'Enable Local Proxy' },
@@ -542,17 +673,17 @@ const PANEL_I18N = {
   'update.applyNow': { 'zh-CN': '立即更新', 'zh-TW': '立即更新', en: 'Update Now' },
   'update.connecting': { 'zh-CN': '正在连接 GitHub 检测最新版本…', 'zh-TW': '正在連接 GitHub 檢測最新版本…', en: 'Connecting to GitHub to check for updates…' },
   'update.failedTitle': { 'zh-CN': '⚠️ 检查更新失败', 'zh-TW': '⚠️ 檢查更新失敗', en: '⚠️ Update Check Failed' },
-  'update.failedVer': { 'zh-CN': 'v{ver} (检查失败)', 'zh-TW': 'v{ver} (檢查失敗)', en: 'v{ver} (Check failed)' },
+  'update.failedVer': { 'zh-CN': '{ver} (检查失败)', 'zh-TW': '{ver} (檢查失敗)', en: '{ver} (Check failed)' },
   'update.failedFetch': { 'zh-CN': '未能获取有效的版本数据', 'zh-TW': '未能取得有效的版本資料', en: 'Failed to retrieve valid release metadata' },
   'update.failedBody': { 'zh-CN': '检查更新失败: {err}。请检查网络代理设置或前往 GitHub 查看。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路代理設定或前往 GitHub 檢視。', en: 'Update check failed: {err}. Please check your proxy or visit GitHub.' },
   'update.failedNetBody': { 'zh-CN': '检查更新失败: {err}。请检查网络连接或稍后重试。', 'zh-TW': '檢查更新失敗: {err}。請檢查網路連線或稍後重試。', en: 'Update check failed: {err}. Please check your network and try again.' },
   'update.foundTitle': { 'zh-CN': '🚀 发现新版本', 'zh-TW': '🚀 發現新版本', en: '🚀 Update Available' },
-  'update.foundBody': { 'zh-CN': '发现新版本 v{ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 v{ver}！\n\n更新說明：\n{notes}', en: 'Version v{ver} is available!\n\nRelease notes:\n{notes}' },
+  'update.foundBody': { 'zh-CN': '发现新版本 {ver}！\n\n更新说明：\n{notes}', 'zh-TW': '發現新版本 {ver}！\n\n更新說明：\n{notes}', en: 'Version {ver} is available!\n\nRelease notes:\n{notes}' },
   'update.defaultNotes': { 'zh-CN': '性能优化与体验改进', 'zh-TW': '效能最佳化與體驗改進', en: 'Performance and usability improvements' },
   'update.latestTitle': { 'zh-CN': '✅ 已是最新版本', 'zh-TW': '✅ 已是最新版本', en: '✅ Up to Date' },
-  'update.latestVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Latest)' },
-  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 (v{ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 (v{ver})，待重新啟動用戶端後主行程完整生效。', en: 'v{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
-  'update.latestBody': { 'zh-CN': '当前已是最新版本 (v{ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 (v{ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version (v{ver}), verified via GitHub Releases.' },
+  'update.latestVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Latest)' },
+  'update.diskPending': { 'zh-CN': '已完成磁盘安装至最新版本 ({ver})，待重启客户端后主进程完整生效。', 'zh-TW': '已完成磁碟安裝至最新版本 ({ver})，待重新啟動用戶端後主行程完整生效。', en: '{ver} has been installed on disk. Restart the client for main-process changes to take effect.' },
+  'update.latestBody': { 'zh-CN': '当前已是最新版本 ({ver})。已通过 GitHub Releases 确认。', 'zh-TW': '目前已是最新版本 ({ver})。已透過 GitHub Releases 確認。', en: 'You are on the latest version ({ver}), verified via GitHub Releases.' },
   'update.updatingBtn': { 'zh-CN': '正在更新...', 'zh-TW': '正在更新...', en: 'Updating…' },
   'update.downloading': { 'zh-CN': '正在下载安装包并校验 SHA-256...', 'zh-TW': '正在下載安裝套件並校驗 SHA-256...', en: 'Downloading package and verifying SHA-256…' },
   'update.noApi': { 'zh-CN': '更新接口不可用', 'zh-TW': '更新介面無法使用', en: 'Update API unavailable' },
@@ -673,6 +804,9 @@ const PANEL_I18N = {
   'plan.summary.justNow': { 'zh-CN': '刚刚更新', 'zh-TW': '剛剛更新', en: 'Just now' },
   'plan.summary.perMonth': { 'zh-CN': '/月', 'zh-TW': '/月', en: '/mo' },
   'plan.summary.freeWithPlan': { 'zh-CN': '(随套餐免费)', 'zh-TW': '(隨方案免費)', en: '(Included)' },
+  'plan.summary.priceUnsetShort': { 'zh-CN': '待设置月费', 'zh-TW': '待設定月費', en: 'Fee unset' },
+  'plan.summary.priceUnsetCny': { 'zh-CN': '(待填写实付)', 'zh-TW': '(待填寫實付)', en: '(not set)' },
+  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅费用与最新汇率换算参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱費用與最新匯率換算參考 (點擊展開/收起詳細資訊)', en: 'Current subscription fee and FX estimate (click to toggle details)' },
   'plan.dt.plan': { 'zh-CN': '当前套餐：', 'zh-TW': '目前方案：', en: 'Plan:' },
   'plan.dt.account': { 'zh-CN': '当前账号：', 'zh-TW': '目前帳號：', en: 'Account:' },
   'plan.dt.country': { 'zh-CN': '账号所在地区：', 'zh-TW': '帳號所在地區：', en: 'Account country:' },
@@ -696,6 +830,9 @@ const PANEL_I18N = {
   'plan.tag.official': { 'zh-CN': '官方定价', 'zh-TW': '官方定價', en: 'Official price' },
   'plan.tag.publicRef': { 'zh-CN': '公开参考价', 'zh-TW': '公開參考價', en: 'Public ref' },
   'plan.tag.regionRef': { 'zh-CN': '地区参考价', 'zh-TW': '地區參考價', en: 'Regional ref' },
+  'plan.tag.unset': { 'zh-CN': '待设置', 'zh-TW': '待設定', en: 'Unset' },
+  'plan.priceUnsetNote': { 'zh-CN': '待设置实付月费（不套用 Pro $19.99）', 'zh-TW': '待設定實付月費（不套用 Pro $19.99）', en: 'Monthly fee unset (Pro $19.99 ref not applied)' },
+  'plan.ultraSubtierUnknown': { 'zh-CN': 'Google AI Ultra（子档未知）', 'zh-TW': 'Google AI Ultra（子檔未知）', en: 'Google AI Ultra (Sub-tier unknown)' },
   'plan.acq.normal': { 'zh-CN': '正常付费订阅', 'zh-TW': '正常付費訂閱', en: 'Standard Paid Plan' },
   'plan.cycle.monthly': { 'zh-CN': '月付', 'zh-TW': '月繳', en: 'Monthly' },
   'plan.cycle.yearly': { 'zh-CN': '年付', 'zh-TW': '年繳', en: 'Yearly' },
@@ -729,6 +866,8 @@ const PANEL_I18N = {
   // API 参考金额与展开详情
   'cost.title': { 'zh-CN': '💰 本期 API 参考金额', 'zh-TW': '💰 本期 API 參考金額', en: '💰 Period API Reference Cost' },
   'cost.periodTag': { 'zh-CN': '本月自然月', 'zh-TW': '本月自然月', en: 'This Calendar Month' },
+  'cost.calendarMonth': { 'zh-CN': '自然月', 'zh-TW': '自然月', en: 'Calendar Month' },
+  'cost.periodTagFmt': { 'zh-CN': '{ym} (自然月)', 'zh-TW': '{ym} (自然月)', en: '{ym} (Calendar Month)' },
   'cost.nonPaidBadge': { 'zh-CN': 'API折算 · 非实付', 'zh-TW': 'API換算 · 非實付', en: 'API Est. · Not Billed' },
   'cost.subUnknown': { 'zh-CN': '订阅实付：未填写', 'zh-TW': '訂閱實付：未填寫', en: 'Plan paid: Not set' },
   'cost.btnFill': { 'zh-CN': '补充', 'zh-TW': '補充', en: 'Edit' },
@@ -812,7 +951,9 @@ const PANEL_I18N = {
   'models.card.targetTitle': { 'zh-CN': '目标设置', 'zh-TW': '目標設定', en: 'Target Setting' },
   'models.card.actualRequestTitle': { 'zh-CN': '实际请求值', 'zh-TW': '實際請求值', en: 'Actual Request' },
   'models.card.convoIdTitle': { 'zh-CN': '对应会话', 'zh-TW': '對應工作階段', en: 'Conversation' },
+  'models.card.convoIdSide': { 'zh-CN': '发生调用的会话标识', 'zh-TW': '觸發呼叫的工作階段識別碼', en: 'Conversation ID of call' },
   'models.card.diagnosisTitle': { 'zh-CN': '生效诊断', 'zh-TW': '生效診斷', en: 'Diagnosis' },
+  'models.card.diagnosisSide': { 'zh-CN': '目标值与观测值比对结果', 'zh-TW': '目標值與觀測值比對結果', en: 'Target vs. observed comparison' },
   'models.card.modelUnavailable': { 'zh-CN': '不可用', 'zh-TW': '不可用', en: 'Unavailable' },
   'models.card.modelHistorical': { 'zh-CN': '历史归档', 'zh-TW': '歷史歸檔', en: 'Historical' },
   'models.pref.none': { 'zh-CN': '未单独设置（使用默认）', 'zh-TW': '未單獨設定（使用預設）', en: 'Not set (Default)' },
@@ -926,7 +1067,8 @@ const PANEL_I18N = {
   'common.notProvided': { 'zh-CN': '未提供', 'zh-TW': '未提供', en: 'Not provided' },
   'common.loading': { 'zh-CN': '读取中...', 'zh-TW': '讀取中...', en: 'Loading...' },
   'tokens.heat.firstUsePlaceholder': { 'zh-CN': '首次使用：--', 'zh-TW': '首次使用：--', en: 'First use: --' },
-  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (¥0.00) · 日均 $0.00', en: '≈ $0.00 (¥0.00) · $0.00/d' },
+  'tokens.card.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00) · 日均 $0.00', 'zh-TW': '≈ $0.00 (HK$0 / NT$0) · 日均 $0.00', en: '≈ $0.00 · Avg $0.00/d' },
+  'tokens.heat.costPlaceholder': { 'zh-CN': '≈ $0.00 (¥0.00)', 'zh-TW': '≈ $0.00 (HK$0 / NT$0)', en: '≈ $0.00' },
   'tokens.heat.activeAvgPlaceholder': { 'zh-CN': '$0.00 (0天)', 'zh-TW': '$0.00 (0天)', en: '$0.00 (0d)' },
   'tokens.card.todaySub': { 'zh-CN': '{n} 会话实时累加', 'zh-TW': '{n} 會話即時累加', en: '{n} chat(s) live' },
   'tokens.card.monthSub': { 'zh-CN': '日均约 {val}', 'zh-TW': '日均約 {val}', en: '~{val}/day avg' },
@@ -1005,15 +1147,15 @@ const PANEL_I18N = {
   'settings.proxy.resModel': { 'zh-CN': '模型请求', 'zh-TW': '模型請求', en: 'Model request' },
 
   'update.unavailableTitle': { 'zh-CN': 'ℹ️ 更新不可用', 'zh-TW': 'ℹ️ 更新不可用', en: 'ℹ️ Update Unavailable' },
-  'update.unavailableVer': { 'zh-CN': 'v{ver} (更新不可用)', 'zh-TW': 'v{ver} (更新不可用)', en: 'v{ver} (Unavailable)' },
+  'update.unavailableVer': { 'zh-CN': '{ver} (更新不可用)', 'zh-TW': '{ver} (更新不可用)', en: '{ver} (Unavailable)' },
   'update.unavailableBody': { 'zh-CN': '当前环境未提供更新桥接接口（如纯前端调试或免安装热挂载模式），无法在线检查更新。请前往 GitHub Releases 页面查看最新发布。', 'zh-TW': '目前環境未提供更新橋接介面（如純前端除錯或免安裝熱掛載模式），無法線上檢查更新。請前往 GitHub Releases 頁面查看最新發布。', en: 'Update bridge unavailable in this mode. Check GitHub Releases for the latest version.' },
   'update.checkingTitle': { 'zh-CN': '🔄 检查更新中', 'zh-TW': '🔄 檢查更新中', en: '🔄 Checking for Updates' },
-  'update.checkingVer': { 'zh-CN': 'v{ver} (正在检查…)', 'zh-TW': 'v{ver} (正在檢查…)', en: 'v{ver} (Checking…)' },
+  'update.checkingVer': { 'zh-CN': '{ver} (正在检查…)', 'zh-TW': '{ver} (正在檢查…)', en: '{ver} (Checking…)' },
   'update.doneTitle': { 'zh-CN': '🎉 更新已完成', 'zh-TW': '🎉 更新已完成', en: '🎉 Update Complete' },
-  'update.doneVer': { 'zh-CN': 'v{ver} (已是最新)', 'zh-TW': 'v{ver} (已是最新)', en: 'v{ver} (Up to date)' },
-  'update.doneHot': { 'zh-CN': '已成功在线更新至 v{ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 v{ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to v{ver}. UI hot-injected immediately; restart client for main-process changes.' },
-  'update.doneHotFull': { 'zh-CN': '已成功在线更新至 v{ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 v{ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to v{ver}. Both UI and backend service hot-reloaded and verified without restart.' },
-  'update.doneDisk': { 'zh-CN': '已成功完成 v{ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 v{ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to v{ver} complete. Restart Antigravity to apply.' },
+  'update.doneVer': { 'zh-CN': '{ver} (已是最新)', 'zh-TW': '{ver} (已是最新)', en: '{ver} (Up to date)' },
+  'update.doneHot': { 'zh-CN': '已成功在线更新至 {ver}。界面组件已完成热注入即时生效；主进程核心常驻模块待完全重启客户端后完整生效。', 'zh-TW': '已成功線上更新至 {ver}。介面元件已完成熱注入即時生效；主程序核心常駐模組待完全重啟用戶端後完整生效。', en: 'Updated to {ver}. UI hot-injected immediately; restart client for main-process changes.' },
+  'update.doneHotFull': { 'zh-CN': '已成功在线更新至 {ver}。前端界面与新版后台服务已免重启热加载并完成接口核验。', 'zh-TW': '已成功線上更新至 {ver}。前端介面與新版後台服務已免重啟熱載入並完成介面核驗。', en: 'Updated to {ver}. Both UI and backend service hot-reloaded and verified without restart.' },
+  'update.doneDisk': { 'zh-CN': '已成功完成 {ver} 磁盘更新，需完全重启 Antigravity 后生效。', 'zh-TW': '已成功完成 {ver} 磁碟更新，需完全重啟 Antigravity 後生效。', en: 'Disk update to {ver} complete. Restart Antigravity to apply.' },
   'update.restartBtn': { 'zh-CN': '重启客户端', 'zh-TW': '重新啟動用戶端', en: 'Restart Client' },
   'update.btnUpdated': { 'zh-CN': '已更新', 'zh-TW': '已更新', en: 'Updated' },
   'update.btnRetry': { 'zh-CN': '重试更新', 'zh-TW': '重試更新', en: 'Retry Update' },
@@ -1170,16 +1312,25 @@ const PANEL_I18N = {
   'cp.copyHsl': { 'zh-CN': '复制 HSL', 'zh-TW': '複製 HSL', en: 'Copy HSL' },
   'update.dialogAria': { 'zh-CN': '软件更新', 'zh-TW': '軟體更新', en: 'Software Update' },
 
-  // 订阅表单与热力图补充
-  'plan.summary.priceBadgeTitle': { 'zh-CN': '当前订阅月费及人民币折合汇率参考 (点击展开/收起详情)', 'zh-TW': '目前訂閱月費及人民幣折合匯率參考 (點擊展開/收起詳情)', en: 'Current monthly fee & CNY estimate (click to toggle details)' },
+  // 订阅表单、自定义日期选择器与热力图补充
   'plan.country.title': { 'zh-CN': '仅作为本地显示记录，不修改实际 Google 账号', 'zh-TW': '僅作為本機顯示記錄，不修改實際 Google 帳號', en: 'Local display record only; does not change your Google account' },
   'plan.region.title': { 'zh-CN': '实际购买或支付订阅所在的国家或地区', 'zh-TW': '實際購買或支付訂閱所在的國家或地區', en: 'Country/region where the subscription is billed' },
   'plan.currency.aria': { 'zh-CN': '选择订阅币种', 'zh-TW': '選擇訂閱幣別', en: 'Select subscription currency' },
   'plan.currency.title': { 'zh-CN': '订阅计价/结算币种', 'zh-TW': '訂閱計價/結算幣別', en: 'Subscription billing currency' },
   'plan.country.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
   'plan.region.unknown': { 'zh-CN': '未知', 'zh-TW': '未知', en: 'Unknown' },
-  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '折合 ≈ ¥{val} CNY/月', en: '≈ ¥{val} CNY/mo' },
-  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '≈ ¥{val} CNY', en: '≈ ¥{val} CNY' },
+  'plan.cnyApprox': { 'zh-CN': '折合 ≈ ¥{val} CNY/月', 'zh-TW': '約合 ≈ ¥{val} CNY/月', en: '≈ ${val}/mo' },
+  'plan.cnyShort': { 'zh-CN': '≈ ¥{val} CNY', 'zh-TW': '約 ¥{val} CNY', en: 'approx. ${val} USD' },
+  'plan.usdApprox': { 'zh-CN': '折合 ≈ ${val} USD', 'zh-TW': '約合 ≈ ${val} USD', en: 'approx. ${val} USD' },
+  'plan.usdApproxMo': { 'zh-CN': '折合 ≈ ${val} USD/月', 'zh-TW': '約合 ≈ ${val} USD/月', en: 'approx. ${val} USD/mo' },
+  'datePicker.placeholder': { 'zh-CN': '年 / 月 / 日', 'zh-TW': '年 / 月 / 日', en: 'YYYY-MM-DD' },
+  'datePicker.clear': { 'zh-CN': '清除', 'zh-TW': '清除', en: 'Clear' },
+  'datePicker.today': { 'zh-CN': '今天', 'zh-TW': '今天', en: 'Today' },
+  'datePicker.prevMonth': { 'zh-CN': '上个月', 'zh-TW': '上個月', en: 'Previous month' },
+  'datePicker.nextMonth': { 'zh-CN': '下个月', 'zh-TW': '下個月', en: 'Next month' },
+  'datePicker.weekdays': { 'zh-CN': '日,一,二,三,四,五,六', 'zh-TW': '日,一,二,三,四,五,六', en: 'Su,Mo,Tu,We,Th,Fr,Sa' },
+  'datePicker.monthTitle': { 'zh-CN': '{y}年{m}月', 'zh-TW': '{y}年{m}月', en: '{monthEn} {y}' },
+  'datePicker.ariaLabel': { 'zh-CN': '选择权益到期日期', 'zh-TW': '選擇權益到期日期', en: 'Choose expiration date' },
   'plan.acqOpt.normal_paid': { 'zh-CN': '正常官方付费订阅', 'zh-TW': '正常官方付費訂閱', en: 'Standard paid subscription' },
   'plan.acqOpt.student_offer': { 'zh-CN': '学生教育优惠 (Google AI Pro 学生方案)', 'zh-TW': '學生教育優惠 (Google AI Pro 學生方案)', en: 'Student discount (Google AI Pro)' },
   'plan.acqOpt.pixel_bundle': { 'zh-CN': 'Pixel 手机购机赠送权益', 'zh-TW': 'Pixel 手機購機贈送權益', en: 'Pixel phone bundle perk' },
@@ -1194,8 +1345,8 @@ const PANEL_I18N = {
   'plan.form.presetCustom': { 'zh-CN': '✎ 自定义输入地区', 'zh-TW': '✎ 自訂輸入地區', en: '✎ Custom region' },
   'plan.form.countryPh': { 'zh-CN': '例如：美国 (US)', 'zh-TW': '例如：美國 (US)', en: 'e.g. United States (US)' },
   'plan.form.regionPh': { 'zh-CN': '例如：韩国 / 澳大利亚', 'zh-TW': '例如：韓國 / 澳洲', en: 'e.g. South Korea / Australia' },
-  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月 (≈ ¥{cny})', en: '{flag} {name} ({id}) · {sym}{price}/mo (≈ ¥{cny})' },
-  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月', en: '{flag} {name} (CNY) · ¥{price}/mo' },
+  'plan.form.presetLine': { 'zh-CN': '{flag} {name} ({id}) · {sym}{price}/月{conv}', 'zh-TW': '{flag} {name} ({id}) · {sym}{price}/月{conv}', en: '{flag} {name} ({id}) · {sym}{price}/mo{conv}' },
+  'plan.form.presetLineCny': { 'zh-CN': '{flag} {name} (CNY) · ¥{price}/月{conv}', 'zh-TW': '{flag} {name} (CNY) · ¥{price}/月{conv}', en: '{flag} {name} (CNY) · ¥{price}/mo{conv}' },
   'plan.cycleOpt.monthly': { 'zh-CN': '月付', 'zh-TW': '月付', en: 'Monthly' },
   'plan.cycleOpt.yearly': { 'zh-CN': '年付', 'zh-TW': '年付', en: 'Yearly' },
   'plan.cycleOpt.free': { 'zh-CN': '免费 / 促销赠送', 'zh-TW': '免費 / 促銷贈送', en: 'Free / Promo' },
@@ -1225,6 +1376,32 @@ const PANEL_I18N = {
   // 其余散落文案
   'drawer.shortExpand': { 'zh-CN': '▼ 展开', 'zh-TW': '▼ 展開', en: '▼ Expand' },
   'drawer.shortCollapse': { 'zh-CN': '▲ 收起', 'zh-TW': '▲ 收起', en: '▲ Collapse' },
+  'badge.clickOpenDetails': { 'zh-CN': ' · 点击查看统计明细', 'zh-TW': ' · 點擊檢視統計明細', en: ' · Click to view details' },
+  'settings.display.title': { 'zh-CN': '⚙️ 顶栏功能与显示设置', 'zh-TW': '⚙️ 頂欄功能與顯示設定', en: '⚙️ Toolbar & Display Settings' },
+  'settings.display.cliVisible': { 'zh-CN': 'CLI 已显示', 'zh-TW': 'CLI 已顯示', en: 'CLI Visible' },
+  'settings.display.cliHidden': { 'zh-CN': 'CLI 已隐藏', 'zh-TW': 'CLI 已隱藏', en: 'CLI Hidden' },
+  'settings.display.liveChineseLabel': { 'zh-CN': '启用客户端界面汉化（免改盘热注入，关闭后重载恢复英文）', 'zh-TW': '啟用用戶端介面中文化（免改磁碟熱注入，關閉後重載恢復英文）', en: 'Enable client zh-CN localization (patchless hot-inject; reload for English)' },
+  'settings.display.defaultOn': { 'zh-CN': '默认开启', 'zh-TW': '預設開啟', en: 'Default On' },
+  'settings.display.defaultOff': { 'zh-CN': '默认关闭', 'zh-TW': '預設關閉', en: 'Default Off' },
+  'settings.display.showCliLabel': { 'zh-CN': '在顶栏显示 <code>&gt;_ CLI</code> 快捷启动按钮', 'zh-TW': '在頂欄顯示 <code>&gt;_ CLI</code> 快捷啟動按鈕', en: 'Show <code>&gt;_ CLI</code> quick launch button in toolbar' },
+  'settings.display.footnote': { 'zh-CN': '配置保存于宿主独立设置文件（跨插件版本与客户端更新自动保留）。', 'zh-TW': '設定儲存於宿主獨立設定檔（跨外掛版本與用戶端更新自動保留）。', en: 'Saved to standalone host preferences (persists across plugin & client updates).' },
+  'settings.display.langTitle': { 'zh-CN': '界面汉化', 'zh-TW': '介面中文化', en: 'Client UI Language' },
+  'settings.display.liveChineseShort': { 'zh-CN': '启用客户端界面汉化（默认开启）', 'zh-TW': '啟用用戶端介面中文化（預設開啟）', en: 'Enable client zh-CN UI (default on)' },
+  'settings.display.toolbarTitle': { 'zh-CN': '顶栏功能', 'zh-TW': '頂欄功能', en: 'Toolbar Features' },
+  'settings.display.showCliShort': { 'zh-CN': '在顶栏显示 >_ CLI 按钮（默认关闭）', 'zh-TW': '在頂欄顯示 >_ CLI 按鈕（預設關閉）', en: 'Show >_ CLI button in toolbar (default off)' },
+  'mod.zh.liveBadgeOk': { 'zh-CN': '🟢 已翻译生效', 'zh-TW': '🟢 已翻譯生效', en: '🟢 Translation Active' },
+  'mod.zh.liveBadgeLoading': { 'zh-CN': '⏳ 正在加载汉化…', 'zh-TW': '⏳ 正在載入中文化…', en: '⏳ Loading Translation…' },
+  'mod.zh.liveBadgeRestartEn': { 'zh-CN': '⏳ 需重启恢复英文', 'zh-TW': '⏳ 需重啟恢復英文', en: '⏳ Restart for English' },
+  'mod.zh.liveBadgeOff': { 'zh-CN': '⚪ 已关闭', 'zh-TW': '⚪ 已關閉', en: '⚪ Disabled' },
+  'mod.zh.liveDescOk': { 'zh-CN': 'Sidecar 免改盘汉化运行中：DOM 实时翻译已生效（默认开启，不修改 app.asar）。', 'zh-TW': 'Sidecar 免改磁碟中文化執行中：DOM 即時翻譯已生效（預設開啟，不修改 app.asar）。', en: 'Sidecar patchless translation is active (app.asar untouched).' },
+  'mod.zh.liveDescLoading': { 'zh-CN': '已开启 Sidecar 免改盘汉化（默认开启），等待本地桥接注入词库…', 'zh-TW': '已開啟 Sidecar 免改磁碟中文化（預設開啟），等待本機橋接注入詞庫…', en: 'Sidecar patchless translation enabled; waiting for dictionary injection…' },
+  'mod.zh.liveDescRestartEn': { 'zh-CN': '已在插件设置中关闭客户端汉化；当前窗口仍保留中文 DOM 缓存，重载或重启 Antigravity 后恢复纯净原生英文。', 'zh-TW': '已在外掛設定中關閉用戶端中文化；目前視窗仍保留中文 DOM 快取，重載或重啟 Antigravity 後恢復原生英文。', en: 'Client translation disabled in settings; reload or restart Antigravity to restore native English.' },
+  'mod.zh.liveDescOff': { 'zh-CN': '客户端汉化已关闭，当前保持官方原生英文界面（开启后免重启即时生效）。', 'zh-TW': '用戶端中文化已關閉，目前保持官方原生英文介面（開啟後免重啟即時生效）。', en: 'Client translation disabled; native English UI is active.' },
+  'mod.zh.liveBtnOff': { 'zh-CN': '关闭客户端汉化', 'zh-TW': '關閉用戶端中文化', en: 'Disable Client zh-CN' },
+  'mod.zh.liveBtnOn': { 'zh-CN': '开启客户端汉化', 'zh-TW': '開啟用戶端中文化', en: 'Enable Client zh-CN' },
+  'mod.proxy.liveBadgeOff': { 'zh-CN': '⚪ 免改盘未启用', 'zh-TW': '⚪ 免改磁碟未啟用', en: '⚪ Patchless Disabled' },
+  'mod.proxy.liveDescOff': { 'zh-CN': '当前为 Sidecar 免侵入运行模式，未向 app.asar 注入代理模块，网络请求跟随系统默认设置。', 'zh-TW': '目前為 Sidecar 免侵入執行模式，未向 app.asar 注入代理模組，網路請求跟隨系統預設設定。', en: 'Running in patchless Sidecar mode; app.asar proxy hook not injected.' },
+  'mod.proxy.liveBtnUnsupported': { 'zh-CN': '免改盘模式不支持', 'zh-TW': '免改磁碟模式不支援', en: 'Unavailable in Patchless Mode' },
   'scan.failPrefix': { 'zh-CN': '读取会话失败：{err}', 'zh-TW': '讀取工作階段失敗：{err}', en: 'Failed to read session: {err}' },
   'scan.notLoadedPrefix': { 'zh-CN': '无法读取全量会话：{err}', 'zh-TW': '無法讀取全量工作階段：{err}', en: 'Failed to scan session: {err}' },
   'mod.proxy.emptyErr': { 'zh-CN': '请输入有效的代理地址', 'zh-TW': '請輸入有效的代理位址', en: 'Enter a valid proxy URL' },
@@ -1265,6 +1442,34 @@ const PANEL_I18N = {
   'quota.est.basisCycle': { 'zh-CN': '本周期实耗推算 · 估算值', 'zh-TW': '本週期實耗推算 · 估算值', en: 'Cycle usage est. · estimate' },
   'quota.est.basisCached': { 'zh-CN': '沿用上周期校准参考（待本周期复核）', 'zh-TW': '沿用上週期校準參考（待本週期覆核）', en: 'Prior-cycle calibration ref. (unverified)' },
   'quota.est.basisStaleDivergence': { 'zh-CN': '历史校准不可靠（检测到未采集消耗）', 'zh-TW': '歷史校準不可靠（偵測到未採集消耗）', en: 'Stale calibration unreliable (external usage detected)' },
+
+  // 多账号、自动切号、ELV-57 配额对照与 ELV-52 保活
+  'accounts.filterLabel': { 'zh-CN': '账本范围:', 'zh-TW': '帳本範圍:', en: 'Account Scope:' },
+  'accounts.filterAria': { 'zh-CN': '按账号筛选统计账本', 'zh-TW': '依帳號篩選統計帳本', en: 'Filter ledger by account' },
+  'accounts.filterAll': { 'zh-CN': '全部已记用量（含未归属）', 'zh-TW': '全部已記用量（含未歸屬）', en: 'All Recorded (incl. Unattributed)' },
+  'accounts.filterUnattributed': { 'zh-CN': '历史未归属（无可靠账号依据）', 'zh-TW': '歷史未歸屬（無可靠帳號依據）', en: 'Unattributed History (No Verified Account)' },
+  'accounts.panelTitle': { 'zh-CN': '👤 多账号切换与阈值自动切号', 'zh-TW': '👤 多帳號切換與閾值自動切號', en: '👤 Accounts & Threshold Auto-Switch' },
+  'accounts.importCurrent': { 'zh-CN': '导入当前', 'zh-TW': '匯入目前帳號', en: 'Import Current' },
+  'accounts.importTools': { 'zh-CN': '导入 Tools', 'zh-TW': '匯入 Tools', en: 'Import Tools' },
+  'accounts.oauthAdd': { 'zh-CN': '+ 登录添加', 'zh-TW': '+ 登入新增', en: '+ Google Sign-In' },
+  'accounts.switchBtn': { 'zh-CN': '切号', 'zh-TW': '切號', en: 'Switch' },
+  'accounts.activeTag': { 'zh-CN': '当前', 'zh-TW': '目前', en: 'Active' },
+  'accounts.empty': { 'zh-CN': '暂无已登记账号，可点击“导入当前”或“登录添加”。', 'zh-TW': '暫無已登記帳號，可點擊「匯入目前帳號」或「登入新增」。', en: 'No accounts saved yet. Click Import Current or Google Sign-In.' },
+  'accounts.autoSwitchEnable': { 'zh-CN': '启用阈值自动切号（默认关闭）', 'zh-TW': '啟用閾值自動切號（預設關閉）', en: 'Enable threshold auto-switch (Off by default)' },
+  'accounts.poolLabel': { 'zh-CN': '监控共享池', 'zh-TW': '監控共享池', en: 'Target Pool' },
+  'accounts.metricLabel': { 'zh-CN': '判断口径', 'zh-TW': '判斷口徑', en: 'Trigger Metric' },
+  'accounts.modeRemaining': { 'zh-CN': '按剩余额度 <=', 'zh-TW': '依剩餘額度 <=', en: 'Remaining <=' },
+  'accounts.modeUsed': { 'zh-CN': '按累计已用 >=', 'zh-TW': '依累計已用 >=', en: 'Used >=' },
+  'accounts.windowLabel': { 'zh-CN': '限额窗口', 'zh-TW': '限額視窗', en: 'Window' },
+  'accounts.winPrimary': { 'zh-CN': '主窗口（最紧缩）', 'zh-TW': '主視窗（最緊縮）', en: 'Primary (Tightest)' },
+  'accounts.thresholdLabel': { 'zh-CN': '阈值 (%)', 'zh-TW': '閾值 (%)', en: 'Threshold (%)' },
+  'accounts.candidatesLabel': { 'zh-CN': '允许切入的候选账号：', 'zh-TW': '允許切入的候選帳號：', en: 'Candidate accounts allowed:' },
+  'accounts.saveRule': { 'zh-CN': '保存切号规则', 'zh-TW': '儲存切號規則', en: 'Save Rule' },
+  'quota.compareTitle': { 'zh-CN': '📊 本机消耗与共享账号额度对照', 'zh-TW': '📊 本機消耗與共享帳號額度對照', en: '📊 Local Usage vs. Shared Quota Deltas' },
+  'quota.compareDisclaimer': { 'zh-CN': '按同一账号与共享池统计。账面百分点下降受多设备使用、取整、重置与滚动恢复影响，不等同于本机单独消耗占比。', 'zh-TW': '依同一帳號與共享池統計。帳面百分點下降受多裝置使用、取整、重置與滾動恢復影響，不等同於本機單獨消耗佔比。', en: 'Scoped per account & pool. Quota percentage-point changes reflect shared multi-device usage, rounding, resets, and rolling recovery — not solely local consumption.' },
+  'quota.compareEmpty': { 'zh-CN': '暂未累积同一账号前后两次配额采样对照区间（刷新配额后自动对比）。', 'zh-TW': '暫未累積同一帳號前後兩次配額採樣對照區間（重新整理配額後自動對比）。', en: 'No completed quota comparison intervals yet. Refresh quota to capture baseline & delta.' },
+  'keepalive.title': { 'zh-CN': '🧊 模型缓存保活状态与协议核查', 'zh-TW': '🧊 模型快取保活狀態與協定核查', en: '🧊 Prompt Cache Keepalive & Protocol Check' },
+  'keepalive.stopBtn': { 'zh-CN': '立即停止保活', 'zh-TW': '立即停止保活', en: 'Stop Keepalive Now' },
   'quota.est.mixedModels': { 'zh-CN': '同池混用模型', 'zh-TW': '同池混用模型', en: 'mixed pool models' },
   'quota.est.cycleUsed': { 'zh-CN': '本周期已记 {used}', 'zh-TW': '本週期已記 {used}', en: 'Cycle used {used}' },
   'quota.state.available': { 'zh-CN': '正常可用', 'zh-TW': '正常可用', en: 'Available' },
@@ -1290,7 +1495,93 @@ const PANEL_I18N = {
   'quota.modelChip.tooltip': { 'zh-CN': '{model} · 池: {pool} · {status} ({value})', 'zh-TW': '{model} · 池: {pool} · {status} ({value})', en: '{model} · Pool: {pool} · {status} ({value})' },
   'quota.modelChip.unpooled': { 'zh-CN': '未归属当前账号额度池', 'zh-TW': '未歸屬目前帳號額度池', en: 'Not in active quota pools' },
   'quota.modelChip.resetPart': { 'zh-CN': '重置: {reset}', 'zh-TW': '重設: {reset}', en: 'Reset: {reset}' },
-  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' }
+  'quota.modelChip.historyHint': { 'zh-CN': '仅历史记录 / 本地配置', 'zh-TW': '僅歷史記錄 / 本機設定', en: 'History / local preference only' },
+  'accounts.poolNoAccess': { 'zh-CN': '无模型权限', 'zh-TW': '無模型權限', en: 'No model access' },
+  'accounts.poolUnknown': { 'zh-CN': '权限/额度未知', 'zh-TW': '權限/額度未知', en: 'Quota unknown' },
+  'accounts.poolPending': { 'zh-CN': '额度暂不可用', 'zh-TW': '額度暫不可用', en: 'Quota unavailable' },
+  'accounts.retryQuota': { 'zh-CN': '刷新/重试额度', 'zh-TW': '重試額度', en: 'Retry quota' },
+  'accounts.reauthRequired': { 'zh-CN': '需重登授权', 'zh-TW': '需重新登入授權', en: 'Re-auth required' },
+  'accounts.removeBtn': { 'zh-CN': '移除账号', 'zh-TW': '移除帳號', en: 'Remove' },
+  'accounts.removeModal.title': { 'zh-CN': '移除账号', 'zh-TW': '移除帳號', en: 'Remove account' },
+  'accounts.removeModal.body': {
+    'zh-CN': '确定移除 {email} 吗？这会移除插件保存的登录凭据和自动切号候选，本机历史用量与原有账号归属会保留。',
+    'zh-TW': '確定移除 {email} 嗎？這會移除外掛儲存的登入憑證與自動切號候選，本機歷史用量與原有帳號歸屬會保留。',
+    en: 'Remove {email}? Stored plugin credentials and auto-switch candidacy will be removed. Local usage history and existing attribution are preserved.'
+  },
+  'accounts.removeModal.bodyActive': {
+    'zh-CN': '确定移除当前活跃账号 {email} 吗？这会移除插件保存的登录凭据和自动切号候选，本机历史用量与原有账号归属会保留，不会自动切换其他账号。',
+    'zh-TW': '確定移除目前使用中的帳號 {email} 嗎？這會移除外掛儲存的登入憑證與自動切號候選，本機歷史用量與原有帳號歸屬會保留，不會自動切換其他帳號。',
+    en: 'Remove currently active account {email}? Stored plugin credentials and auto-switch candidacy will be removed. Local usage history and existing attribution are preserved without switching accounts.'
+  },
+  'accounts.removeModal.cancel': { 'zh-CN': '取消', 'zh-TW': '取消', en: 'Cancel' },
+  'accounts.removeModal.confirm': { 'zh-CN': '确认移除', 'zh-TW': '確認移除', en: 'Confirm Remove' },
+  'accounts.removeModal.removing': { 'zh-CN': '移除中…', 'zh-TW': '移除中…', en: 'Removing…' },
+  'accounts.removeModal.failed': { 'zh-CN': '移除失败：{detail}', 'zh-TW': '移除失敗：{detail}', en: 'Remove failed: {detail}' },
+  'accounts.removeSuccess': { 'zh-CN': '已移除 {email}（历史用量及归属已保留）。', 'zh-TW': '已移除 {email}（歷史用量與歸屬已保留）。', en: 'Removed {email} (historical usage and attribution preserved).' },
+  'accounts.quotaStageErr': { 'zh-CN': '本次刷新失败（上次快照已保留）：{detail}', 'zh-TW': '本次重新整理失敗（上次快照已保留）：{detail}', en: 'Quota fetch failed (previous snapshot kept): {detail}' },
+  'accounts.lastSnapshotTime': { 'zh-CN': '上次快照 {time}', 'zh-TW': '上次快照 {time}', en: 'Last snapshot {time}' },
+  'accounts.status.disabled': { 'zh-CN': '已关闭', 'zh-TW': '已關閉', en: 'Off' },
+  'accounts.status.watching': { 'zh-CN': '监控中', 'zh-TW': '監控中', en: 'Watching' },
+  'accounts.status.pending_debounce': { 'zh-CN': '防抖确认中', 'zh-TW': '防抖確認中', en: 'Debouncing' },
+  'accounts.status.waiting_idle': { 'zh-CN': '等待当前生成完成', 'zh-TW': '等待目前生成完成', en: 'Waiting idle' },
+  'accounts.status.cooldown': { 'zh-CN': '冷却保护中', 'zh-TW': '冷卻保護中', en: 'Cooldown' },
+  'accounts.status.switching': { 'zh-CN': '切号中', 'zh-TW': '切號中', en: 'Switching' },
+  'accounts.status.all_candidates_exhausted': { 'zh-CN': '备选账号均不足', 'zh-TW': '備選帳號皆不足', en: 'All candidates exhausted' },
+  'accounts.status.blocked_untrusted_quota': { 'zh-CN': '数据不可信已跳过', 'zh-TW': '資料不可信已跳過', en: 'Skipped (Stale/Error)' },
+  'accounts.status.error': { 'zh-CN': '失败已停用', 'zh-TW': '失敗已停用', en: 'Halted (Error)' },
+  'accounts.lastSwitchedTo': { 'zh-CN': '上次切至 {email}', 'zh-TW': '上次切至 {email}', en: 'Last switched to {email}' },
+  'accounts.lastSwitchRolledBack': { 'zh-CN': '已自动回滚：{detail}', 'zh-TW': '已自動回滾：{detail}', en: 'Rolled back: {detail}' },
+  'accounts.actionBusy': { 'zh-CN': '正在处理…', 'zh-TW': '處理中…', en: 'Processing…' },
+  'accounts.actionDone': { 'zh-CN': '操作已完成', 'zh-TW': '操作已完成', en: 'Completed' },
+  'accounts.actionFail': { 'zh-CN': '操作失败', 'zh-TW': '操作失敗', en: 'Operation failed' },
+  'accounts.filterNoData': { 'zh-CN': '该账号在本机尚无已归属 Token 记录。', 'zh-TW': '此帳號在本機尚無已歸屬 Token 記錄。', en: 'No attributed local usage records for this account.' },
+  'accounts.keepaliveOff': { 'zh-CN': '默认关闭', 'zh-TW': '預設關閉', en: 'Off' },
+  'accounts.filterKeepaliveNote': { 'zh-CN': '含独立保活消耗 {reqs} 次 ({tok})。', 'zh-TW': '含獨立保活消耗 {reqs} 次 ({tok})。', en: 'Includes {reqs} keepalive reqs ({tok}) tracked separately.' },
+  'tokens.noAccountCost': { 'zh-CN': '暂无此账号记录', 'zh-TW': '暫無此帳號記錄', en: 'No records for account' },
+  'quota.split.account_switched': { 'zh-CN': '已切号分段', 'zh-TW': '已切號分段', en: 'Account switched' },
+  'quota.split.quota_reset': { 'zh-CN': '额度重置', 'zh-TW': '額度重設', en: 'Quota reset' },
+  'quota.split.rolling_recovery': { 'zh-CN': '滚动恢复', 'zh-TW': '滾動恢復', en: 'Rolling recovery' },
+  'quota.split.sampling_gap': { 'zh-CN': '采样缺口切分', 'zh-TW': '採樣缺口切分', en: 'Sampling gap' },
+  'keepalive.protocolSummary': { 'zh-CN': '协议核查（Antigravity {ver}，已检查 {rpcs} 个 RPC）：在已检查的 RPC 与响应中未发现明确的服务端缓存续期或 TTL 接口，响应亦未见 cacheWriteTokens / cacheTtl；因此不展示虚构到期倒计时，缓存保活保持待验证与默认关闭。', 'zh-TW': '協定核查（Antigravity {ver}，已檢查 {rpcs} 個 RPC）：在已檢查的 RPC 與回應中未發現明確的伺服器端快取續期或 TTL 介面，回應亦未見 cacheWriteTokens / cacheTtl；因此不顯示虛構到期倒數，快取保活維持待驗證與預設關閉。', en: 'Protocol check (Antigravity {ver}, {rpcs} RPCs): No explicit server-side cache TTL or renewal endpoint was found in checked RPCs/responses, and cacheWriteTokens/cacheTtl are omitted; keepalive stays unverified & off.' },
+  'keepalive.experimentSummary': { 'zh-CN': '待确认最小对照实验（{model}，合计 {reqs} 次请求，相同约 20K 只读无工具前缀）：对照组 2 次（0m / 6m）对比实验组 3 次（0m / 4m 仅发 "ok" / 6m），预计总输出 60~150 tok；逐次采集 cacheReadTokens 并在异常/限流/切号/达上限时终止，等待维护者确认。', 'zh-TW': '待確認最小對照實驗（{model}，合計 {reqs} 次請求，相同約 20K 唯讀無工具前綴）：對照組 2 次（0m / 6m）對比實驗組 3 次（0m / 4m 僅發 "ok" / 6m），預計總輸出 60~150 tok；逐次採集 cacheReadTokens 並於異常/限流/切號/達上限時終止，等待維護者確認。', en: 'Pending A/B plan ({reqs} total reqs on {model}, identical ~20K fixed non-tool prefix): Control (2 reqs, 0/6m) vs Keepalive (3 reqs, 0/4m "ok"/6m); collects per-call cacheReadTokens, stops on error/429/switch/limit; awaiting maintainer sign-off.' },
+  'keepalive.blockedReason': { 'zh-CN': '拦截保护：{reason}', 'zh-TW': '攔截保護：{reason}', en: 'Blocked: {reason}' },
+  'keepalive.stopReason': { 'zh-CN': '最近状态：{reason}', 'zh-TW': '最近狀態：{reason}', en: 'Last state: {reason}' },
+  'keepalive.defaultNote': { 'zh-CN': '保活默认关闭，且切换账号/退出/达上限时自动终止。', 'zh-TW': '保活預設關閉，且切換帳號/結束/達上限時自動終止。', en: 'Keepalive disabled by default; stops on account switch, exit, or limit.' },
+  'models.summary.pendingConfirm': { 'zh-CN': '待确认', 'zh-TW': '待確認', en: 'Pending' },
+  'models.cap.metaUnknown': { 'zh-CN': '未知（待获取元数据）', 'zh-TW': '未知（待取得中繼資料）', en: 'Unknown (pending metadata)' },
+  'models.cap.policyUnknown': { 'zh-CN': '未知（待读取运行策略）', 'zh-TW': '未知（待讀取執行策略）', en: 'Unknown (pending policy)' },
+  'models.cap.policyPendingRestart': { 'zh-CN': '待重启（磁盘={disk}）', 'zh-TW': '待重啟（磁碟={disk}）', en: 'Restart needed (disk={disk})' },
+  'models.cap.policyUnconfirmed': { 'zh-CN': '进程未确认（磁盘={disk}）', 'zh-TW': '程序未確認（磁碟={disk}）', en: 'Unconfirmed (disk={disk})' },
+  'models.cap.policyPartial': { 'zh-CN': '部分异常（运行限制未知）', 'zh-TW': '部分異常（執行限制未知）', en: 'Partial error (limit unknown)' },
+  'models.cap.policyDynamic': { 'zh-CN': 'Dynamic 动态跟随（按模型上限）', 'zh-TW': 'Dynamic 動態跟隨（依模型上限）', en: 'Dynamic (follows model limit)' },
+  'models.cap.policyFixed': { 'zh-CN': '固定限制 {limit} tokens', 'zh-TW': '固定限制 {limit} tokens', en: 'Fixed {limit} tokens' },
+  'models.cap.policyDefault': { 'zh-CN': '默认限制 256,000 tokens', 'zh-TW': '預設限制 256,000 tokens', en: 'Default limit 256,000 tokens' },
+  'models.cap.stratDynamic': { 'zh-CN': '（Dynamic 默认）', 'zh-TW': '（Dynamic 預設）', en: ' (Dynamic default)' },
+  'models.cap.stratFixed': { 'zh-CN': '（受固定限制 {limit} 约束）', 'zh-TW': '（受固定限制 {limit} 約束）', en: ' (capped by fixed {limit})' },
+  'models.cap.stratDefault': { 'zh-CN': '（受默认 256,000 约束）', 'zh-TW': '（受預設 256,000 約束）', en: ' (capped by 256,000 default)' },
+  'models.cap.defaultUnknownPolicy': { 'zh-CN': '未知（运行策略待确认）', 'zh-TW': '未知（執行策略待確認）', en: 'Unknown (policy unconfirmed)' },
+  'models.cap.rangeUnknownPolicyMax': { 'zh-CN': '运行策略未知（模型理论上限 {max}）', 'zh-TW': '執行策略未知（模型理論上限 {max}）', en: 'Policy unknown (model max {max})' },
+  'models.cap.rangeUnknownPolicyEng': { 'zh-CN': '运行策略未知（工程范围 {min} – {max}）', 'zh-TW': '執行策略未知（工程範圍 {min} – {max}）', en: 'Policy unknown (range {min} – {max})' },
+  'models.cap.rangeUnknownModelMax': { 'zh-CN': '{min} – {max}（模型上限未知）', 'zh-TW': '{min} – {max}（模型上限未知）', en: '{min} – {max} (model max unknown)' },
+  'models.cap.noneVerified': { 'zh-CN': '尚无本次验证', 'zh-TW': '尚無本次驗證', en: 'Not verified yet' },
+  'models.cap.clientPartialAlert': { 'zh-CN': '部分异常（请核对客户端状态）', 'zh-TW': '部分異常（請核對用戶端狀態）', en: 'Partial anomaly (check client state)' },
+  'models.cap.clientDynamicOk': { 'zh-CN': '动态跟随已确认运行（各模型独立）', 'zh-TW': '動態跟隨已確認執行（各模型獨立）', en: 'Dynamic mode active (per model)' },
+  'models.preset.unifiedDisabled': { 'zh-CN': '统一模式下各模型不同（已禁用）', 'zh-TW': '統一模式下各模型不同（已停用）', en: 'Varies by model in unified mode (disabled)' },
+  'models.preset.envMax': { 'zh-CN': '当前环境最大可采纳：{val} tokens', 'zh-TW': '目前環境最大可採納：{val} tokens', en: 'Max effective here: {val} tokens' },
+  'models.preset.policyUnconfirmed': { 'zh-CN': '运行策略未确认（模型理论上限 {val}，暂不可用）', 'zh-TW': '執行策略未確認（模型理論上限 {val}，暫不可用）', en: 'Policy unconfirmed (model max {val}, unavailable)' },
+  'models.preset.metaPending': { 'zh-CN': '模型元数据待获取（暂不可用）', 'zh-TW': '模型中繼資料待取得（暫不可用）', en: 'Pending model metadata (unavailable)' },
+  'models.validation.defaultDesc': { 'zh-CN': '恢复客户端默认：请求将清除 maxTokenLimit 覆盖，由当前语言服务全局模式决定（若已开 Dynamic 则按动态默认）。', 'zh-TW': '還原用戶端預設：請求將清除 maxTokenLimit 覆寫，由目前語言服務全域模式決定（若已開 Dynamic 則依動態預設）。', en: 'Restore client default: clears maxTokenLimit override and defers to global language-server policy (Dynamic default if unlocked).' },
+  'models.unified.projTitle': { 'zh-CN': '统一模式各模型预计采用预算（预测值，非实机已确认）：', 'zh-TW': '統一模式各模型預計採用預算（預測值，非實機已確認）：', en: 'Projected per-model budgets in Unified mode (estimated, unverified):' },
+  'models.cap.tierStandard': { 'zh-CN': '标准', 'zh-TW': '標準', en: 'Standard' },
+  'models.cap.tierWin': { 'zh-CN': '窗口 {val}', 'zh-TW': '視窗 {val}', en: 'Window {val}' },
+  'models.cap.tierWinUnk': { 'zh-CN': '窗口未知', 'zh-TW': '視窗未知', en: 'Window unknown' },
+  'models.cap.tierOut': { 'zh-CN': '最大输出 {val}', 'zh-TW': '最大輸出 {val}', en: 'Max output {val}' },
+  'models.cap.tierOutUnk': { 'zh-CN': '输出未知', 'zh-TW': '輸出未知', en: 'Output unknown' },
+  'models.cap.tierAdj': { 'zh-CN': '可调上限 {val}', 'zh-TW': '可調上限 {val}', en: 'Max limit {val}' },
+  'models.cap.tierAdjUnk': { 'zh-CN': '上限未知', 'zh-TW': '上限未知', en: 'Cap unknown' },
+  'models.cap.diskPending': { 'zh-CN': '磁盘为 {disk}（待重启生效）', 'zh-TW': '磁碟為 {disk}（待重啟生效）', en: 'Disk: {disk} (restart pending)' },
+  'models.cap.diskUnconfirmed': { 'zh-CN': '磁盘为 {disk}（运行态未确认）', 'zh-TW': '磁碟為 {disk}（執行態未確認）', en: 'Disk: {disk} (runtime unconfirmed)' },
+  'models.cap.fixedAdvice': { 'zh-CN': '固定单一上限模式 ({val}，建议升级为动态跟随)', 'zh-TW': '固定單一上限模式 ({val}，建議升級為動態跟隨)', en: 'Fixed single limit ({val}, Dynamic mode recommended)' }
 };
 
 function t(key, vars = null) {
@@ -1516,15 +1807,322 @@ function translateBackendText(text) {
       return `${prefixHit[currentPanelLanguage]}${sep}${translateBackendText(rest)}`;
     }
   }
+  // 模式化翻译：账号切换成功、验证未生效/回滚、刷新额度与客户端限制明细
+  const switchOkMatch = trimmed.match(/^已切换至\s+(\S+?)，语言服务已重启并通过 GetUserStatus 核验生效。$/);
+  if (switchOkMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Switched to ${switchOkMatch[1]}; language server restarted and verified via GetUserStatus.`
+      : `已切換至 ${switchOkMatch[1]}，語言服務已重啟並通過 GetUserStatus 核驗生效。`;
+  }
+  const switchCredMatch = trimmed.match(/^已写入\s+(\S+?)\s+凭据并通过生效校验（部分桌面扩展若仍显示旧缓存，建议重载窗口）。$/);
+  if (switchCredMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Credentials for ${switchCredMatch[1]} applied and verified (reload window if extensions still cache previous state).`
+      : `已寫入 ${switchCredMatch[1]} 憑據並通過生效校驗（部分桌面擴充若仍顯示舊快取，建議重載視窗）。`;
+  }
+  const switchFailMatch = trimmed.match(/^凭据验证未生效，宿主暂未切换至\s+(\S+?)(?:（当前仍回报\s+(.+?)）)?(，已自动回滚原凭据)?。请重载或重启 Antigravity 客户端后重试。$/);
+  if (switchFailMatch) {
+    const targetEm = switchFailMatch[1];
+    const obsEm = switchFailMatch[2];
+    const hasRb = Boolean(switchFailMatch[3]);
+    if (currentPanelLanguage === 'en') {
+      return `Credential verification failed: host has not switched to ${targetEm}${obsEm ? ` (still reports ${obsEm})` : ''}${hasRb ? '; rolled back automatically' : ''}. Reload or restart Antigravity and retry.`;
+    }
+    return `憑據驗證未生效，宿主暫未切換至 ${targetEm}${obsEm ? `（目前仍回報 ${obsEm}）` : ''}${hasRb ? '，已自動回滾原憑據' : ''}。請重載或重啟 Antigravity 用戶端後重試。`;
+  }
+  const refreshAllMatch = trimmed.match(/^已刷新全部\s+(\d+)\s+个账号最新额度快照。$/);
+  if (refreshAllMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshots for all ${refreshAllMatch[1]} account(s).`
+      : `已重新整理全部 ${refreshAllMatch[1]} 個帳號最新額度快照。`;
+  }
+  const refreshOneMatch = trimmed.match(/^已刷新\s+(\S+?)\s+最新额度快照。$/);
+  if (refreshOneMatch) {
+    return currentPanelLanguage === 'en'
+      ? `Refreshed latest quota snapshot for ${refreshOneMatch[1]}.`
+      : `已重新整理 ${refreshOneMatch[1]} 最新額度快照。`;
+  }
+  const quotaRefreshPartialMatch = trimmed.match(/^额度刷新部分或全部失败（成功\s+(\d+)\s+\/\s+失败\s+(\d+)）：(.+)$/);
+  if (quotaRefreshPartialMatch) {
+    const [, okN, failN, detail] = quotaRefreshPartialMatch;
+    const translatedDetail = translateBackendText(detail);
+    return currentPanelLanguage === 'en'
+      ? `Quota refresh failed (${okN} ok / ${failN} failed): ${translatedDetail}`
+      : `額度重新整理部分或全部失敗（成功 ${okN} / 失敗 ${failN}）：${translatedDetail}`;
+  }
   // 防止英文模式下未知中文后端文本泄漏造成中英混杂拼接
   if (currentPanelLanguage === 'en' && /[\u4e00-\u9fa5]/.test(trimmed)) {
-    return 'Backend operation failed (check desktop log for details)';
+    return 'Backend operation failed (see desktop log for details)';
   }
   return str;
 }
 
+function localizePlanTierName(name) {
+  if (!name) return t('speed.unknown');
+  const s = String(name).trim();
+  if (s === 'Google AI Ultra（子档未知）' || s === 'Google AI Ultra (子档未知)') {
+    return t('plan.ultraSubtierUnknown');
+  }
+  if (s === '未知') return t('speed.unknown');
+  return s;
+}
+
 function formatVendorLabel(vendor) {
-  if (!vendor) return currentPanelLanguage === 'en' ? 'Other' : '其他';
-  if (vendor === '其他') return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  if (!vendor || vendor === '其他' || vendor === 'Other') {
+    return currentPanelLanguage === 'en' ? 'Other' : '其他';
+  }
   return vendor;
 }
+
+// =========================================================================
+// 全局货币换算与三语差异化格式化中心 + 预设地区本地化映射
+// =========================================================================
+const FALLBACK_RATES_TO_CNY = {
+  CNY: 1.0,
+  USD: 6.72,
+  HKD: 0.857,
+  TWD: 0.21,
+  NTD: 0.21,
+  JPY: 0.0425,
+  KRW: 0.0051,
+  EUR: 7.52,
+  GBP: 8.75,
+  AUD: 4.45,
+  CAD: 4.88,
+  SGD: 5.12,
+  MYR: 1.55,
+  INR: 0.076,
+  PHP: 0.117,
+  TRY: 0.133,
+  NGN: 0.0042,
+  BRL: 1.18
+};
+
+const EXTRA_COUNTRY_LOCALES = {
+  DE: { name: '德国', nameTw: '德國', nameEn: 'Germany' },
+  UK: { name: '英国', nameTw: '英國', nameEn: 'United Kingdom' },
+  CN: { name: '中国大陆', nameTw: '中國大陸', nameEn: 'China Mainland' },
+  EU: { name: '欧洲/欧盟', nameTw: '歐洲/歐盟', nameEn: 'Europe / EU' },
+  AU: { name: '澳大利亚', nameTw: '澳洲', nameEn: 'Australia' }
+};
+
+function convertCurrencyUi(amount, fromCurrency, toCurrency, regionQuery = null) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
+  const num = Number(amount);
+  if (num === 0) return 0;
+  let from = String(fromCurrency || 'USD').trim().toUpperCase();
+  let to = String(toCurrency || 'USD').trim().toUpperCase();
+  if (from === 'NTD') from = 'TWD';
+  if (to === 'NTD') to = 'TWD';
+  if (from === to) return Number(num.toFixed(2));
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  if (core && typeof core.convertCurrency === 'function') {
+    const res = core.convertCurrency(num, from, to, regionQuery);
+    if (res !== null && Number.isFinite(res)) return res;
+  }
+  const fromRate = FALLBACK_RATES_TO_CNY[from];
+  const toRate = FALLBACK_RATES_TO_CNY[to];
+  if (!fromRate || !toRate) return null;
+  return Number(((num * fromRate) / toRate).toFixed(2));
+}
+
+function formatCompactRefNum(val, cur) {
+  const num = Number(val || 0);
+  if (!Number.isFinite(num)) return '0';
+  if (cur === 'CNY') return num.toFixed(2);
+  if (num === 0) return '0';
+  if (Math.abs(num) < 10) return num.toFixed(2);
+  if (Math.abs(num) < 100) return num.toFixed(1);
+  return String(Math.round(num));
+}
+
+/**
+ * 统一格式化 USD API 估算费用（三语差异化规则）：
+ * - en: 纯 USD（不含任何 ¥ / CNY）
+ * - zh-CN: USD + CNY（≈ $618.53 (¥4156.54)）
+ * - zh-TW: 紧凑单行模式 USD + HKD/TWD（≈ $618.53 (HK$4850 / NT$19793)）；detail=true 完整四币种 USD+HKD+TWD+CNY
+ */
+function formatUsdMetricDisplay(usdAmount, options = {}) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  const prefix = options.withPrefix === false ? '' : '≈ ';
+  const usdStr = `${prefix}$${safeUsd.toFixed(2)}`;
+  const lang = options.lang || currentPanelLanguage;
+  if (lang === 'en') {
+    return usdStr;
+  }
+  if (lang === 'zh-TW') {
+    const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+    const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+    const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+    if (options.detail) {
+      return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} · NT$${formatCompactRefNum(twd, 'TWD')} · ¥${cny.toFixed(2)} CNY)`;
+    }
+    return `${usdStr} (HK$${formatCompactRefNum(hkd, 'HKD')} / NT$${formatCompactRefNum(twd, 'TWD')})`;
+  }
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  return `${usdStr} (¥${cny.toFixed(2)})`;
+}
+
+function formatUsdMetricTooltip(usdAmount) {
+  const num = Number(usdAmount || 0);
+  const safeUsd = Number.isFinite(num) ? num : 0;
+  if (currentPanelLanguage === 'en') {
+    return `USD $${safeUsd.toFixed(2)}`;
+  }
+  const hkd = convertCurrencyUi(safeUsd, 'USD', 'HKD') ?? (safeUsd * 7.84);
+  const twd = convertCurrencyUi(safeUsd, 'USD', 'TWD') ?? (safeUsd * 32.0);
+  const cny = convertCurrencyUi(safeUsd, 'USD', 'CNY') ?? (safeUsd * 6.72);
+  if (currentPanelLanguage === 'zh-TW') {
+    return `USD $${safeUsd.toFixed(2)} · HKD HK$${hkd.toFixed(1)} · TWD NT$${Math.round(twd)} · CNY ¥${cny.toFixed(2)}`;
+  }
+  return `USD $${safeUsd.toFixed(2)} · CNY ¥${cny.toFixed(2)}`;
+}
+
+/**
+ * 统一格式化订阅价格的辅助换算文本（不含外层括号）：
+ * - en: 默认 USD 返回 ''；非 USD 返回 "approx. $X.XX USD"（或带 /mo）
+ * - zh-CN: CNY 返回 ''；非 CNY 返回 "折合 ≈ ¥X.X CNY" / "≈ ¥X.X CNY"
+ * - zh-TW: detail=true 时返回完整四币种（跳过自身）对照；紧凑模式返回紧凑多币参考
+ */
+function formatSubscriptionSecondaryConversion(amount, currency, regionQuery = null, options = {}) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount)) || Number(amount) === 0) return '';
+  let cur = String(currency || 'USD').trim().toUpperCase();
+  if (cur === 'NTD') cur = 'TWD';
+  const lang = options.lang || currentPanelLanguage;
+  const suffixMo = options.perMonth ? t('plan.summary.perMonth') : '';
+
+  if (lang === 'en') {
+    if (cur === 'USD') return '';
+    const usd = convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    if (usd === null) return '';
+    return `approx. $${usd.toFixed(2)} USD${suffixMo}`;
+  }
+
+  if (lang === 'zh-TW') {
+    const usd = cur === 'USD' ? Number(amount) : convertCurrencyUi(amount, cur, 'USD', regionQuery);
+    const hkd = cur === 'HKD' ? Number(amount) : convertCurrencyUi(amount, cur, 'HKD', regionQuery);
+    const twd = cur === 'TWD' ? Number(amount) : convertCurrencyUi(amount, cur, 'TWD', regionQuery);
+    const cny = cur === 'CNY' ? Number(amount) : convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+    const parts = [];
+    if (cur !== 'USD' && usd !== null) parts.push(`US$${usd.toFixed(2)}`);
+    if (cur !== 'HKD' && hkd !== null) parts.push(`HK$${formatCompactRefNum(hkd, 'HKD')}`);
+    if (cur !== 'TWD' && twd !== null) parts.push(`NT$${formatCompactRefNum(twd, 'TWD')}`);
+    if (options.detail && cur !== 'CNY' && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    else if (!options.detail && cur !== 'CNY' && parts.length < 2 && cny !== null) parts.push(`¥${cny.toFixed(1)} CNY`);
+    if (!parts.length) return '';
+    const joined = parts.join(' · ');
+    return options.short ? `≈ ${joined}${suffixMo}` : `約合 ≈ ${joined}${suffixMo}`;
+  }
+
+  // zh-CN: USD + CNY 双币参考
+  if (cur === 'CNY') return '';
+  const cny = convertCurrencyUi(amount, cur, 'CNY', regionQuery);
+  if (cny === null) return '';
+  const cnyTxt = `${Number(cny).toFixed(1)} CNY`;
+  if (options.perMonth) return t('plan.cnyApprox', { val: Number(cny).toFixed(1) });
+  return options.short ? `≈ ¥${cnyTxt}` : `折合 ≈ ¥${cnyTxt}`;
+}
+
+function getLocalizedPresetName(presetOrCode, lang = currentPanelLanguage) {
+  if (!presetOrCode) return '';
+  const normLang = normalizePanelLanguage(lang);
+  if (typeof presetOrCode === 'string') {
+    const key = presetOrCode.trim().toUpperCase();
+    const extra = EXTRA_COUNTRY_LOCALES[key];
+    if (extra) {
+      return normLang === 'en' ? extra.nameEn : (normLang === 'zh-TW' ? extra.nameTw : extra.name);
+    }
+    const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+    const matched = core?.SUBSCRIPTION_REGIONS_PRESET?.find(p => p.id === key);
+    if (matched) return getLocalizedPresetName(matched, normLang);
+    return presetOrCode;
+  }
+  if (normLang === 'en') return presetOrCode.nameEn || presetOrCode.id || presetOrCode.name || '';
+  if (normLang === 'zh-TW') return presetOrCode.nameTw || presetOrCode.name || '';
+  return presetOrCode.name || '';
+}
+
+/**
+ * 将任意已存储或输入框中的常见预设地区名称（含 "美国 (US)" / "美国 (USD)" / "澳大利亚" 等）
+ * 映射转换为当前面板语言对应的本地化地区文本；无法识别的纯自定义输入保持原样。
+ */
+function localizeRegionDisplayValue(raw, lang = currentPanelLanguage) {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '未知' || trimmed === 'Unknown' || trimmed.includes('未在当前会话中获取')) {
+    return '';
+  }
+  const normLang = normalizePanelLanguage(lang);
+  const parenMatch = trimmed.match(/^(.*?)\s*\(([A-Za-z0-9]{2,5})\)\s*$/);
+  const suffixCode = parenMatch ? parenMatch[2].toUpperCase() : '';
+  const baseText = parenMatch ? parenMatch[1].trim() : trimmed;
+  const baseLower = baseText.toLowerCase();
+
+  // 1. 优先查特例（含 "澳大利亚 (US)" / "英国 (UK)" / "德国 (DE)" / "中国大陆 (CN)" 等）
+  for (const [id, loc] of Object.entries(EXTRA_COUNTRY_LOCALES)) {
+    const names = [loc.name.toLowerCase(), loc.nameTw.toLowerCase(), loc.nameEn.toLowerCase()];
+    if (names.includes(baseLower) || (!parenMatch && id === trimmed.toUpperCase())) {
+      const targetName = normLang === 'en' ? loc.nameEn : (normLang === 'zh-TW' ? loc.nameTw : loc.name);
+      return suffixCode ? `${targetName} (${suffixCode})` : targetName;
+    }
+  }
+
+  // 2. 查询 SUBSCRIPTION_REGIONS_PRESET
+  const core = typeof __AGContextMeterCore !== 'undefined' ? __AGContextMeterCore : null;
+  const presets = core?.SUBSCRIPTION_REGIONS_PRESET || [];
+  let matched = presets.find(p => {
+    const cleanCn = String(p.name || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanTw = String(p.nameTw || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    const cleanEn = String(p.nameEn || '').replace(/\s*\([^)]+\)\s*$/, '').toLowerCase();
+    return (
+      p.name.toLowerCase() === baseLower ||
+      (p.nameTw && p.nameTw.toLowerCase() === baseLower) ||
+      (p.nameEn && p.nameEn.toLowerCase() === baseLower) ||
+      cleanCn === baseLower ||
+      cleanTw === baseLower ||
+      cleanEn === baseLower
+    );
+  });
+  if (!matched && core?.findRegionPreset) {
+    matched = core.findRegionPreset(baseText) || (suffixCode && ['US', 'JP', 'KR', 'TW', 'HK', 'AU', 'SG', 'CA', 'TR', 'NG', 'PH', 'IN', 'MY', 'BR', 'CN', 'GB', 'EU', 'UK'].includes(suffixCode)
+      ? core.findRegionPreset(suffixCode === 'UK' ? 'GB' : suffixCode)
+      : null);
+  }
+  if (matched) {
+    let targetName = normLang === 'en' ? (matched.nameEn || matched.id) : (normLang === 'zh-TW' ? (matched.nameTw || matched.name) : matched.name);
+    if (suffixCode) {
+      targetName = targetName.replace(/\s*\((?:CNY|澳区|澳區|德法[意義]西荷等)\)\s*/gi, '').trim();
+      return `${targetName} (${suffixCode})`;
+    }
+    return targetName;
+  }
+
+  return trimmed;
+}
+
+function formatPresetRegionLineParts(preset, lang = currentPanelLanguage) {
+  if (!preset) return { left: '', right: '', full: '' };
+  const curCode = preset.currency === 'TWD' ? 'NTD' : preset.currency;
+  const dispName = getLocalizedPresetName(preset, lang).replace(/\s*\(CNY\)\s*$/i, '').trim();
+  const left = `${preset.flag || '🌏'} ${dispName} (${curCode})`;
+  const priceText = preset.currency === 'CNY'
+    ? `¥${preset.monthlyPrice}${t('plan.summary.perMonth')}`
+    : `${preset.symbol}${preset.monthlyPrice}${t('plan.summary.perMonth')}`;
+  const sec = formatSubscriptionSecondaryConversion(preset.monthlyPrice, preset.currency, preset.name, { short: true, lang });
+  const right = sec ? `${priceText} · ${sec}` : priceText;
+  const full = sec ? `${left} · ${priceText} (${sec})` : `${left} · ${priceText}`;
+  return { left, right, full };
+}
+
+function formatPeriodCalendarLabel(currentPeriod) {
+  if (!currentPeriod) return t('cost.periodTag');
+  const raw = String(currentPeriod.periodKey || currentPeriod.key || currentPeriod.label || '').trim();
+  const ymMatch = raw.match(/^(\d{4}-\d{2})/);
+  if (ymMatch) {
+    return t('cost.periodTagFmt', { ym: ymMatch[1] });
+  }
+  if (!raw || raw.includes('自然月') || raw === '本月自然月') return t('cost.periodTag');
+  return raw;
+}
+

@@ -56,12 +56,14 @@ function buildRenderer(options = {}) {
   const effTargetFile = options.targetFile ? path.resolve(options.targetFile) : path.join(effRootDir, 'meter-renderer.js');
 
   const pkg = JSON.parse(fs.readFileSync(path.join(effRootDir, 'package.json'), 'utf8'));
-  const meterVersion = pkg.version || '0.8.7-2';
+  const meterVersion = pkg.version || '0.8.8-1';
+  const rawDisplay = typeof pkg.displayVersion === 'string' ? pkg.displayVersion.trim() : '';
+  const displayVersion = rawDisplay || `v${meterVersion}`;
 
   const styles = readVerifiedRendererSource(effSrcDir, 'styles.css').trim();
   let template = readVerifiedRendererSource(effSrcDir, 'template.html').trim();
-  template = template.replace(/<span id="v">v[^<]*<\/span>/g, `<span id="v">v${meterVersion}</span>`);
-  template = template.replace(/<span id="up-pop-ver"[^>]*>v[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v${meterVersion}</span>`);
+  template = template.replace(/<span id="v">[^<]*<\/span>/g, `<span id="v">${displayVersion}</span>`);
+  template = template.replace(/<span id="up-pop-ver"[^>]*>[^<]*<\/span>/g, `<span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">${displayVersion}</span>`);
 
   const colors = readVerifiedRendererSource(effSrcDir, 'colors.js').trim();
   const i18n = readVerifiedRendererSource(effSrcDir, 'i18n.js').trim();
@@ -76,6 +78,11 @@ function buildRenderer(options = {}) {
     mainTemplate = mainTemplate.replace(/const METER_VERSION = '[^']*';/, `const METER_VERSION = '${meterVersion}';`);
   } else {
     mainTemplate = mainTemplate.replace(/\(function \(\) \{/, `(function () {\n${versionConst}`);
+  }
+  if (mainTemplate.includes('const METER_DISPLAY_VERSION =')) {
+    mainTemplate = mainTemplate.replace(/const METER_DISPLAY_VERSION = '[^']*';/, `const METER_DISPLAY_VERSION = '${displayVersion}';`);
+  } else {
+    mainTemplate = mainTemplate.replace(/const METER_VERSION = '[^']*';/, m => `${m}\n  const METER_DISPLAY_VERSION = '${displayVersion}';`);
   }
 
   const domString = `  shadow.innerHTML = \`<style>\n    ${styles.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\${/g, '\\${')}\n  </style>\n\n  ${template.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\${/g, '\\${')}\`;`;

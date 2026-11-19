@@ -474,27 +474,20 @@ test('parseUserPlanStatus treats empty status as unidentified and handles Ultra 
   assert.equal(ultraRes.officialPriceMonthly, null);
   assert.ok(ultraRes.priceRangeNote);
 
-  const ultra5x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' } } });
+  const ultra5x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra (5x)' } } });
   assert.equal(ultra5x.status, 'identified');
   assert.equal(ultra5x.tierName, 'Google AI Ultra (5x)');
   assert.equal(ultra5x.officialPriceMonthly, 99.99);
 
-  const ultra20x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } } });
+  const ultra20x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra (20x)' } } });
   assert.equal(ultra20x.status, 'identified');
   assert.equal(ultra20x.tierName, 'Google AI Ultra (20x)');
   assert.equal(ultra20x.officialPriceMonthly, 199.99);
 
-  const upgradedFromCache = resolveEffectivePlanStatus(null, null, {
-    cachedLivePlan: {
-      status: 'identified',
-      tierKey: 'ultra',
-      tierName: 'Google AI Ultra（子档未知）',
-      tierId: 'g1-ultra-lite-tier',
-      officialPriceMonthly: null
-    }
-  });
-  assert.equal(upgradedFromCache.tierName, 'Google AI Ultra (5x)');
-  assert.equal(upgradedFromCache.officialPriceMonthly, 99.99);
+  const ultraLiteUnknown = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' } } });
+  assert.equal(ultraLiteUnknown.status, 'identified');
+  assert.equal(ultraLiteUnknown.tierName, 'Google AI Ultra（子档未知）');
+  assert.equal(ultraLiteUnknown.officialPriceMonthly, null);
 });
 
 test('recordModelCalls calibrates from partial streaming usage to final usage and preserves original date', () => {
@@ -1260,6 +1253,8 @@ test('semver & update filtering: strictly accepts v0.x tags, ignores asset filen
   assert.equal(compareVersions('0.8.1', '0.8.0'), 1);
   assert.equal(compareVersions('0.8.0', '0.8.0'), 0);
   assert.equal(compareVersions('0.7.0', '0.8.0'), -1);
+  assert.equal(compareVersions('0.8.8', '0.8.8'), 0);
+  assert.equal(compareVersions('0.8.9', '0.8.8'), 1);
 
   assert.deepEqual(parseSemver('0.8.5-1'), { major: 0, minor: 8, patch: 5, rev: 1 });
   assert.equal(parseSemver('0.8.5-beta'), null);
@@ -1281,6 +1276,17 @@ test('semver & update filtering: strictly accepts v0.x tags, ignores asset filen
   assert.equal(valid.length, 2);
   assert.equal(valid[0].version, '0.9.0');
   assert.equal(valid[1].version, '0.8.1');
+
+  // 0.8.8 比较：同版本 v0.8.8 (title: 'v0.8.8 α') 判无更新；存在 v0.8.9 判有更新
+  assert.equal(filterReleases([
+    { tag_name: 'v0.8.8', name: 'v0.8.8 α', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.8', assets: [] }
+  ], '0.8.8').length, 0);
+  const valid089 = filterReleases([
+    { tag_name: 'v0.8.8', name: 'v0.8.8 α', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.8', assets: [] },
+    { tag_name: 'v0.8.9', name: 'v0.8.9', draft: false, prerelease: false, html_url: 'https://github.com/.../v0.8.9', assets: [] }
+  ], '0.8.8');
+  assert.equal(valid089.length, 1);
+  assert.equal(valid089[0].version, '0.8.9');
 
   // 资产匹配测试（即使历史文件名带 2.7.x 也能基于 platform/arch 正确解析）
   const mockAssets = [
@@ -3609,6 +3615,256 @@ test('Gemini 4 Hydrogen 四档模型识别、1M 统一单档计价、配额池�
     fs.rmSync(cliDir, { recursive: true, force: true });
   }
 });
+test('Model usage breakdown: unifies desktop & CLI model variants and summarizes 7d/30d windows accurately', () => {
+  const {
+    resolveModelUsageBucket,
+    summarizeModelUsageWindow,
+    UNATTRIBUTED_MODEL_KEY
+  } = require('./meter-core');
+
+  const deskBucket = resolveModelUsageBucket({
+    model: 'Gemini 4 Hydrogen (Medium)',
+    modelExactId: 'MODEL_PLACEHOLDER_M526'
+  });
+  const cliBucket = resolveModelUsageBucket({
+    model: 'gemini-4-hydrogen-medium'
+  });
+  assert.equal(deskBucket.modelKey, 'gemini-4-hydrogen');
+  assert.equal(cliBucket.modelKey, 'gemini-4-hydrogen');
+  assert.equal(deskBucket.variantKey, 'gemini-4-hydrogen:medium');
+  assert.equal(cliBucket.variantKey, 'gemini-4-hydrogen:medium');
+  assert.equal(deskBucket.variantLabel, 'Gemini 4 Hydrogen (Medium)');
+  assert.equal(cliBucket.variantLabel, 'Gemini 4 Hydrogen (Medium)');
+
+  const unattr = resolveModelUsageBucket({ model: '' });
+  assert.equal(unattr.modelKey, UNATTRIBUTED_MODEL_KEY);
+  assert.equal(unattr.isAttributed, false);
+
+  const sampleMap = {
+    '2026-11-14': {
+      'gemini-4-hydrogen:medium': { total: 800, input: 100, cache: 600, output: 100, steps: 2 },
+      'gemini-4-argon:high': { total: 200, input: 50, cache: 100, output: 50, steps: 1 }
+    },
+    '2026-11-15': {
+      'gemini-4-hydrogen:xhigh': { total: 500, input: 100, cache: 300, output: 100, steps: 1 },
+      [UNATTRIBUTED_MODEL_KEY]: { total: 500, input: 50, cache: 400, output: 50, steps: 2 }
+    }
+  };
+  const meta = {
+    'gemini-4-hydrogen:medium': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:medium', variantLabel: 'Gemini 4 Hydrogen (Medium)' },
+    'gemini-4-hydrogen:xhigh': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:xhigh', variantLabel: 'Gemini 4 Hydrogen (XHigh)' },
+    'gemini-4-argon:high': { modelKey: 'gemini-4-argon', modelLabel: 'Gemini 4 Argon', variantKey: 'gemini-4-argon:high', variantLabel: 'Gemini 4 Argon (High)' }
+  };
+
+  const winModel = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 7,
+    endDate: '2026-11-16',
+    groupBy: 'model',
+    metric: 'total',
+    modelMetaByKey: meta
+  });
+  assert.equal(winModel.days.length, 7);
+  assert.equal(winModel.windowTotalTokens, 2000);
+  assert.equal(winModel.hasUnattributed, true);
+  assert.equal(winModel.legend[0].key, 'gemini-4-hydrogen');
+  assert.equal(winModel.legend[0].tokens, 1300);
+  assert.equal(winModel.legend[0].pctLabel, '65%');
+  assert.equal(winModel.legend[1].key, 'gemini-4-argon');
+  assert.equal(winModel.legend[1].pctLabel, '10%');
+  assert.equal(winModel.legend[2].key, UNATTRIBUTED_MODEL_KEY);
+  assert.equal(winModel.legend[2].pctLabel, '25%');
+
+  const winNoCacheVar = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 30,
+    endDate: '2026-11-16',
+    groupBy: 'variant',
+    metric: 'noCache',
+    hideUnattributed: true,
+    modelMetaByKey: meta
+  });
+  assert.equal(winNoCacheVar.days.length, 30);
+  assert.equal(winNoCacheVar.windowTotalTokens, 500); // (100+100) + (50+50) + (100+100)
+  assert.equal(winNoCacheVar.legend.length, 3);
+  assert.equal(winNoCacheVar.legend[0].label, 'Gemini 4 Hydrogen (Medium)');
+  assert.equal(winNoCacheVar.legend[0].pctLabel, '40%');
+});
+
+test('Model usage chart palette: native theme colors, custom accent, effort gradients and Claude amber', () => {
+  const {
+    getModelChartColor,
+    summarizeModelUsageWindow,
+    UNATTRIBUTED_MODEL_KEY
+  } = require('./meter-core');
+
+  const hexLuminance = (hex) => {
+    const clean = hex.replace('#', '');
+    const n = parseInt(clean, 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  };
+
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'dark' }), '#a78bfa');
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'light' }), '#7c3aed');
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'dark', accentColor: '#22d3ee' }), '#22d3ee');
+  assert.equal(getModelChartColor('claude-opus-4.6-thinking', 0, { theme: 'dark' }), '#f59e0b');
+  assert.equal(getModelChartColor('claude-opus-4.6-thinking', 0, { theme: 'light' }), '#d97706');
+  assert.equal(getModelChartColor(UNATTRIBUTED_MODEL_KEY, 1, { theme: 'dark' }), 'rgba(161, 161, 170, 0.28)');
+  assert.equal(getModelChartColor(UNATTRIBUTED_MODEL_KEY, 1, { theme: 'light' }), 'rgba(113, 113, 122, 0.24)');
+
+  const cXHigh = getModelChartColor('gemini-4-hydrogen:xhigh', 0, { theme: 'dark' });
+  const cHigh = getModelChartColor('gemini-4-hydrogen:high', 0, { theme: 'dark' });
+  const cMedium = getModelChartColor('gemini-4-hydrogen:medium', 0, { theme: 'dark' });
+  assert.notEqual(cXHigh, cHigh);
+  assert.notEqual(cHigh, cMedium);
+  assert.ok(hexLuminance(cMedium) > hexLuminance(cHigh));
+  assert.ok(hexLuminance(cHigh) > hexLuminance(cXHigh));
+
+  // 当主模型使用与 gpt-oss 默认色冲突的自定义 accentColor 时，次模型应自动避让不撞色
+  const sampleMap = {
+    '2026-11-15': {
+      'gemini-4-hydrogen:medium': { total: 800, input: 100, cache: 600, output: 100, steps: 1 },
+      'gpt-oss-120b': { total: 200, input: 50, cache: 100, output: 50, steps: 1 }
+    }
+  };
+  const win = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 7,
+    endDate: '2026-11-16',
+    theme: 'dark',
+    accentColor: '#10b981'
+  });
+  assert.equal(win.legend[0].color, '#10b981');
+  assert.notEqual(win.legend[1].color, '#10b981');
+});
+
+test('Conversation DB gen_metadata backfill recovers missing transcript models and preserves v2 archive', async (t) => {
+  const fsMod = require('fs');
+  const osMod = require('os');
+  const pathMod = require('path');
+  const {
+    collectTokenHistoryAsync,
+    buildSqliteImmutableUri,
+    extractStepModelsFromGenMetadataBlob
+  } = require('./meter-collector');
+
+  const encodeVarint = (n) => {
+    const out = [];
+    let v = Number(n);
+    while (v >= 0x80) {
+      out.push((v % 128) | 0x80);
+      v = Math.floor(v / 128);
+    }
+    out.push(v);
+    return Buffer.from(out);
+  };
+  const encodeFieldBytes = (fn, payload) => Buffer.concat([
+    encodeVarint(fn * 8 + 2),
+    encodeVarint(payload.length),
+    payload
+  ]);
+  const encodeFieldVarint = (fn, val) => Buffer.concat([
+    encodeVarint(fn * 8 + 0),
+    encodeVarint(val)
+  ]);
+  const encodeGenBlob = ({ steps, rawModel, label, packed = true }) => {
+    const inner = [];
+    if (rawModel) inner.push(encodeFieldBytes(19, Buffer.from(rawModel, 'utf8')));
+    if (label) inner.push(encodeFieldBytes(21, Buffer.from(label, 'utf8')));
+    const parts = [encodeFieldBytes(1, Buffer.concat(inner))];
+    if (packed) {
+      parts.push(encodeFieldBytes(2, Buffer.concat(steps.map(encodeVarint))));
+    } else {
+      steps.forEach(s => parts.push(encodeFieldVarint(2, s)));
+    }
+    return Buffer.concat(parts);
+  };
+
+  assert.equal(
+    buildSqliteImmutableUri('\\\\wsl.localhost\\Ubuntu-26.04\\home\\u\\.gemini\\antigravity-cli\\conversations\\c1.db'),
+    'file:////wsl.localhost/Ubuntu-26.04/home/u/.gemini/antigravity-cli/conversations/c1.db?immutable=1'
+  );
+  assert.equal(
+    buildSqliteImmutableUri('C:\\dir with space\\a#1.db'),
+    'file:///C:/dir%20with%20space/a%231.db?immutable=1'
+  );
+
+  const blobA = encodeGenBlob({ steps: [2, 3], rawModel: 'MODEL_PLACEHOLDER_M18', label: 'Gemini 3.8 Flash (High)', packed: true });
+  const blobB = encodeGenBlob({ steps: [5], rawModel: 'gemini-3.8-flash-n', packed: false });
+  const blobC = encodeGenBlob({ steps: [7], rawModel: 'MODEL_PLACEHOLDER_M667', label: 'Orchestrator (Carbon)', packed: true });
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobA), [
+    { stepIndex: 2, model: 'Gemini 3.8 Flash (High)' },
+    { stepIndex: 3, model: 'Gemini 3.8 Flash (High)' }
+  ]);
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobB), [
+    { stepIndex: 5, model: 'gemini-3.8-flash-n' }
+  ]);
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(Buffer.from([0xff, 0xff])), []);
+
+  let DatabaseSync = null;
+  try { DatabaseSync = require('node:sqlite').DatabaseSync; } catch { }
+  if (!DatabaseSync) {
+    t.skip('node:sqlite unavailable in current Node runtime');
+    return;
+  }
+
+  const tmpRoot = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ag-db-backfill-'));
+  const agDir = pathMod.join(tmpRoot, 'ag');
+  const agCliDir = pathMod.join(tmpRoot, 'ag-cli');
+  const cid = '11111111-2222-3333-4444-555555555555';
+  const logsDir = pathMod.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = pathMod.join(agDir, 'conversations');
+  fsMod.mkdirSync(logsDir, { recursive: true });
+  fsMod.mkdirSync(convDir, { recursive: true });
+  fsMod.mkdirSync(agCliDir, { recursive: true });
+
+  const todayIso = new Date().toISOString();
+  const todayKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const dbPath = pathMod.join(convDir, `${cid}.db`);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)');
+    const insertStmt = db.prepare('INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)');
+    insertStmt.run(1, blobA, blobA.length);
+    insertStmt.run(2, blobB, blobB.length);
+    insertStmt.run(3, blobC, blobC.length);
+  } finally {
+    db.close();
+  }
+
+  fsMod.writeFileSync(pathMod.join(logsDir, 'transcript.jsonl'), [
+    JSON.stringify({ step_index: 2, created_at: todayIso, input_tokens: 1000, cache_read_tokens: 2000, output_tokens: 300 }),
+    JSON.stringify({ step_index: 5, created_at: todayIso, input_tokens: 400, cache_read_tokens: 500, output_tokens: 100 }),
+    JSON.stringify({ step_index: 7, model: 'gemini-pro-orchestrator', created_at: todayIso, input_tokens: 500, cache_read_tokens: 100, output_tokens: 50 }),
+    JSON.stringify({ step_index: 9, created_at: todayIso, input_tokens: 100, cache_read_tokens: 0, output_tokens: 50 })
+  ].join('\n'), 'utf8');
+
+  try {
+    const res1 = await collectTokenHistoryAsync({
+      agDir,
+      agCliDir,
+      force: true
+    });
+    const dayModels = res1.dailyModelMapBySource?.desktop?.[todayKey] || {};
+    assert.equal(dayModels['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(dayModels['gemini-3.8-flash']?.total, 1000);
+    assert.equal(dayModels['orchestrator:carbon']?.total, 650);
+    assert.equal(dayModels.__unattributed__?.total, 150);
+
+    const archiveV2 = JSON.parse(fsMod.readFileSync(pathMod.join(agDir, 'token_usage_archive_v2.json'), 'utf8'));
+    assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['orchestrator:carbon']?.total, 650);
+
+    const res2 = await collectTokenHistoryAsync({
+      agDir,
+      agCliDir
+    });
+    assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['orchestrator:carbon']?.total, 650);
+  } finally {
+    fsMod.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
 
 test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowedTiers 权限矩阵验证', () => {
   const {
@@ -3711,4 +3967,849 @@ test('ELV-83: parseUserPlanStatus、resolveEffectivePlanStatus 与严格 allowed
   });
   assert.equal(unknownPlanSnap.activeStatus, 'unknown');
   assert.equal(unknownPlanSnap.pools[0]?.noPermission, false);
+});
+
+test('parseLxssRegistryOutput parses active WSL distros and filters container-runtime or non-ready entries', () => {
+  const { parseLxssRegistryOutput } = require('./meter-collector');
+  const raw = [
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss',
+    '    DefaultDistribution    REG_SZ    {11111111-1111-1111-1111-111111111111}',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{11111111-1111-1111-1111-111111111111}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    Ubuntu-24.04',
+    '    Version    REG_DWORD    0x2',
+    '    DefaultUid    REG_DWORD    0x0',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{22222222-2222-2222-2222-222222222222}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    docker-desktop',
+    '    Version    REG_DWORD    0x2',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{33333333-3333-3333-3333-333333333333}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    docker-desktop-data',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{44444444-4444-4444-4444-444444444444}',
+    '    State    REG_DWORD    0x4',
+    '    DistributionName    REG_SZ    Debian-Uninstalling',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{55555555-5555-5555-5555-555555555555}',
+    '    State    REG_DWORD    1',
+    '    DistributionName    REG_SZ    Arch',
+    '    Version    REG_DWORD    2',
+    '    DefaultUid    REG_DWORD    1000',
+    '',
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{66666666-6666-6666-6666-666666666666}',
+    '    State    REG_DWORD    0x1',
+    '    DistributionName    REG_SZ    ubuntu-24.04',
+    ''
+  ].join('\r\n');
+
+  const parsed = parseLxssRegistryOutput(raw);
+  assert.deepEqual(parsed, [
+    { name: 'Ubuntu-24.04', state: 1, version: 2, defaultUid: 0 },
+    { name: 'Arch', state: 1, version: 2, defaultUid: 1000 }
+  ]);
+  assert.deepEqual(parseLxssRegistryOutput(''), []);
+});
+
+test('resolveWslDistroUncRoot and discoverWslGeminiDirs handle wsl.localhost preference, wsl$ fallback and isolation guards', () => {
+  const {
+    resolveWslDistroUncRoot,
+    collectGeminiDirsFromLinuxRoot,
+    discoverWslGeminiDirs,
+    getEffectiveScanScopeKey
+  } = require('./meter-collector');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const existingUnc = new Set([
+    '\\\\wsl.localhost\\Ubuntu-24.04\\root',
+    '\\\\wsl$\\Ubuntu-24.04\\root',
+    '\\\\wsl$\\DebianLegacy\\home'
+  ]);
+  const fakeFs = {
+    existsSync: (p) => existingUnc.has(p)
+  };
+  assert.equal(resolveWslDistroUncRoot('Ubuntu-24.04', { fs: fakeFs }), '\\\\wsl.localhost\\Ubuntu-24.04');
+  assert.equal(resolveWslDistroUncRoot('DebianLegacy', { fs: fakeFs }), '\\\\wsl$\\DebianLegacy');
+  assert.equal(resolveWslDistroUncRoot('MissingDistro', { fs: fakeFs }), null);
+
+  const tmpWslRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-wsl-root-'));
+  try {
+    fs.mkdirSync(path.join(tmpWslRoot, 'root', '.gemini', 'antigravity', 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tmpWslRoot, 'home', 'alice', '.gemini', 'antigravity', 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tmpWslRoot, 'home', 'alice', '.gemini', 'antigravity-cli', 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(tmpWslRoot, 'home', 'bob'), { recursive: true });
+
+    const found = collectGeminiDirsFromLinuxRoot(tmpWslRoot);
+    assert.equal(found.desktopDirs.length, 2);
+    assert.equal(found.cliDirs.length, 1);
+
+    const disabledByOpt = discoverWslGeminiDirs({ includeWsl: false, wslRoots: [tmpWslRoot] });
+    assert.deepEqual(disabledByOpt.desktopDirs, []);
+    assert.deepEqual(disabledByOpt.cliDirs, []);
+
+    const prevDisable = process.env.AG_DISABLE_WSL_SCAN;
+    process.env.AG_DISABLE_WSL_SCAN = '1';
+    try {
+      const disabledByEnv = discoverWslGeminiDirs({ includeWsl: true, wslRoots: [tmpWslRoot] });
+      assert.deepEqual(disabledByEnv.desktopDirs, []);
+    } finally {
+      if (prevDisable === undefined) delete process.env.AG_DISABLE_WSL_SCAN;
+      else process.env.AG_DISABLE_WSL_SCAN = prevDisable;
+    }
+
+    const withRoots = discoverWslGeminiDirs({ agDir: tmpWslRoot, wslRoots: [tmpWslRoot] });
+    assert.deepEqual(withRoots.distros, []);
+    assert.equal(withRoots.desktopDirs.length, 2);
+    assert.equal(withRoots.cliDirs.length, 1);
+
+    assert.notEqual(
+      getEffectiveScanScopeKey({ agDir: tmpWslRoot, includeWsl: false }),
+      getEffectiveScanScopeKey({ agDir: tmpWslRoot, includeWsl: true, wslRoots: [tmpWslRoot] })
+    );
+  } finally {
+    fs.rmSync(tmpWslRoot, { recursive: true, force: true });
+  }
+});
+
+test('collectTokenHistoryAsync aggregates WSL desktop/cli sessions without double-counting or writing into WSL dirs', async () => {
+  const { formatLocalDateKey } = require('./meter-collector');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  const winAgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-win-primary-'));
+  const winCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-win-cli-'));
+  const wslRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-wsl-distro-'));
+
+  try {
+    const ts1 = '2026-11-15T10:00:00Z';
+    const ts2 = '2026-11-16T10:00:00Z';
+    const ts3 = '2026-11-16T11:00:00Z';
+    const d1 = formatLocalDateKey(new Date(ts1));
+    const d2 = formatLocalDateKey(new Date(ts2));
+
+    // Windows 主目录会话（含与 WSL 重复的 eventId & conversation 名称，用于验证去重）
+    const winConvDir = path.join(winAgDir, 'conversations');
+    const winBrainDir = path.join(winAgDir, 'brain', 'conv-shared', '.system_generated', 'logs');
+    fs.mkdirSync(winConvDir, { recursive: true });
+    fs.mkdirSync(winBrainDir, { recursive: true });
+    fs.writeFileSync(path.join(winConvDir, 'conv-shared.db'), 'db');
+    fs.writeFileSync(path.join(winConvDir, 'conv-shared.db-wal'), 'wal');
+    fs.writeFileSync(path.join(winBrainDir, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts1,
+      step_index: 1,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200, responseId: 'resp_shared_1' } }
+    }) + '\n', 'utf8');
+
+    // WSL /root desktop 目录（1 条重复事件 + 1 条 WSL 独有事件）
+    const wslRootAg = path.join(wslRoot, 'root', '.gemini', 'antigravity');
+    const wslRootConv = path.join(wslRootAg, 'conversations');
+    const wslRootSharedBrain = path.join(wslRootAg, 'brain', 'conv-shared', '.system_generated', 'logs');
+    const wslRootNewBrain = path.join(wslRootAg, 'brain', 'conv-wsl-only', '.system_generated', 'logs');
+    fs.mkdirSync(wslRootConv, { recursive: true });
+    fs.mkdirSync(wslRootSharedBrain, { recursive: true });
+    fs.mkdirSync(wslRootNewBrain, { recursive: true });
+    fs.writeFileSync(path.join(wslRootConv, 'conv-shared.db'), 'dup-db');
+    fs.writeFileSync(path.join(wslRootConv, 'conv-wsl-only.db'), 'wsl-db');
+    fs.writeFileSync(path.join(wslRootSharedBrain, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts1,
+      step_index: 1,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200, responseId: 'resp_shared_1' } }
+    }) + '\n', 'utf8');
+    fs.writeFileSync(path.join(wslRootNewBrain, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts2,
+      step_index: 2,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 4000, cacheReadTokens: 2000, outputTokens: 500, responseId: 'resp_wsl_2' } }
+    }) + '\n', 'utf8');
+
+    // WSL /home/alice antigravity-cli 目录（仅 WSL 侧有 CLI 记录）
+    const wslCliAg = path.join(wslRoot, 'home', 'alice', '.gemini', 'antigravity-cli');
+    const wslCliConv = path.join(wslCliAg, 'conversations');
+    const wslCliBrain = path.join(wslCliAg, 'brain', 'conv-wsl-cli', '.system_generated', 'logs');
+    fs.mkdirSync(wslCliConv, { recursive: true });
+    fs.mkdirSync(wslCliBrain, { recursive: true });
+    fs.writeFileSync(path.join(wslCliConv, 'conv-wsl-cli.pb'), 'pb');
+    fs.writeFileSync(path.join(wslCliBrain, 'transcript.jsonl'), JSON.stringify({
+      created_at: ts3,
+      step_index: 1,
+      model: 'gemini-3.8-flash',
+      chatModel: { usage: { inputTokens: 800, cacheReadTokens: 100, outputTokens: 100, responseId: 'resp_wsl_cli_1' } }
+    }) + '\n', 'utf8');
+
+    const res = await collectTokenHistoryAsync({
+      force: true,
+      agDir: winAgDir,
+      agCliDir: winCliDir,
+      wslRoots: [wslRoot],
+      userStatus: null
+    });
+
+    assert.equal(res.summary.totalInputTokens, 1000 + 4000 + 800);
+    assert.equal(res.summary.totalCacheTokens, 500 + 2000 + 100);
+    assert.equal(res.summary.totalOutputTokens, 200 + 500 + 100);
+    assert.equal(res.summary.grandTotalTokens, 1700 + 6500 + 1000);
+    assert.equal(res.summary.totalSteps, 3);
+    assert.equal(res.dailyMapBySource.desktop[d1].total, 1700);
+    assert.equal(res.dailyMapBySource.desktop[d2].total, 6500);
+    assert.equal(res.dailyMapBySource.cli[d2].total, 1000);
+    assert.equal(res.sources.desktop.conversationsCount, 2);
+    assert.equal(res.sources.cli.dirExists, true);
+    assert.equal(res.sources.cli.conversationsCount, 1);
+    assert.equal(res.sources.cli.transcriptsCount, 1);
+    assert.equal(res.sources.wsl.desktopDirsCount, 1);
+    assert.equal(res.sources.wsl.cliDirsCount, 1);
+
+    // 确认不会向 WSL 目录写入归档或账本文件（只读扫描 WSL）
+    assert.equal(fs.existsSync(path.join(wslRootAg, 'token_usage_archive_v2.json')), false);
+    assert.equal(fs.existsSync(path.join(wslRootAg, 'pricing_ledger_v1.json')), false);
+    assert.equal(fs.existsSync(path.join(winAgDir, 'token_usage_archive_v2.json')), true);
+  } finally {
+    fs.rmSync(winAgDir, { recursive: true, force: true });
+    fs.rmSync(winCliDir, { recursive: true, force: true });
+    fs.rmSync(wslRoot, { recursive: true, force: true });
+  }
+});
+
+test('Model usage breakdown: unifies desktop & CLI model variants and summarizes 7d/30d windows accurately', () => {
+  const {
+    resolveModelUsageBucket,
+    summarizeModelUsageWindow,
+    UNATTRIBUTED_MODEL_KEY
+  } = require('./meter-core');
+
+  const deskBucket = resolveModelUsageBucket({
+    model: 'Gemini 4 Hydrogen (Medium)',
+    modelExactId: 'MODEL_PLACEHOLDER_M526'
+  });
+  const cliBucket = resolveModelUsageBucket({
+    model: 'gemini-4-hydrogen-medium'
+  });
+  assert.equal(deskBucket.modelKey, 'gemini-4-hydrogen');
+  assert.equal(cliBucket.modelKey, 'gemini-4-hydrogen');
+  assert.equal(deskBucket.variantKey, 'gemini-4-hydrogen:medium');
+  assert.equal(cliBucket.variantKey, 'gemini-4-hydrogen:medium');
+  assert.equal(deskBucket.variantLabel, 'Gemini 4 Hydrogen (Medium)');
+  assert.equal(cliBucket.variantLabel, 'Gemini 4 Hydrogen (Medium)');
+
+  const unattr = resolveModelUsageBucket({ model: '' });
+  assert.equal(unattr.modelKey, UNATTRIBUTED_MODEL_KEY);
+  assert.equal(unattr.isAttributed, false);
+
+  const sampleMap = {
+    '2026-11-14': {
+      'gemini-4-hydrogen:medium': { total: 800, input: 100, cache: 600, output: 100, steps: 2 },
+      'gemini-4-argon:high': { total: 200, input: 50, cache: 100, output: 50, steps: 1 }
+    },
+    '2026-11-15': {
+      'gemini-4-hydrogen:xhigh': { total: 500, input: 100, cache: 300, output: 100, steps: 1 },
+      [UNATTRIBUTED_MODEL_KEY]: { total: 500, input: 50, cache: 400, output: 50, steps: 2 }
+    }
+  };
+  const meta = {
+    'gemini-4-hydrogen:medium': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:medium', variantLabel: 'Gemini 4 Hydrogen (Medium)' },
+    'gemini-4-hydrogen:xhigh': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:xhigh', variantLabel: 'Gemini 4 Hydrogen (XHigh)' },
+    'gemini-4-argon:high': { modelKey: 'gemini-4-argon', modelLabel: 'Gemini 4 Argon', variantKey: 'gemini-4-argon:high', variantLabel: 'Gemini 4 Argon (High)' }
+  };
+
+  const winModel = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 7,
+    endDate: '2026-11-16',
+    groupBy: 'model',
+    metric: 'total',
+    modelMetaByKey: meta
+  });
+  assert.equal(winModel.days.length, 7);
+  assert.equal(winModel.windowTotalTokens, 2000);
+  assert.equal(winModel.hasUnattributed, true);
+  assert.equal(winModel.legend[0].key, 'gemini-4-hydrogen');
+  assert.equal(winModel.legend[0].tokens, 1300);
+  assert.equal(winModel.legend[0].pctLabel, '65%');
+  assert.equal(winModel.legend[1].key, 'gemini-4-argon');
+  assert.equal(winModel.legend[1].pctLabel, '10%');
+  assert.equal(winModel.legend[2].key, UNATTRIBUTED_MODEL_KEY);
+  assert.equal(winModel.legend[2].pctLabel, '25%');
+
+  const winNoCacheVar = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 30,
+    endDate: '2026-11-16',
+    groupBy: 'variant',
+    metric: 'noCache',
+    hideUnattributed: true,
+    modelMetaByKey: meta
+  });
+  assert.equal(winNoCacheVar.days.length, 30);
+  assert.equal(winNoCacheVar.windowTotalTokens, 500); // (100+100) + (50+50) + (100+100)
+  assert.equal(winNoCacheVar.legend.length, 3);
+  assert.equal(winNoCacheVar.legend[0].label, 'Gemini 4 Hydrogen (Medium)');
+  assert.equal(winNoCacheVar.legend[0].pctLabel, '40%');
+});
+
+test('Model usage chart palette: native theme colors, custom accent, effort gradients and Claude amber', () => {
+  const {
+    getModelChartColor,
+    summarizeModelUsageWindow,
+    UNATTRIBUTED_MODEL_KEY
+  } = require('./meter-core');
+
+  const hexLuminance = (hex) => {
+    const clean = hex.replace('#', '');
+    const n = parseInt(clean, 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  };
+
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'dark' }), '#a78bfa');
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'light' }), '#7c3aed');
+  assert.equal(getModelChartColor('gemini-4-hydrogen', 0, { theme: 'dark', accentColor: '#22d3ee' }), '#22d3ee');
+  assert.equal(getModelChartColor('claude-opus-4.6-thinking', 0, { theme: 'dark' }), '#f59e0b');
+  assert.equal(getModelChartColor('claude-opus-4.6-thinking', 0, { theme: 'light' }), '#d97706');
+  assert.equal(getModelChartColor(UNATTRIBUTED_MODEL_KEY, 1, { theme: 'dark' }), 'rgba(161, 161, 170, 0.28)');
+  assert.equal(getModelChartColor(UNATTRIBUTED_MODEL_KEY, 1, { theme: 'light' }), 'rgba(113, 113, 122, 0.24)');
+
+  const cXHigh = getModelChartColor('gemini-4-hydrogen:xhigh', 0, { theme: 'dark' });
+  const cHigh = getModelChartColor('gemini-4-hydrogen:high', 0, { theme: 'dark' });
+  const cMedium = getModelChartColor('gemini-4-hydrogen:medium', 0, { theme: 'dark' });
+  assert.notEqual(cXHigh, cHigh);
+  assert.notEqual(cHigh, cMedium);
+  assert.ok(hexLuminance(cMedium) > hexLuminance(cHigh));
+  assert.ok(hexLuminance(cHigh) > hexLuminance(cXHigh));
+
+  // 当主模型使用与 gpt-oss 默认色冲突的自定义 accentColor 时，次模型应自动避让不撞色
+  const sampleMap = {
+    '2026-11-15': {
+      'gemini-4-hydrogen:medium': { total: 800, input: 100, cache: 600, output: 100, steps: 1 },
+      'gpt-oss-120b': { total: 200, input: 50, cache: 100, output: 50, steps: 1 }
+    }
+  };
+  const win = summarizeModelUsageWindow(sampleMap, {
+    periodDays: 7,
+    endDate: '2026-11-16',
+    theme: 'dark',
+    accentColor: '#10b981'
+  });
+  assert.equal(win.legend[0].color, '#10b981');
+  assert.notEqual(win.legend[1].color, '#10b981');
+});
+
+test('Conversation DB gen_metadata backfill recovers missing transcript models and preserves v2 archive', async (t) => {
+  const fsMod = require('fs');
+  const osMod = require('os');
+  const pathMod = require('path');
+  const {
+    collectTokenHistoryAsync,
+    buildSqliteImmutableUri,
+    extractStepModelsFromGenMetadataBlob
+  } = require('./meter-collector');
+
+  const encodeVarint = (n) => {
+    const out = [];
+    let v = Number(n);
+    while (v >= 0x80) {
+      out.push((v % 128) | 0x80);
+      v = Math.floor(v / 128);
+    }
+    out.push(v);
+    return Buffer.from(out);
+  };
+  const encodeFieldBytes = (fn, payload) => Buffer.concat([
+    encodeVarint(fn * 8 + 2),
+    encodeVarint(payload.length),
+    payload
+  ]);
+  const encodeFieldVarint = (fn, val) => Buffer.concat([
+    encodeVarint(fn * 8 + 0),
+    encodeVarint(val)
+  ]);
+  const encodeGenBlob = ({ steps, rawModel, label, packed = true }) => {
+    const inner = [];
+    if (rawModel) inner.push(encodeFieldBytes(19, Buffer.from(rawModel, 'utf8')));
+    if (label) inner.push(encodeFieldBytes(21, Buffer.from(label, 'utf8')));
+    const parts = [encodeFieldBytes(1, Buffer.concat(inner))];
+    if (packed) {
+      parts.push(encodeFieldBytes(2, Buffer.concat(steps.map(encodeVarint))));
+    } else {
+      steps.forEach(s => parts.push(encodeFieldVarint(2, s)));
+    }
+    return Buffer.concat(parts);
+  };
+
+  assert.equal(
+    buildSqliteImmutableUri('\\\\wsl.localhost\\Ubuntu-26.04\\home\\u\\.gemini\\antigravity-cli\\conversations\\c1.db'),
+    'file:////wsl.localhost/Ubuntu-26.04/home/u/.gemini/antigravity-cli/conversations/c1.db?immutable=1'
+  );
+  assert.equal(
+    buildSqliteImmutableUri('C:\\dir with space\\a#1.db'),
+    'file:///C:/dir%20with%20space/a%231.db?immutable=1'
+  );
+
+  const blobA = encodeGenBlob({ steps: [2, 3], rawModel: 'MODEL_PLACEHOLDER_M18', label: 'Gemini 3.8 Flash (High)', packed: true });
+  const blobB = encodeGenBlob({ steps: [5], rawModel: 'gemini-3.8-flash-n', packed: false });
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobA), [
+    { stepIndex: 2, model: 'Gemini 3.8 Flash (High)' },
+    { stepIndex: 3, model: 'Gemini 3.8 Flash (High)' }
+  ]);
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(blobB), [
+    { stepIndex: 5, model: 'gemini-3.8-flash-n' }
+  ]);
+  assert.deepEqual(extractStepModelsFromGenMetadataBlob(Buffer.from([0xff, 0xff])), []);
+
+  let DatabaseSync = null;
+  try { DatabaseSync = require('node:sqlite').DatabaseSync; } catch { }
+  if (!DatabaseSync) {
+    t.skip('node:sqlite unavailable in current Node runtime');
+    return;
+  }
+
+  const tmpRoot = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ag-db-backfill-'));
+  const agDir = pathMod.join(tmpRoot, 'ag');
+  const agCliDir = pathMod.join(tmpRoot, 'ag-cli');
+  const cid = '11111111-2222-3333-4444-555555555555';
+  const logsDir = pathMod.join(agDir, 'brain', cid, '.system_generated', 'logs');
+  const convDir = pathMod.join(agDir, 'conversations');
+  fsMod.mkdirSync(logsDir, { recursive: true });
+  fsMod.mkdirSync(convDir, { recursive: true });
+  fsMod.mkdirSync(agCliDir, { recursive: true });
+
+  const todayIso = new Date().toISOString();
+  const todayKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const dbPath = pathMod.join(convDir, `${cid}.db`);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)');
+    const insertStmt = db.prepare('INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)');
+    insertStmt.run(1, blobA, blobA.length);
+    insertStmt.run(2, blobB, blobB.length);
+  } finally {
+    db.close();
+  }
+
+  fsMod.writeFileSync(pathMod.join(logsDir, 'transcript.jsonl'), [
+    JSON.stringify({ step_index: 2, created_at: todayIso, input_tokens: 1000, cache_read_tokens: 2000, output_tokens: 300 }),
+    JSON.stringify({ step_index: 5, created_at: todayIso, input_tokens: 400, cache_read_tokens: 500, output_tokens: 100 }),
+    JSON.stringify({ step_index: 9, created_at: todayIso, input_tokens: 100, cache_read_tokens: 0, output_tokens: 50 })
+  ].join('\n'), 'utf8');
+
+  try {
+    const res1 = await collectTokenHistoryAsync({
+      agDir,
+      agCliDir,
+      force: true
+    });
+    const dayModels = res1.dailyModelMapBySource?.desktop?.[todayKey] || {};
+    assert.equal(dayModels['gemini-3.8-flash:high']?.total, 3300);
+    assert.equal(dayModels['gemini-3.8-flash']?.total, 1000);
+    assert.equal(dayModels.__unattributed__?.total, 150);
+
+    const archiveV2 = JSON.parse(fsMod.readFileSync(pathMod.join(agDir, 'token_usage_archive_v2.json'), 'utf8'));
+    assert.equal(archiveV2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+
+    const res2 = await collectTokenHistoryAsync({
+      agDir,
+      agCliDir
+    });
+    assert.equal(res2.dailyModelMapBySource?.desktop?.[todayKey]?.['gemini-3.8-flash:high']?.total, 3300);
+  } finally {
+    fsMod.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.8 chart visual scale: continuous piecewise anchor interpolation (zero cross-tier shrink), monotonic boundaries, overflow cap and cumulative A+C summary', () => {
+  const {
+    computeMixedScaleResponse,
+    computeColorScaleResponse,
+    resolveScaleEnvelope,
+    mapBubbleDiameter,
+    mapBarHeightPx,
+    allocateStackedSegmentHeights,
+    interpolateScaleColorHsl,
+    shouldShowYearlyPeakBadge,
+    computeLogRulerPosition,
+    computeCumulativeStripSummary
+  } = require('./meter-core');
+
+  // 1. 同一气泡/日柱/周柱跨所有包络边界 (a-1, a, a+1) 必须严格连续单调不缩小，且跨包络切换后同值像素/颜色完全稳定
+  const bubbleBoundaries = [100e3, 1e6, 10e6, 100e6, 1e9];
+  const expectedBubbleCaps = [24, 32, 40, 49, 58];
+  bubbleBoundaries.forEach((b, idx) => {
+    const envLo = resolveScaleEnvelope(b - 1, 'yearly');
+    const envAt = resolveScaleEnvelope(b, 'yearly');
+    const envHi = resolveScaleEnvelope(b + 1, 'yearly');
+    const dLo = mapBubbleDiameter(b - 1, envLo).diameter;
+    const dAt = mapBubbleDiameter(b, envAt).diameter;
+    const dHi = mapBubbleDiameter(b + 1, envHi).diameter;
+    assert.ok(Math.abs(dAt - expectedBubbleCaps[idx]) < 1e-6, `气泡锚点 ${b} 应精确等于 ${expectedBubbleCaps[idx]}px`);
+    assert.ok(dLo <= dAt && dAt <= dHi, `气泡边界 ${b}: ${dLo} <= ${dAt} <= ${dHi} 不得跨档缩小`);
+    // 验证同值点 1.82M / 100K / 100M 在更高包络下绝对尺寸与颜色不变
+    assert.equal(mapBubbleDiameter(1.82e6, envLo).diameter, mapBubbleDiameter(1.82e6, envHi).diameter);
+    assert.equal(computeColorScaleResponse(100e6, 'yearly'), computeColorScaleResponse(100e6, 'yearly'));
+  });
+  const env100M = resolveScaleEnvelope(100e6, 'yearly');
+  const env1B = resolveScaleEnvelope(1e9, 'yearly');
+  assert.equal(mapBubbleDiameter(100e6, env100M).diameter, 49.0);
+  assert.equal(mapBubbleDiameter(100e6, env1B).diameter, 49.0, '100M 气泡跨入 1B 包络后必须保持 49.0px，严禁跌落 35.7px');
+  assert.ok(Math.abs(mapBubbleDiameter(1.82e6, env1B).diameter - 33.6403) < 0.05);
+  assert.equal(mapBubbleDiameter(3.64e9, resolveScaleEnvelope(3.64e9, 'yearly')).diameter, 58.0);
+  assert.equal(mapBubbleDiameter(3.64e9, resolveScaleEnvelope(3.64e9, 'yearly')).overflow, true);
+
+  const dayBoundaries = [100e3, 1e6, 10e6, 100e6, 500e6];
+  const expectedDayCaps = [0.38 * 140, 0.52 * 140, 0.68 * 140, 0.84 * 140, 140];
+  dayBoundaries.forEach((b, idx) => {
+    const hLo = mapBarHeightPx(b - 1, resolveScaleEnvelope(b - 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height;
+    const hAt = mapBarHeightPx(b, resolveScaleEnvelope(b, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height;
+    const hHi = mapBarHeightPx(b + 1, resolveScaleEnvelope(b + 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height;
+    assert.ok(Math.abs(hAt - expectedDayCaps[idx]) < 1e-6);
+    assert.ok(hLo <= hAt && hAt <= hHi, `日柱边界 ${b}: ${hLo} <= ${hAt} <= ${hHi} 不得跨档缩小`);
+    assert.equal(
+      mapBarHeightPx(1.82e6, resolveScaleEnvelope(b - 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height,
+      mapBarHeightPx(1.82e6, resolveScaleEnvelope(b + 1, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height
+    );
+  });
+  assert.equal(mapBarHeightPx(800e6, resolveScaleEnvelope(800e6, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).height, 140);
+  assert.equal(mapBarHeightPx(800e6, resolveScaleEnvelope(800e6, 'dailyBar'), 140, { scaleKind: 'dailyBar' }).overflow, true);
+
+  const weekBoundaries = [400e3, 4e6, 40e6, 400e6, 2e9];
+  const expectedWeekCaps = [0.38 * 96, 0.52 * 96, 0.68 * 96, 0.84 * 96, 96];
+  weekBoundaries.forEach((b, idx) => {
+    const hLo = mapBarHeightPx(b - 1, resolveScaleEnvelope(b - 1, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).height;
+    const hAt = mapBarHeightPx(b, resolveScaleEnvelope(b, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).height;
+    const hHi = mapBarHeightPx(b + 1, resolveScaleEnvelope(b + 1, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).height;
+    assert.ok(Math.abs(hAt - expectedWeekCaps[idx]) < 1e-6);
+    assert.ok(hLo <= hAt && hAt <= hHi, `周柱边界 ${b}: ${hLo} <= ${hAt} <= ${hHi} 不得跨档缩小`);
+  });
+  assert.equal(mapBarHeightPx(3.64e9, resolveScaleEnvelope(3.64e9, 'weekly'), 96, { minPx: 3.0, scaleKind: 'weekly' }).overflow, true);
+
+  // 2. 堆叠柱 1.5px 微段保底 & 严格总和恒等 & 原始百分比不被保底篡改
+  const barMixedH = mapBarHeightPx(100e6 + 100, resolveScaleEnvelope(100e6 + 100, 'dailyBar'), 140).height;
+  const allocated = allocateStackedSegmentHeights([
+    { key: 'major', value: 100e6 },
+    { key: 'tinyA', value: 100 },
+    { key: 'tinyB', value: 500 },
+    { key: 'zeroC', value: 0 }
+  ], barMixedH, 1.5);
+  assert.equal(allocated[1].heightPx, 1.5);
+  assert.equal(allocated[2].heightPx, 1.5);
+  assert.equal(allocated[3].heightPx, 0);
+  const segSum = allocated.reduce((acc, s) => acc + s.heightPx, 0);
+  assert.ok(Math.abs(segSum - barMixedH) < 1e-9);
+  assert.ok(allocated[1].rawRatio < 0.00001);
+
+  // 3. 连续 HSL 插值 & 双门槛峰值
+  const stops = ['#2E1A47', '#6D28D9', '#9333EA', '#D8B4FE'];
+  const c18 = interpolateScaleColorHsl(computeColorScaleResponse(18e6, 'yearly'), stops);
+  const c29 = interpolateScaleColorHsl(computeColorScaleResponse(29e6, 'yearly'), stops);
+  assert.notEqual(c18, c29);
+  assert.equal(shouldShowYearlyPeakBadge([1.82e6, 0, 0]), false);
+  assert.equal(shouldShowYearlyPeakBadge([100, 10e6, 0]), true);
+
+  // 4. 累计总量 A+C 核心算法验证：30 天含 0 用量与相邻高峰合并 + 最短 >=50% 集中区间 + 不足 7 天 + >90 天分周 + 0 空态 + log 尺
+  const dm30 = {};
+  const zeroDates = new Set(['2026-10-24', '2026-11-02', '2026-11-08', '2026-11-09']);
+  const peakMap = { '2026-10-29': 620e6, '2026-10-30': 710e6, '2026-10-31': 580e6 };
+  const sMs = Date.UTC(2026, 9, 20);
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(sMs + i * 86400000);
+    const k = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    if (zeroDates.has(k)) continue;
+    const tok = peakMap[k] || (i >= 7 && i <= 12 ? 220e6 : 100e6);
+    dm30[k] = { total: tok, input: tok * 0.1, cache: tok * 0.85, output: tok * 0.05 };
+  }
+  const cum30 = computeCumulativeStripSummary(dm30, '2026-10-20', '2026-11-18');
+  assert.equal(cum30.totalDays, 30);
+  assert.equal(cum30.activeDays, 26);
+  assert.equal(cum30.zeroDays, 4);
+  assert.equal(cum30.grouping, 'daily');
+  assert.equal(cum30.peakDay.date, '2026-10-30');
+  assert.equal(cum30.mergedPeakSpans.length, 1, '10.29-10.31 连续前 3 高峰应合并为一个高亮区间');
+  assert.equal(cum30.mergedPeakSpans[0].startDate, '2026-10-29');
+  assert.equal(cum30.mergedPeakSpans[0].endDate, '2026-10-31');
+  const widthSum = cum30.segments.reduce((acc, s) => acc + s.stripWidthPct, 0);
+  assert.ok(Math.abs(widthSum - 100) < 1e-6);
+  assert.equal(cum30.dailyEntries[29].cumulativeTokens, cum30.intervalTotal);
+  assert.ok(cum30.concentration && cum30.concentration.sharePct >= 50);
+
+  // 并列最短 50% 集中区间必须取最早区间
+  const dmTie = {
+    '2026-11-01': { total: 250 },
+    '2026-11-02': { total: 250 },
+    '2026-11-03': { total: 0 },
+    '2026-11-04': { total: 0 },
+    '2026-11-05': { total: 250 },
+    '2026-11-06': { total: 250 },
+    '2026-11-07': { total: 0 }
+  };
+  const cumTie = computeCumulativeStripSummary(dmTie, '2026-11-01', '2026-11-07');
+  assert.equal(cumTie.concentration.startDate, '2026-11-01');
+  assert.equal(cumTie.concentration.endDate, '2026-11-02');
+  assert.equal(cumTie.concentration.daysCount, 2);
+
+  // 3 天记录不足 7 天：保留峰值，省略集中度
+  const cum3d = computeCumulativeStripSummary(
+    { '2026-11-17': { total: 1000 }, '2026-11-18': { total: 5000 }, '2026-11-19': { total: 6500 } },
+    '2026-11-17',
+    '2026-11-19'
+  );
+  assert.equal(cum3d.totalDays, 3);
+  assert.equal(cum3d.concentration, null);
+  assert.equal(cum3d.concentrationOmittedReason, 'insufficient_days');
+  assert.equal(cum3d.peakDay.date, '2026-11-19');
+  assert.equal(cum3d.ruler.status, 'below_min');
+
+  // 0 总量防除零 & 超 100B 量级尺
+  const cumEmpty = computeCumulativeStripSummary({}, '2026-11-01', '2026-11-10');
+  assert.equal(cumEmpty.intervalTotal, 0);
+  assert.equal(cumEmpty.ruler.status, 'zero');
+  assert.equal(computeLogRulerPosition(150e9).status, 'above_max');
+  assert.equal(computeLogRulerPosition(150e9).pct, 100);
+
+  // 超过 90 天自动按起点每 7 天分组
+  const cumLong = computeCumulativeStripSummary(dm30, '2026-07-01', '2026-11-18');
+  assert.equal(cumLong.grouping, 'weekly');
+  assert.ok(cumLong.segments.length >= 20 && cumLong.segments[0].days.length === 7);
+});
+
+test('Orchestrator & GetAvailableModels resolution: maps M667/M681/gemini-flash-worker-agy cleanly without raw placeholders', () => {
+  const {
+    resolveModelUsageBucket,
+    summarizeModelUsageWindow,
+    getModelChartColor
+  } = require('./meter-core');
+
+  const configs = [
+    { modelId: 'MODEL_PLACEHOLDER_M667', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' }, label: 'Orchestrator (Carbon)' },
+    { modelId: 'MODEL_PLACEHOLDER_M681', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M681' }, label: 'Orchestrator (Argon)' }
+  ];
+  const availDetails = {
+    'gemini-flash-worker-agy': { modelId: 'MODEL_PLACEHOLDER_M669', displayName: 'Gemini 4 Hydrogen (Orchestrator)' },
+    model_placeholder_m669: { modelId: 'MODEL_PLACEHOLDER_M669', displayName: 'Gemini 4 Hydrogen (Orchestrator)' },
+    'gemini-pro-orchestrator': { modelId: 'MODEL_PLACEHOLDER_M667', displayName: 'Orchestrator (Carbon)' },
+    model_placeholder_m667: { modelId: 'MODEL_PLACEHOLDER_M667', displayName: 'Orchestrator (Carbon)' },
+    'gemini-future-worker': { modelId: 'MODEL_PLACEHOLDER_M999', displayName: 'Gemini 4 Hydrogen (XHigh)' }
+  };
+
+  const workerDyn = resolveModelUsageBucket({ model: 'gemini-flash-worker-agy' }, configs, availDetails);
+  assert.equal(workerDyn.modelKey, 'gemini-4-hydrogen');
+  assert.equal(workerDyn.modelLabel, 'Gemini 4 Hydrogen');
+  assert.equal(workerDyn.variantKey, 'gemini-4-hydrogen:orchestrator');
+  assert.equal(workerDyn.variantLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+
+  const workerOffline = resolveModelUsageBucket({ model: 'gemini-flash-worker-agy' });
+  assert.equal(workerOffline.modelKey, 'gemini-4-hydrogen');
+  assert.equal(workerOffline.variantKey, 'gemini-4-hydrogen:orchestrator');
+  assert.equal(workerOffline.variantLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+
+  const m667Bucket = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M667', modelLabel: 'MODEL_PLACEHOLDER_M667' }, configs, availDetails);
+  assert.equal(m667Bucket.modelKey, 'orchestrator');
+  assert.equal(m667Bucket.modelLabel, 'Orchestrator');
+  assert.equal(m667Bucket.variantKey, 'orchestrator:carbon');
+  assert.equal(m667Bucket.variantLabel, 'Orchestrator (Carbon)');
+
+  const orchOffline = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M667' });
+  assert.equal(orchOffline.variantKey, 'orchestrator:carbon');
+  assert.equal(orchOffline.variantLabel, 'Orchestrator (Carbon)');
+
+  const cliOrchCarbon = resolveModelUsageBucket({ model: 'gemini-pro-orchestrator' }, configs, availDetails);
+  assert.equal(cliOrchCarbon.modelKey, 'orchestrator');
+  assert.equal(cliOrchCarbon.variantKey, 'orchestrator:carbon');
+  assert.equal(cliOrchCarbon.variantLabel, 'Orchestrator (Carbon)');
+
+  const orchArgon = resolveModelUsageBucket({ model: 'gemini-pro-orchestrator-argon' }, configs, availDetails);
+  assert.equal(orchArgon.modelKey, 'orchestrator');
+  assert.equal(orchArgon.variantKey, 'orchestrator:argon');
+  assert.equal(orchArgon.variantLabel, 'Orchestrator (Argon)');
+
+  const futureDyn = resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M999' }, configs, availDetails);
+  assert.equal(futureDyn.modelKey, 'gemini-4-hydrogen');
+  assert.equal(futureDyn.variantKey, 'gemini-4-hydrogen:xhigh');
+
+  assert.equal(getModelChartColor('orchestrator', 0, { theme: 'dark' }), '#f472b6');
+  assert.notEqual(getModelChartColor('orchestrator:carbon', 0, { theme: 'dark' }), getModelChartColor('orchestrator:argon', 1, { theme: 'dark' }));
+  assert.notEqual(getModelChartColor('gemini-4-hydrogen:orchestrator', 0, { theme: 'dark' }), getModelChartColor('gemini-4-hydrogen:xhigh', 1, { theme: 'dark' }));
+
+  const win = summarizeModelUsageWindow({
+    '2026-11-17': {
+      'orchestrator:carbon': { total: 500, input: 100, cache: 350, output: 50, steps: 2 },
+      'orchestrator:argon': { total: 300, input: 100, cache: 150, output: 50, steps: 1 },
+      'gemini-4-hydrogen:orchestrator': { total: 200, input: 50, cache: 100, output: 50, steps: 2 }
+    }
+  }, {
+    periodDays: 7,
+    endDate: '2026-11-18',
+    groupBy: 'model',
+    modelMetaByKey: {
+      'orchestrator:carbon': { modelKey: 'orchestrator', modelLabel: 'Orchestrator', variantKey: 'orchestrator:carbon', variantLabel: 'Orchestrator (Carbon)' },
+      'orchestrator:argon': { modelKey: 'orchestrator', modelLabel: 'Orchestrator', variantKey: 'orchestrator:argon', variantLabel: 'Orchestrator (Argon)' },
+      'gemini-4-hydrogen:orchestrator': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:orchestrator', variantLabel: 'Gemini 4 Hydrogen (Orchestrator)' }
+    }
+  });
+  assert.equal(win.legend.length, 2);
+  assert.equal(win.legend[0].label, 'Orchestrator');
+  assert.equal(win.legend[0].tokens, 800);
+  assert.equal(win.legend[1].label, 'Gemini 4 Hydrogen');
+  assert.equal(win.legend[1].tokens, 200);
+});
+
+test('PR #30 supplement: archive dirty key re-bucketing, existing modelExactId label backfill, worker IDs, and conservation', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { DatabaseSync } = require('node:sqlite');
+  const { resolveModelUsageBucket, lookupModelDisplayLabel } = require('./meter-core');
+  const { buildDailyModelBreakdown, needsDbLabelEnrichment, backfillMissingModelsFromConversationDb } = require('./meter-collector');
+
+  // 1. Worker / Orchestrator 显示名映射
+  assert.equal(lookupModelDisplayLabel({ model: 'gemini-flash-worker-agy' }), 'Gemini 4 Hydrogen (Orchestrator)');
+  assert.equal(lookupModelDisplayLabel({ modelExactId: 'MODEL_PLACEHOLDER_M669' }), 'Gemini 4 Hydrogen (Orchestrator)');
+  assert.equal(lookupModelDisplayLabel({ model: 'model_placeholder_m667' }), 'Orchestrator (Carbon)');
+  assert.equal(lookupModelDisplayLabel({ model: 'placeholder-m668' }), 'Orchestrator (Argon)');
+  assert.equal(lookupModelDisplayLabel({ model: 'placeholder-m681' }), 'Orchestrator (Argon)');
+  assert.equal(resolveModelUsageBucket({ model: 'MODEL_PLACEHOLDER_M668' }).variantLabel, 'Orchestrator (Argon)');
+
+  // 2. 旧归档脏 key 合并与总量守恒
+  const archiveV2 = {
+    modelMetaByKey: {
+      'placeholder-m402': { modelKey: 'placeholder-m402', modelLabel: 'placeholder-m402', variantKey: 'placeholder-m402', variantLabel: 'placeholder-m402' },
+      'gemini-flash-worker-agy': { modelKey: 'gemini-flash-worker-agy', modelLabel: 'gemini-flash-worker-agy', variantKey: 'gemini-flash-worker-agy', variantLabel: 'gemini-flash-worker-agy' },
+      'model_placeholder_m667': { modelKey: 'model_placeholder_m667', modelLabel: 'model_placeholder_m667', variantKey: 'model_placeholder_m667', variantLabel: 'model_placeholder_m667' },
+      'placeholder-m681': { modelKey: 'placeholder-m681', modelLabel: 'placeholder-m681', variantKey: 'placeholder-m681', variantLabel: 'placeholder-m681' }
+    },
+    dailyModelMapBySource: {
+      desktop: {
+        '2026-11-10': {
+          'placeholder-m402': { total: 1000, input: 300, cache: 600, output: 100, steps: 2 },
+          'claude-opus-5-5:high': { total: 500, input: 100, cache: 350, output: 50, steps: 1 },
+          'gemini-flash-worker-agy': { total: 800, input: 200, cache: 500, output: 100, steps: 3 },
+          'model_placeholder_m667': { total: 400, input: 100, cache: 250, output: 50, steps: 1 }
+        }
+      },
+      cli: {
+        '2026-11-10': {
+          'placeholder-m681': { total: 300, input: 80, cache: 180, output: 40, steps: 1 }
+        }
+      }
+    }
+  };
+  const breakdown = buildDailyModelBreakdown({
+    recentRequests: [],
+    finalCallsEntries: [],
+    matchedTranscriptReqs: new Set(),
+    matchedLedgerKeys: new Set(),
+    resolveLedgerCallDate: () => null,
+    mergedDesktop: { '2026-11-10': { total: 2700, input: 700, cache: 1700, output: 300, steps: 7 } },
+    mergedCli: { '2026-11-10': { total: 300, input: 80, cache: 180, output: 40, steps: 1 } },
+    mergedLegacyUnallocated: {},
+    archiveV2,
+    compactModelConfigs: [],
+    availableModelDetails: null
+  });
+
+  const dayAll = breakdown.dailyModelMapBySource.all['2026-11-10'];
+  assert.equal(dayAll['placeholder-m402'], undefined);
+  assert.equal(dayAll['gemini-flash-worker-agy'], undefined);
+  assert.equal(dayAll['model_placeholder_m667'], undefined);
+  assert.equal(dayAll['placeholder-m681'], undefined);
+  assert.deepEqual(dayAll['claude-opus-5-5:high'], { total: 1500, input: 400, cache: 950, output: 150, steps: 3 });
+  assert.deepEqual(dayAll['gemini-4-hydrogen:orchestrator'], { total: 800, input: 200, cache: 500, output: 100, steps: 3 });
+  assert.deepEqual(dayAll['orchestrator:carbon'], { total: 400, input: 100, cache: 250, output: 50, steps: 1 });
+  assert.deepEqual(dayAll['orchestrator:argon'], { total: 300, input: 80, cache: 180, output: 40, steps: 1 });
+
+  // 验证重新归类前后总量守恒
+  const sumVals = Object.values(dayAll).reduce((acc, r) => ({
+    total: acc.total + r.total,
+    input: acc.input + r.input,
+    cache: acc.cache + r.cache,
+    output: acc.output + r.output,
+    steps: acc.steps + r.steps
+  }), { total: 0, input: 0, cache: 0, output: 0, steps: 0 });
+  assert.deepEqual(sumVals, { total: 3000, input: 780, cache: 1880, output: 340, steps: 8 });
+  assert.equal(breakdown.modelMetaByKey['placeholder-m402'], undefined);
+  assert.equal(breakdown.modelMetaByKey['claude-opus-5-5:high'].variantLabel, 'Claude Opus 5.5 (High)');
+
+  // 3. 已有 modelExactId 但缺少 modelLabel 时触发 needsDbLabelEnrichment 并回填显示名
+  const recNeedLabel = {
+    tot: 500,
+    cascadeId: '66666666-6666-6666-6666-666666666666',
+    stepIndex: 1,
+    model: 'gemini-flash-worker-agy',
+    modelExactId: 'MODEL_PLACEHOLDER_M669',
+    ttftSec: 0.45,
+    streamingSec: 1.25
+  };
+  assert.equal(needsDbLabelEnrichment(recNeedLabel), true);
+  assert.equal(needsDbLabelEnrichment({ tot: 500, model: 'gemini-flash-worker-agy', modelLabel: 'Gemini 4 Hydrogen (Orchestrator)' }), false);
+
+  const encVarint = (n) => {
+    let v = BigInt(n >>> 0);
+    const out = [];
+    while (v >= 0x80n) { out.push(Number((v & 0x7fn) | 0x80n)); v >>= 7n; }
+    out.push(Number(v));
+    return Buffer.from(out);
+  };
+  const encLen = (f, buf) => {
+    const b = Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf), 'utf8');
+    return Buffer.concat([encVarint((f << 3) | 2), encVarint(b.length), b]);
+  };
+  const encVi = (f, v) => Buffer.concat([encVarint((f << 3) | 0), encVarint(v)]);
+  const metaBlob = Buffer.concat([
+    encLen(1, Buffer.concat([encLen(19, 'gemini-flash-worker-agy'), encLen(21, 'Gemini 4 Hydrogen (Orchestrator)')])),
+    encVi(2, 1)
+  ]);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pr30-db-'));
+  let db = null;
+  try {
+    const dbPath = path.join(tmpDir, `${recNeedLabel.cascadeId}.db`);
+    db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE gen_metadata (data BLOB);');
+    db.prepare('INSERT INTO gen_metadata (data) VALUES (?)').run(metaBlob);
+    db.close();
+    db = null;
+
+    const filled = backfillMissingModelsFromConversationDb([recNeedLabel], tmpDir);
+    assert.equal(filled, 1);
+    assert.equal(recNeedLabel.modelLabel, 'Gemini 4 Hydrogen (Orchestrator)');
+    assert.equal(recNeedLabel.modelExactId, 'MODEL_PLACEHOLDER_M669');
+    assert.equal(recNeedLabel.ttftSec, 0.45);
+  } finally {
+    if (db) { try { db.close(); } catch {} }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('v0.8.8 i18n/货币基础能力: 48国预设含完整 nameTw/nameEn 且无简体残留，支持 USD/HKD/TWD/CNY 互转与结构化 currentPeriod', () => {
+  const {
+    SUBSCRIPTION_REGIONS_PRESET,
+    findRegionPreset,
+    convertCurrency,
+    normalizeTokenHistoryPayload
+  } = require('./meter-core');
+  assert.ok(SUBSCRIPTION_REGIONS_PRESET.length >= 40);
+  const simpChars = /[国韩亚欧乌罗马联东陆区宾兰达尔义]/;
+  for (const r of SUBSCRIPTION_REGIONS_PRESET) {
+    assert.ok(r.nameEn && /^[ -~]+$/.test(r.nameEn), `preset ${r.id} missing pure ASCII nameEn: ${r.nameEn}`);
+    assert.ok(r.nameTw && r.nameTw.length > 0, `preset ${r.id} missing nameTw`);
+    assert.equal(simpChars.test(r.nameTw), false, `preset ${r.id} nameTw has simplified chars: ${r.nameTw}`);
+  }
+  assert.equal(findRegionPreset('United States (US)')?.id, 'US');
+  assert.equal(findRegionPreset('美國 (USD)')?.id, 'US');
+  assert.equal(findRegionPreset('Taiwan (TWD)')?.id, 'TW');
+
+  assert.equal(convertCurrency(10, 'USD', 'CNY'), 67.2);
+  assert.equal(convertCurrency(1, 'USD', 'TWD'), 32);
+  assert.equal(convertCurrency(1, 'USD', 'HKD'), Number((6.72 / 0.857).toFixed(2)));
+  assert.equal(convertCurrency(158, 'HKD', 'USD'), Number(((158 * 0.857) / 6.72).toFixed(2)));
+
+  const norm = normalizeTokenHistoryPayload({ dailyMap: {}, dailyMapBySource: { all: {}, desktop: {}, cli: {} } });
+  assert.equal(norm.currentPeriod.periodType, 'calendar_month');
+  assert.doesNotMatch(norm.currentPeriod.label, /[\u4e00-\u9fff]/);
 });

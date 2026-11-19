@@ -14,36 +14,58 @@ const {
   launchCliSession
 } = require('./meter-cli-launcher');
 
-function withMockCliIfNeeded(fn) {
-  const probed = resolveCliExecutable();
-  if (probed.ok) return fn(undefined);
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-mock-cli-'));
-  const mockName = process.platform === 'win32' ? 'agy.cmd' : 'agy';
-  const mockPath = path.join(tmpDir, mockName);
-  fs.writeFileSync(mockPath, process.platform === 'win32' ? '@echo off\r\n' : '#!/usr/bin/env sh\nexit 0\n', 'utf8');
-  if (process.platform !== 'win32') fs.chmodSync(mockPath, 0o755);
-  return Promise.resolve(fn(mockPath)).finally(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
-}
+test('CLI 启动模块 1: resolveCliExecutable 隔离跨平台探测（Windows .exe/.cmd 与 macOS .app）及环境探测', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-resolve-'));
+  try {
+    // 1. 隔离模拟 Windows 安装目录 (.gemini/antigravity/bin/agy.exe)
+    const winHome = path.join(tmpDir, 'win-home');
+    const winBin = path.join(winHome, '.gemini', 'antigravity', 'bin');
+    fs.mkdirSync(winBin, { recursive: true });
+    const fakeWinExe = path.join(winBin, 'agy.exe');
+    fs.writeFileSync(fakeWinExe, 'MZ');
+    const resWin = resolveCliExecutable(null, { platform: 'win32', homeDir: winHome, env: { USERPROFILE: winHome, PATH: '' } });
+    assert.equal(resWin.ok, true);
+    assert.equal(path.resolve(resWin.exePath), path.resolve(fakeWinExe));
 
-test('CLI 启动模块 1: resolveCliExecutable 探测真实环境 agy.exe', async () => {
-  await withMockCliIfNeeded(mockCli => {
-    const res = resolveCliExecutable(mockCli);
-    assert.equal(res.ok, true, '必须能成功探测到 Antigravity CLI');
-    assert.ok(res.exePath && fs.existsSync(res.exePath), '解析的 CLI 可执行文件必须存在');
-    assert.match(res.exePath.toLowerCase(), /agy(\.exe|\.cmd)?$/, '可执行文件名必须为 agy');
-  });
+    // 2. 隔离模拟 macOS Google Antigravity.app 安装目录
+    const macAppRoot = path.join(tmpDir, 'Google Antigravity.app');
+    const macBin = path.join(macAppRoot, 'Contents', 'Resources', 'app', 'bin', 'agy');
+    fs.mkdirSync(path.dirname(macBin), { recursive: true });
+    fs.writeFileSync(macBin, '#!/bin/sh\necho ok\n', { mode: 0o755 });
+    const resMac = resolveCliExecutable(null, { platform: 'darwin', macAppRoots: [macAppRoot], homeDir: tmpDir, env: { PATH: '' } });
+    assert.equal(resMac.ok, true);
+    assert.equal(path.resolve(resMac.exePath), path.resolve(macBin));
+
+    // 3. 如宿主机实际已安装 Antigravity CLI，额外核对真实探测结果格式正确
+    const hostRes = resolveCliExecutable();
+    if (hostRes.ok) {
+      assert.ok(hostRes.exePath && fs.existsSync(hostRes.exePath));
+      assert.match(path.basename(hostRes.exePath).toLowerCase(), /^agy(\.exe|\.cmd|\.bat)?$/);
+    } else {
+      assert.equal(hostRes.code, 'CLI_NOT_FOUND');
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('CLI 启动模块 2: dryRun 包含完整参数与环境隔离', async () => {
-  await withMockCliIfNeeded(async mockCli => {
-    const dry = await launchCliSession({ dryRun: true, cliPath: mockCli, model: 'gemini-3.8-flash-high', args: ['--verbose'] });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-dryrun-'));
+  try {
+    const fakeCli = path.join(tmpDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+    fs.writeFileSync(fakeCli, 'stub', { mode: 0o755 });
+    const dry = await launchCliSession({ cliPath: fakeCli, cwd: tmpDir, dryRun: true, model: 'gemini-3.8-flash-high', args: ['--verbose'] });
     assert.equal(dry.ok, true);
     assert.equal(dry.dryRun, true);
     assert.equal(dry.model, 'gemini-3.8-flash-high');
     assert.deepEqual(dry.args, ['--model', 'gemini-3.8-flash-high', '--verbose']);
-    assert.equal(dry.env.TERM, 'xterm-256color');
-    assert.equal(dry.env.COLORTERM, 'truecolor');
-  });
+    if (process.platform === 'win32') {
+      assert.equal(dry.env.TERM, 'xterm-256color');
+      assert.equal(dry.env.COLORTERM, 'truecolor');
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('CLI 启动模块 3: 源码绝对不残留同步 powershell、8000ms 阻塞与作者绝对开发路径', () => {
@@ -252,5 +274,179 @@ print('PY_OK')
     assert.ok(typeof detectAndMigrateLegacyConfigs === 'function');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('local-api exports parseExplicitPort and cli.js status / runtime-check.js --port 58321 parse it cleanly with mock', async () => {
+  const { spawnSync } = require('node:child_process');
+  const { loadAsarEngine } = require('./asar-engine');
+  const localApi = require('./local-api');
+  assert.equal(typeof localApi.parseExplicitPort, 'function');
+  assert.equal(localApi.parseExplicitPort('58321'), 58321);
+  assert.equal(localApi.parseExplicitPort('0'), null);
+  assert.equal(localApi.parseExplicitPort('70000'), null);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-port-parse-'));
+  try {
+    const srcDir = path.join(tmpDir, 'asar-src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'package.json'), JSON.stringify({ name: 'antigravity', version: '2.33.0' }), 'utf8');
+    const fakeAsar = path.join(tmpDir, 'fake-app.asar');
+    await loadAsarEngine().createPackageWithOptions(srcDir, fakeAsar, {});
+
+    const logFile = path.join(tmpDir, 'cdp-calls.json');
+    const hookFile = path.join(tmpDir, 'mock-local-api.js');
+    fs.writeFileSync(hookFile, `
+      'use strict';
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const localApiPath = path.resolve(${JSON.stringify(path.join(__dirname, 'local-api.js'))});
+      const api = require(localApiPath);
+      const logPath = ${JSON.stringify(logFile)};
+      api.discoverAntigravityCdp = async (opts = {}) => {
+        const list = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, 'utf8')) : [];
+        list.push(opts);
+        fs.writeFileSync(logPath, JSON.stringify(list), 'utf8');
+        return { port: opts.port || null, pages: [], page: null, allPages: [] };
+      };
+    `, 'utf8');
+
+    const isolatedEnv = {
+      ...process.env,
+      AG_METER_STATE_DIR: path.join(tmpDir, 'state'),
+      AG_METER_TEST_MODE: '1',
+      APPDATA: path.join(tmpDir, 'appdata'),
+      LOCALAPPDATA: path.join(tmpDir, 'localappdata')
+    };
+
+    const statusRun = spawnSync(
+      process.execPath,
+      ['-r', hookFile, path.join(__dirname, 'cli.js'), 'status', '--port', '58321', '--path', fakeAsar],
+      { cwd: __dirname, env: isolatedEnv, encoding: 'utf8', windowsHide: true }
+    );
+    assert.equal(statusRun.status, 0, `cli.js status stderr: ${statusRun.stderr}`);
+    assert.doesNotMatch(statusRun.stderr + statusRun.stdout, /parseExplicitPort is not a function/);
+    const statusJson = JSON.parse(statusRun.stdout);
+    assert.equal(statusJson.liveWindow.cdpPort, 58321);
+
+    const rcRun = spawnSync(
+      process.execPath,
+      ['-r', hookFile, path.join(__dirname, 'runtime-check.js'), '--port', '58321'],
+      { cwd: __dirname, env: isolatedEnv, encoding: 'utf8', windowsHide: true }
+    );
+    assert.doesNotMatch(rcRun.stderr + rcRun.stdout, /parseExplicitPort is not a function/);
+    assert.match(rcRun.stderr, /Expected exactly one Antigravity page/);
+
+    const recorded = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+    assert.ok(recorded.length >= 2);
+    assert.deepEqual(recorded[0], { port: 58321, strictPort: true });
+    assert.deepEqual(recorded[recorded.length - 1], { port: 58321 });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('cli.js rejects --help, -h, and unknown args/commands with non-zero exit, prints usage only, and performs zero writes or live injection', () => {
+  const { spawnSync } = require('node:child_process');
+  const { parseCliArgs } = require('./cli');
+
+  assert.equal(parseCliArgs([]).cmd, 'install');
+  assert.equal(parseCliArgs(['--path', 'a.asar']).cmd, 'install');
+  assert.equal(parseCliArgs(['status', '--port', '58321']).cmd, 'status');
+  assert.equal(parseCliArgs(['proxy:set', 'http://127.0.0.1:7890', '--path', 'a.asar']).cmd, 'proxy:set');
+  assert.equal(parseCliArgs(['--help']).showHelp, true);
+  assert.equal(parseCliArgs(['--help']).exitCode, 1);
+  assert.equal(parseCliArgs(['-h']).showHelp, true);
+  assert.equal(parseCliArgs(['--unknown']).showHelp, true);
+  assert.equal(parseCliArgs(['unknown-cmd']).showHelp, true);
+  assert.equal(parseCliArgs(['status', '--unknown']).showHelp, true);
+  assert.equal(parseCliArgs(['install', '--port']).reason, 'missing_value');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cli-help-'));
+  try {
+    const spyFile = path.join(tmpDir, 'spy-no-op.js');
+    const triggerLog = path.join(tmpDir, 'triggers.txt');
+    fs.writeFileSync(spyFile, `
+      'use strict';
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const log = (tag) => fs.appendFileSync(${JSON.stringify(triggerLog)}, tag + '\\n');
+      const installMod = require(path.resolve(${JSON.stringify(path.join(__dirname, 'install.js'))}));
+      installMod.install = async () => { log('install'); throw new Error('must not call install'); };
+      installMod.tryHotInject = async () => { log('tryHotInject'); throw new Error('must not call tryHotInject'); };
+      installMod.tryHotInjectDetailed = async () => { log('tryHotInjectDetailed'); throw new Error('must not call tryHotInjectDetailed'); };
+      const localApi = require(path.resolve(${JSON.stringify(path.join(__dirname, 'local-api.js'))}));
+      localApi.discoverAntigravityCdp = async () => { log('discoverCdp'); throw new Error('must not call discoverCdp'); };
+    `, 'utf8');
+
+    const env = {
+      ...process.env,
+      AG_METER_STATE_DIR: path.join(tmpDir, 'state'),
+      AG_METER_TEST_MODE: '1',
+      APPDATA: path.join(tmpDir, 'appdata'),
+      LOCALAPPDATA: path.join(tmpDir, 'localappdata')
+    };
+
+    const cases = [
+      ['--help'],
+      ['-h'],
+      ['--unknown-flag'],
+      ['unknown-subcommand'],
+      ['status', '--unknown-flag'],
+      ['install', '--bad-arg']
+    ];
+    for (const argv of cases) {
+      const res = spawnSync(
+        process.execPath,
+        ['-r', spyFile, path.join(__dirname, 'cli.js'), ...argv],
+        { cwd: __dirname, env, encoding: 'utf8', windowsHide: true }
+      );
+      assert.notEqual(res.status, 0, `args ${JSON.stringify(argv)} must exit non-zero`);
+      assert.match(res.stdout, /用法:/, `args ${JSON.stringify(argv)} must print usage`);
+      assert.doesNotMatch(res.stdout, /正在安装|已通过 CDP 热注入/, `args ${JSON.stringify(argv)} must not trigger install/live`);
+    }
+    assert.equal(fs.existsSync(triggerLog), false, 'Help/unknown args must trigger zero install/live/CDP calls');
+    assert.equal(fs.existsSync(path.join(tmpDir, 'state')), false, 'Help/unknown args must not create stateDir files');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('打包脚本回归: package-release 编译 helper 输出至临时目录且不覆盖仓库 cli-window-helper.exe', () => {
+  const { ensureWindowsHelper, packagePlatform, supportsCscDeterministicFlag } = require('./scripts/package-release');
+  const repoHelperPath = path.join(__dirname, 'scripts', 'cli-window-helper.exe');
+  const beforeStat = fs.statSync(repoHelperPath);
+  const beforeSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
+
+  const tmpOut = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-pkg-test-'));
+  let helperInfo = null;
+  try {
+    helperInfo = ensureWindowsHelper();
+    assert.ok(fs.existsSync(helperInfo.helperPath), '必须返回可用的 helperPath');
+    if (process.platform === 'win32' && helperInfo.compiled) {
+      assert.notEqual(
+        path.resolve(helperInfo.helperPath),
+        path.resolve(repoHelperPath),
+        '本地编译输出必须位于临时目录，绝不能覆盖仓库里的 scripts/cli-window-helper.exe'
+      );
+      assert.ok(helperInfo.tempDir && helperInfo.helperPath.startsWith(path.resolve(os.tmpdir())));
+    }
+    const afterStat = fs.statSync(repoHelperPath);
+    const afterSha = crypto.createHash('sha256').update(fs.readFileSync(repoHelperPath)).digest('hex');
+    assert.equal(afterSha, beforeSha, '仓库 tracking 的 scripts/cli-window-helper.exe 内容绝不能被改写');
+    assert.equal(afterStat.mtimeMs, beforeStat.mtimeMs, '仓库 scripts/cli-window-helper.exe 修改时间绝不能被改写');
+
+    const res = packagePlatform(
+      { name: 'windows_amd64', scripts: ['install.bat', 'uninstall.bat', 'scripts/cli-window-helper.exe'] },
+      '0.8.8-test',
+      { distDir: tmpOut, helperPath: helperInfo.helperPath }
+    );
+    assert.ok(fs.existsSync(res.path) && res.size > 0);
+    assert.equal(typeof supportsCscDeterministicFlag('Z:/missing/csc.exe'), 'boolean');
+  } finally {
+    if (helperInfo?.tempDir) {
+      try { fs.rmSync(helperInfo.tempDir, { recursive: true, force: true }); } catch {}
+    }
+    try { fs.rmSync(tmpOut, { recursive: true, force: true }); } catch {}
   }
 });

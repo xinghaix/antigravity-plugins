@@ -611,8 +611,8 @@ test('sidecar ui-server registers Aux Pane routes and serves /, assets, and /api
             generatorCount: 1
           }),
           fetchQuotaSnapshotFromHost: async () => ({ ok: true, planTierSummary: { tierName: 'Pro' }, snapshot: { pools: [] } }),
-          collectTokenHistoryAsync: async () => ({ version: '0.8.7-2', summary: { todayTokens: 123, monthTokens: 456, grandTotalTokens: 789 } }),
-          getContextUnlockStatus: async () => ({ status: 'ORIG', mode: 'default', arch: 'arm64' }),
+          collectTokenHistoryAsync: async () => ({ version: '0.8.8-1', summary: { todayTokens: 123, monthTokens: 456, grandTotalTokens: 789 } }),
+          getContextUnlockStatus: async () => ({ status: 'patched_loaded', mode: 'standalone language_server', configuredMode: 'fixed', configuredLimitTokens: 712000, arch: 'arm64' }),
           getPluginSettings: () => ({ sidecarChinese: true, showCliButton: false, panelLanguage: 'zh-CN' }),
           savePluginSettings: () => ({ ok: true })
         },
@@ -650,10 +650,70 @@ test('sidecar ui-server registers Aux Pane routes and serves /, assets, and /api
     assert.equal(overview.conversations[0].title, 'Test 2.33 Session');
     assert.equal(overview.session.latest.model, 'Gemini Test');
     assert.equal(overview.tokens.summary.todayTokens, 123);
-    assert.equal(overview.unlock.status, 'ORIG');
+    assert.equal(overview.unlock.status, 'patched_loaded');
+    assert.equal(overview.unlock.mode, 'fixed');
+    assert.equal(overview.unlock.limit, 712000);
 
     await srv.close();
     assert.equal(closed, true);
+  } finally {
+    fs.rmSync(tmpAg, { recursive: true, force: true });
+  }
+});
+
+test('local-api connect discovers Antigravity 2.33+ Language Server via daemon hub_*.json without DevToolsActivePort or main.log', async t => {
+  const https = require('https');
+  const { EventEmitter } = require('events');
+  const { connect, readDaemonEntries } = require('./local-api');
+
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-'));
+  const daemonDir = path.join(tmpAg, 'daemon');
+  fs.mkdirSync(daemonDir, { recursive: true });
+
+  // Stale dead PID entry must be ignored
+  fs.writeFileSync(
+    path.join(daemonDir, 'hub_50908.json'),
+    JSON.stringify({ pid: 9999999, httpsPort: 50907, httpPort: 50908, csrfToken: 'stale-tok' }),
+    'utf8'
+  );
+  // Live PID entry (current process pid)
+  fs.writeFileSync(
+    path.join(daemonDir, 'hub_51185.json'),
+    JSON.stringify({ pid: process.pid, httpsPort: 51184, httpPort: 51185, lsVersion: '2.33.0', csrfToken: 'daemon-tok' }),
+    'utf8'
+  );
+
+  const entries = readDaemonEntries({ agDir: tmpAg });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].httpsPort, 51184);
+  assert.equal(entries[0].csrfToken, 'daemon-tok');
+
+  t.mock.method(https, 'request', (url, opts, cb) => {
+    const req = new EventEmitter();
+    req.setTimeout = () => {};
+    req.destroy = () => {};
+    req.end = (body) => {
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      process.nextTick(() => {
+        cb(res);
+        if (String(url).endsWith('/')) {
+          res.emit('data', '<html><body>ok without inline config</body></html>');
+        } else {
+          assert.equal(opts.headers['x-codeium-csrf-token'], 'daemon-tok');
+          res.emit('data', JSON.stringify({ ok: true, echo: body ? JSON.parse(body) : null }));
+        }
+        res.emit('end');
+      });
+    };
+    return req;
+  });
+
+  try {
+    const api = await connect({ agDir: tmpAg });
+    assert.equal(api.origin, 'https://127.0.0.1:51184');
+    const res = await api.call('GetUserStatus', { ping: 233 });
+    assert.deepEqual(res, { ok: true, echo: { ping: 233 } });
   } finally {
     fs.rmSync(tmpAg, { recursive: true, force: true });
   }

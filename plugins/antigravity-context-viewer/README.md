@@ -1,11 +1,11 @@
-# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.8.7-2`）
+# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.8.8-1`）
 
 **简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.8.7`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.8.7-2`**）：
-> 1. **原生 Aux Pane Sidecar UI + CDP 双模适配（兼容 Antigravity `2.33+`）**（`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`）：Antigravity `2.33+` 默认关闭 `DevToolsActivePort`，插件自动通过 `main.log` 免 CDP 直连本地 Language Server，在原生侧边栏 `sidecar://antigravity-context-viewer/live-loader/` 展示实时上下文用量、生成速度、配额、历史 Token 与解锁诊断；同时完整保留 CDP 自动热注入、`node cli.js launch --restart` 优雅重启开启 CDP 与 `node cli.js install` 持久化写入 `app.asar` 三种顶栏恢复路径。
-> 2. **渲染器界面与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：顶栏胶囊紧致上下文长度+比例双显示、默认隐藏 CLI 启动按钮（可在设置中切换）、免改盘中文热注入自愈，以及对 `v0.8.5` 额度圆环、分模型上下文预算和系统增强中心的全量同步。
-> 3. **多平台上下文加长解锁与 CLI 增强**（`meter-context-unlock.js`、`cli.js`）：支持 macOS (`arm64` Mach-O `tbnz` + `codesign`) / Linux / Windows 上下文窗口调整与独立 `sidecar:*` 生命周期管理。
+> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.8.8`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.8.8-1`**）：
+> 1. **原生 Aux Pane Sidecar UI + Daemon / CDP 双模适配（兼容 Antigravity `2.33+`）**（`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`）：Antigravity `2.33+` 默认关闭 `DevToolsActivePort`，插件自动通过 `~/.gemini/antigravity/daemon/hub_*.json` 与 `main.log` 免 CDP 直连本地 Language Server，在原生侧边栏 `sidecar://antigravity-context-viewer/live-loader/` 展示实时上下文用量、生成速度、配额、历史 Token 与解锁诊断；同时完整保留 CDP 自动热注入、`node cli.js watch` 守护模式、`node cli.js launch --restart` 优雅重启开启 CDP 与 `node cli.js install` 持久化写入 `app.asar`。
+> 2. **渲染器界面与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：顶栏胶囊紧致上下文长度+比例双显示、默认隐藏 CLI 启动按钮（可在设置中切换）、免改盘中文热注入自愈，以及对 `v0.8.8` 多账号分账对照、按模型每日堆叠统计、全新「累计总量」视图、可折叠轮次时间线与 `elv91-v1` 速度评分的全量同步（提示词与标题改写默认严格关闭）。
+> 3. **多平台上下文加长解锁与 CLI 增强**（`meter-context-unlock.js`、`macos-binary-utils.js`、`cli.js`）：支持 macOS Apple Silicon (`arm64` Mach-O `fixed` / `dynamic` / `default` + `codesign`) / Linux / Windows 上下文窗口调整、`watch` / `stop-watch` 与独立 `sidecar:*` 生命周期管理。
 
 在 Google Antigravity 2.x 顶栏查看当前对话用了多少上下文、模型生成有多快、当前模型剩余配额，以及桌面端和 CLI 一共用了多少 Token。
 
@@ -52,9 +52,7 @@ https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
 
 ## 🤖 给 AI 智能体的一键安装指令 (For AI Agents)
 
-如果你将本仓库交给 AI 助手安装，只需对 AI 说：**“读取仓库里的 `AGENTS.md` 或 `README.md`，帮我安装这个上下文查看器与 Token 看板”**。
-
-AI 智能体只需在仓库根目录执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 0.8.7-1）必须完全重启客户端**：
+如果在 Antigravity 插件环境下使用，AI 助手可直接读取本仓库 `skills/context-viewer/SKILL.md` 与 `README.md` 安装调试；若作为独立工具手动部署，只需执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 `0.8.8-1`）必须完全重启客户端**：
 
 ```bash
 # 1. 持久化写入 ASAR 与全部插件模块
@@ -147,12 +145,12 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.8.7-2)
+├── meter-renderer.js                       # 渲染层构建产物 (0.8.8-1)
 ├── src/renderer/                           # 渲染层源码
+├── sidecars/live-loader/                   # Aux Pane 原生面板与自动热挂载 Sidecar
 ├── scripts/                                # 构建、发布打包与基准测试
 ├── meter-collector.js                      # 本地会话归档读取与附件提取收集器
 ├── attachment_scan.py                      # 全格式附件只读分析核心脚本 (Office / PDF / Code)
-├── AGENTS.md                               # AI 智能体专用一键安装与校验指南
 ├── install.bat / install.sh                # 一键安装入口脚本
 └── uninstall.bat / .sh                     # 一键卸载与还原入口脚本
 ```

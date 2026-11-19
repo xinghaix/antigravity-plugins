@@ -15,6 +15,7 @@ const {
   collect,
   collectTokenHistory,
   collectTokenHistoryAsync,
+  collectSessionTimelineAsync,
   recordModelCalls,
   recordModelCallsAsync,
   getPluginSettings,
@@ -36,6 +37,7 @@ const MAIN_STARTED_AT = Date.now();
 const MAIN_CAPABILITIES = {
   scan: true,
   tokenHistory: true,
+  sessionTimeline: true,
   quota: true,
   recordCalls: true,
   settings: true,
@@ -43,6 +45,7 @@ const MAIN_CAPABILITIES = {
   contextUnlock: true,
   enhance: true,
   modules: true,
+  accounts: true,
   checkUpdate: true,
   applyUpdate: true,
   restartHost: true,
@@ -84,16 +87,20 @@ const bootProxySnapshot = resolveBootProxySnapshot();
 const bootChineseSnapshots = new Map();
 
 /**
- * 解析当前进程启动瞬间的宿主汉化状态快照（同一 stateDir 生命周期内保持不变，防止受隔离上下文或用户项目名误判）
+ * 解析当前进程启动瞬间的宿主汉化状态快照（同一 stateDir 与目标 ASAR 生命周期内保持不变，防止受隔离上下文或用户项目名误判）
  */
 function resolveBootChineseSnapshot(customAsarPath = null) {
-  const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}::${customAsarPath || ''}`;
+  const rawAsarTarget = customAsarPath || process.env.AG_METER_TEST_HOST_ASAR || null;
+  const asarKey = rawAsarTarget
+    ? (process.platform === 'win32' ? path.resolve(String(rawAsarTarget)).toLowerCase() : path.resolve(String(rawAsarTarget)))
+    : '__default_asar__';
+  const key = `${String(process.env.AG_METER_STATE_DIR || '__default__')}::${asarKey}`;
   if (bootChineseSnapshots.has(key)) return bootChineseSnapshots.get(key);
   let snap = { enabled: false, language: 'en' };
   try {
     const { loadModulesConfig, inspectDiskModules } = require('./modules-config');
     const cfg = loadModulesConfig();
-    const disk = inspectDiskModules(customAsarPath || null);
+    const disk = inspectDiskModules(rawAsarTarget);
     const ch = cfg?.modules?.chinese || {};
     const diskReady = disk.chineseReady !== undefined ? Boolean(disk.chineseReady) : Boolean(disk.chinese);
     const active = Boolean(ch.enabled && String(ch.language || '').toLowerCase() !== 'en' && diskReady);
@@ -180,7 +187,8 @@ function isLocalMainFrameSender(event) {
   try {
     const rawUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || '';
     const url = new URL(rawUrl);
-    if (url.protocol !== 'https:' || url.hostname !== '127.0.0.1') return null;
+    const portNum = url.port ? Number(url.port) : (url.protocol === 'https:' ? 443 : (url.protocol === 'http:' ? 80 : 0));
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.hostname !== '127.0.0.1' || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return null;
     if (event.senderFrame && event.sender?.mainFrame && event.senderFrame !== event.sender.mainFrame) return null;
     return url;
   } catch {
@@ -300,7 +308,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     // 结果类型 1: 已有完整运行时可通过配置切换 (config_toggled)
     if (hasDiskCapability) {
       // 在任何写盘修改之前先锁定本生命周期的启动汉化快照，防止先 toggle 后读盘自欺
-      resolveBootChineseSnapshot(customAsarPath);
+      resolveBootChineseSnapshot(extraOpts?.asarPath);
       const prevChineseEnabled = Boolean(cfg.modules.chinese?.enabled);
       const prevChineseLang = cfg.modules.chinese?.language || (prevChineseEnabled ? 'zh-CN' : 'en');
       if (moduleName === 'proxy' && extraOpts) {
@@ -312,7 +320,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
               status: 'invalid_config',
               data: cfg,
               disk,
-              runtime: buildRuntimeModulesMeta(cfg, customAsarPath),
+              runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
               error: check.error,
               restartRequired: false
             };
@@ -324,7 +332,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
             status: 'invalid_config',
             data: cfg,
             disk,
-            runtime: buildRuntimeModulesMeta(cfg, customAsarPath),
+            runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
             error: '开启免 TUN 前请填写有效的本地代理地址',
             restartRequired: false
           };
@@ -363,7 +371,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         } catch {}
       }
 
-      const runtime = buildRuntimeModulesMeta(cfg, customAsarPath);
+      const runtime = buildRuntimeModulesMeta(cfg, extraOpts?.asarPath);
       const langChanged = moduleName === 'chinese' && (
         Boolean(cfg.modules.chinese.enabled) !== prevChineseEnabled ||
         cfg.modules.chinese.language !== prevChineseLang
@@ -427,7 +435,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         status: 'config_toggled',
         data: cfg,
         disk,
-        runtime: buildRuntimeModulesMeta(cfg, customAsarPath),
+        runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
         restartRequired: false,
         message: '模块未注入，配置保持关闭'
       };
@@ -448,7 +456,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       status: 'install_failed',
       data: cfg,
       disk,
-      runtime: buildRuntimeModulesMeta(cfg, customAsarPath),
+      runtime: buildRuntimeModulesMeta(cfg, extraOpts?.asarPath),
       error: `当前客户端磁盘 ASAR 未注入${modLabel}组件（或组件不完整）。${detailSuffix}请先从系统托盘/菜单彻底退出 Antigravity（仅点关闭按钮可能后台驻留锁定 app.asar），然后${cmdHint} 完成注入后再重启。`,
       restartRequired: false
     };
@@ -514,9 +522,32 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
+      let recOpts = {};
+      try {
+        const { getSharedAccountsManager } = require('./meter-accounts');
+        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+        const ov = mgr.getOverviewState();
+        const switchInFlight = Boolean(mgr.isSwitchInFlight?.() || ov?.switchInProgress);
+        const activeEmail = !switchInFlight ? (ov?.activeAccountEmail || null) : null;
+        const sessions = Array.isArray(ov?.accountSessions) ? ov.accountSessions : [];
+        const openSess = activeEmail
+          ? sessions.slice().reverse().find(s => String(s.email).toLowerCase() === String(activeEmail).toLowerCase() && s.endAtMs == null)
+          : null;
+        recOpts = {
+          accountSessions: sessions,
+          ...(!switchInFlight && activeEmail ? {
+            confirmedAccountEmail: activeEmail,
+            liveConfirmedAccount: {
+              email: activeEmail,
+              verifiedAtMs: openSess?.lastVerifiedAtMs || Date.now(),
+              sessionStartMs: openSess?.startAtMs || Date.now()
+            }
+          } : {})
+        };
+      } catch { }
       const res = typeof recordModelCallsAsync === 'function'
-        ? await recordModelCallsAsync(calls)
-        : recordModelCalls(calls);
+        ? await recordModelCallsAsync(calls, recOpts)
+        : recordModelCalls(calls, recOpts);
       if (res && typeof res === 'object') {
         if (res.ok === false) {
           return {
@@ -542,6 +573,26 @@ function registerMeterIpcHandlers(ipcMain) {
     catch (e) { return { ok: false, error: e.message }; }
   });
 
+  ipcMain.handle('context-meter:session-timeline', async (event, id, options) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const opts = options && typeof options === 'object' ? options : {};
+      const safeOpts = {
+        origin: url.origin,
+        force: opts.force === true,
+        ...(Array.isArray(opts.liveSteps) ? { liveSteps: opts.liveSteps } : {}),
+        ...(Array.isArray(opts.liveCalls) ? { liveCalls: opts.liveCalls } : {}),
+        ...(Array.isArray(opts.cascadeModelConfigs) ? { cascadeModelConfigs: opts.cascadeModelConfigs } : {}),
+        ...(opts.userStatus && typeof opts.userStatus === 'object' ? { userStatus: opts.userStatus } : {})
+      };
+      const data = await collectSessionTimelineAsync(id, safeOpts);
+      return { ok: true, data: { ...(data || {}), backendVersion: PROJECT_VERSION, backendSource: 'electron-ipc' } };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('context-meter:get-quota', async (event, options) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
@@ -554,7 +605,28 @@ function registerMeterIpcHandlers(ipcMain) {
       opts.backendSource = 'electron-ipc';
       const res = await collector.fetchQuotaSnapshotFromHost(opts);
       const { _raw, ...safePayload } = res || {};
-      return { ok: true, data: safePayload };
+      let accountSyncResult = null;
+      try {
+        const { getSharedAccountsManager } = require('./meter-accounts');
+        const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+        const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
+        const email = !switchInFlight
+          ? (res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+          : null;
+        if (!switchInFlight && email && res?.snapshot) {
+          mgr.syncActiveHostQuotaSnapshot(res, email);
+          const ov = mgr.getOverviewState();
+          if (ov.autoSwitch?.enabled && !res.error) {
+            accountSyncResult = await mgr.evaluateAutoSwitch({
+              activeEmail: email,
+              activeSnapshot: res.snapshot,
+              syncState: 'fresh',
+              isGenerating: Boolean(opts.isGenerating)
+            });
+          }
+        }
+      } catch { }
+      return { ok: true, data: safePayload, accountSyncResult };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -798,6 +870,31 @@ function registerMeterIpcHandlers(ipcMain) {
       return { ok: false, error: e.message };
     }
   });
+
+  ipcMain.handle('context-meter:accounts-overview', async (event) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getSharedAccountsManager } = require('./meter-accounts');
+      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+      await mgr.detectCurrentActiveAccount();
+      return mgr.getOverviewState();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:accounts-action', async (event, payload) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
+      const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
+      return await dispatchAccountsAction(mgr, payload || {});
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
 }
 
 function getWindowWebContents(win) {
@@ -819,11 +916,11 @@ function getWindowWebContents(win) {
   try {
     const children = win.contentView?.children;
     if (Array.isArray(children)) {
-      // 优先：明确匹配本地主聊天服务地址 (https://127.0.0.1:<port>/)
+      // 优先：明确匹配本地主聊天服务地址 (http:// 或 https://127.0.0.1:<port>/)
       for (const child of children) {
         if (child?.webContents && !child.webContents.isDestroyed?.()) {
           const url = child.webContents.getURL?.() || '';
-          if (/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) return child.webContents;
+          if (/^https?:\/\/127\.0\.0\.1:\d+\//.test(url)) return child.webContents;
         }
       }
       // 次优：若正在加载中尚未完成导航，排除明确的 data: 遮罩页 (curtainView)
@@ -836,6 +933,39 @@ function getWindowWebContents(win) {
     }
   } catch {}
   return null;
+}
+
+/**
+ * 在 Electron 主进程内直读所有活跃 Hub 窗口的本地原点 URL（免 CDP / DevToolsActivePort）
+ */
+function getActiveHubWindowOrigins() {
+  const origins = [];
+  const pushUrl = (rawUrl) => {
+    if (!rawUrl || typeof rawUrl !== 'string') return;
+    try {
+      const m = rawUrl.trim().match(/^https?:\/\/127\.0\.0\.1:\d+/i);
+      if (!m) return;
+      const o = new URL(rawUrl.trim()).origin;
+      if (o && !origins.includes(o)) origins.push(o);
+    } catch { }
+  };
+  try {
+    const utils = require('./utils');
+    const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+    for (const win of wins) {
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
+    }
+  } catch { }
+  try {
+    const { BrowserWindow } = require('electron');
+    const allWins = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : [];
+    for (const win of allWins) {
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) pushUrl(wc.getURL?.());
+    }
+  } catch { }
+  return origins;
 }
 
 
@@ -868,7 +998,7 @@ async function ensureMeterInjected(win, options = {}) {
       return false;
     }
     const url = wc.getURL?.() || '';
-    if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(url)) {
+    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url)) {
       const attempt = Number(options.attempt || 0);
       const delays = [300, 600, 1000, 1500, 2500];
       if (attempt < delays.length && win && !win.isDestroyed?.()) {
@@ -1204,7 +1334,7 @@ async function tryInAppHotReloadAfterUpdate(updateRes, options = {}) {
     const wc = getWindowWebContents(w);
     if (!wc || wc.isDestroyed?.() || typeof wc.executeJavaScript !== 'function') continue;
     const rawUrl = wc.getURL?.() || '';
-    if (!/^https:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
+    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(rawUrl)) continue;
     try {
       activeTargets.push({ win: w, wc, origin: new URL(rawUrl).origin });
     } catch {}
@@ -1432,6 +1562,7 @@ true;`;
   };
 }
 
+exports.MAIN_CAPABILITIES = MAIN_CAPABILITIES;
 exports.tryInAppHotReloadAfterUpdate = tryInAppHotReloadAfterUpdate;
 exports.handleModulesStatus = handleModulesStatus;
 exports.handleToggleModule = handleToggleModule;
@@ -1442,3 +1573,4 @@ exports.getAppQuitting = getAppQuitting;
 exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
+exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm'), core = require('./meter-core');
 const source = fs.readFileSync(require('node:path').join(__dirname, 'meter-renderer.js'), 'utf8');
 function session(unknown = 0) { return { groups: Object.fromEntries(['user','assistant','thinking','tools','summaries','system','definitions'].map(k => [k,core.empty()])), total: { chars: 100, low: 10, high: 50 }, attachmentTotal: core.empty(), attachments: unknown ? [{ name: '<img onerror=bad>', status: 'unknown', unknownParts: ['图像 token 未知'], chars: 0, source: 'user' }] : [], unknownFiles: unknown, steps: 10, userMessages: 2, assistantMessages: 3 }; }
-function harness(scanSession = session()) {
+function harness(scanSession = session(), extraSandbox = null) {
   const elements = new Map();
   const docElements = new Map();
   const listeners = new Map();
@@ -94,7 +94,7 @@ function harness(scanSession = session()) {
   };
   const host = element(); host.attachShadow = () => ({ set innerHTML(value) {}, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const pending = [], scans = [], timers = [];
-  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); } };
+  const sandbox = { location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' }, document: { createElement: () => element(), getElementById: id => docElements.get(id) || null, documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {}, hidden: false }, window: { __APP_CONFIG__: { csrfToken: 'test' }, contextMeterAPI: { scan: id => new Promise(resolve => scans.push({ id, resolve })) } }, __AGContextMeterCore: core, AbortController, Date, setTimeout: () => 1, clearTimeout() {}, setInterval(callback) { timers.push(callback); return 1; }, clearInterval() {}, fetch(url, options) { return new Promise(resolve => pending.push({ url, options, resolve })); }, ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {}) };
   // First createElement call is the host; later calls are safe text-only file rows.
   let first = true; sandbox.document.createElement = () => { if (first) { first = false; return host; } return element(); };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
@@ -181,15 +181,15 @@ test('speed badge and speed summary card accurately render model output speed an
     chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
   }));
   await h.flush();
-  assert.equal(h.elements.get('speed-amount').textContent, '112.1 tok/s');
+  assert.equal(h.elements.get('speed-amount').textContent, '185.1 tok/s');
   assert.match(h.elements.get('speed-hover-extra').textContent, /21\.3s/);
-  assert.match(h.elements.get('badge-speed').title, /112\.1 tok\/s/);
-  assert.equal(h.elements.get('speed-val').textContent, '112.1 tok/s');
+  assert.match(h.elements.get('badge-speed').title, /185\.1 tok\/s/);
+  assert.equal(h.elements.get('speed-val').textContent, '185.1 tok/s');
   assert.equal(h.elements.get('speed-duration').textContent, '21.3s');
   assert.equal(h.elements.get('speed-ttft').textContent, '8.4s');
   assert.match(h.elements.get('speed-tokens').textContent, /2,388 tok/);
-  assert.equal(h.elements.get('speed-badge').textContent, '极速');
-  assert.match(h.elements.get('speed-takeaway').textContent, /112\.1 tok\/s/);
+  assert.equal(h.elements.get('speed-badge').textContent, '⚡ 83.7 分 · A');
+  assert.match(h.elements.get('speed-takeaway').textContent, /83\.8 分|整体均速 112\.1 tok\/s/);
   h.sandbox.__AGContextMeter.dispose();
 });
 test('drawer toggle controls secondary technical details visibility', () => {
@@ -990,7 +990,6 @@ test('instant region switch to Australia & Korea, price badge dynamic animation 
 
   // 点击澳大利亚
   auItem.click();
-
 
   // 3. 验证立即更新（0延迟保存与上面立即更改）
   assert.match(priceVal.textContent, /AU\$32\.99/);
@@ -2013,7 +2012,8 @@ test('插件面板三语言切换、持久化、动态文案、模型名保留�
   assert.equal(savedSettingsPayload.contextPreferences, undefined, '切换面板语言不得改写上下文偏好');
   assert.equal(restartCalls, 0, '切换面板语言不得触发重启');
   assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '模型正式名称应保持原样不被翻译');
-  assert.equal(h.elements.get('speed-badge').textContent, '流暢');
+  assert.equal(h.elements.get('speed-badge').textContent, '⚡ 82.7 分 · A');
+  assert.match(h.elements.get('speed-sub-label').textContent, /流式 56\.3 tok\/s/);
 
   // 验证静态属性遍历器在标准 DOM 下会同步更新 data-i18n 节点
   const mockStaticNode = {
@@ -2036,7 +2036,9 @@ test('插件面板三语言切换、持久化、动态文案、模型名保留�
   assert.equal(h.elements.get('speed-bar-title').textContent, 'Output Speed Comparison');
   assert.equal(h.elements.get('panel-lang-save-badge').textContent, api.translateForTest('settings.panelLang.saved'));
   assert.equal(h.elements.get('model').textContent, 'Gemini 3.1 Pro (High)', '切换为 English 后模型正式名称应保持原样');
-  assert.equal(h.elements.get('speed-badge').textContent, 'Smooth');
+  assert.equal(h.elements.get('speed-badge').textContent, '⚡ 82.7 pts · A');
+  assert.match(h.elements.get('speed-sub-label').textContent, /Stream 56\.3 tok\/s/);
+  assert.doesNotMatch(h.elements.get('speed-takeaway').textContent, /[\u4e00-\u9fa5]/, '英文模式速度评语不得夹带中文');
   assert.equal(storedSettings.contextPreferences['gemini-3-1-pro'].limitTokens, 512000, '已有模型上下文偏好必须保持原值');
 
   // 4. 模拟重启恢复：重新挂载并从 getSettings 恢复为 en
@@ -4008,7 +4010,6 @@ test('[P2] renderer watermark re-sends when RPC upgrades provisional date to aut
   }
 });
 
-
 test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight does not trigger spurious cost-growth re-send', async () => {
   const fs = require('node:fs');
   const os = require('node:os');
@@ -4167,7 +4168,6 @@ test('[P3] provisional Carbon call crossing 11-30 -> 12-01 rate-hike midnight do
     try { fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
   }
 });
-
 
 test('[P2] same-rank authoritative created_at revision updates persisted ledger date & costUSD and settles cleanly', async () => {
   const fs = require('node:fs');
@@ -5019,5 +5019,1193 @@ test('提示词与标题改写相关配置在默认初始化与渲染界面中�
     assert.equal(enhState.enhanceTitleDraft, false);
   } finally {
     h.sandbox.__AGContextMeter.dispose();
+  }
+});
+
+test('By Model usage view: renders stacked bars, percentages, 7d/30d, variant/cache toggles, and hover tooltip', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const yesterdayDt = new Date(Date.now() - 86400000);
+    const yKey = `${yesterdayDt.getFullYear()}-${String(yesterdayDt.getMonth() + 1).padStart(2, '0')}-${String(yesterdayDt.getDate()).padStart(2, '0')}`;
+    const tKey = (() => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    })();
+
+    const modelMetaByKey = {
+      'gemini-4-hydrogen:xhigh': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:xhigh', variantLabel: 'Gemini 4 Hydrogen (XHigh)' },
+      'gemini-4-hydrogen:medium': { modelKey: 'gemini-4-hydrogen', modelLabel: 'Gemini 4 Hydrogen', variantKey: 'gemini-4-hydrogen:medium', variantLabel: 'Gemini 4 Hydrogen (Medium)' },
+      'gemini-4-argon:high': { modelKey: 'gemini-4-argon', modelLabel: 'Gemini 4 Argon', variantKey: 'gemini-4-argon:high', variantLabel: 'Gemini 4 Argon (High)' }
+    };
+
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      summary: { grandTotalTokens: 1000000, todayTokens: 600000, totalConversations: 4 },
+      dailyMap: {
+        [yKey]: { total: 400000, input: 100000, cache: 250000, output: 50000, steps: 4 },
+        [tKey]: { total: 600000, input: 150000, cache: 350000, output: 100000, steps: 6 }
+      },
+      dailyMapBySource: {
+        all: {
+          [yKey]: { total: 400000, input: 100000, cache: 250000, output: 50000, steps: 4 },
+          [tKey]: { total: 600000, input: 150000, cache: 350000, output: 100000, steps: 6 }
+        },
+        desktop: {
+          [tKey]: { total: 200000, input: 50000, cache: 100000, output: 50000, steps: 2 }
+        },
+        cli: {
+          [yKey]: { total: 400000, input: 100000, cache: 250000, output: 50000, steps: 4 },
+          [tKey]: { total: 400000, input: 100000, cache: 250000, output: 50000, steps: 4 }
+        }
+      },
+      dailyModelMapBySource: {
+        all: {
+          [yKey]: {
+            'gemini-4-hydrogen:medium': { total: 300000, input: 75000, cache: 185000, output: 40000, steps: 3 },
+            'gemini-4-argon:high': { total: 100000, input: 25000, cache: 65000, output: 10000, steps: 1 }
+          },
+          [tKey]: {
+            'gemini-4-hydrogen:xhigh': { total: 500000, input: 120000, cache: 300000, output: 80000, steps: 5 },
+            __unattributed__: { total: 100000, input: 30000, cache: 50000, output: 20000, steps: 1 }
+          }
+        },
+        desktop: {
+          [tKey]: {
+            'gemini-4-hydrogen:xhigh': { total: 200000, input: 50000, cache: 100000, output: 50000, steps: 2 }
+          }
+        },
+        cli: {
+          [yKey]: {
+            'gemini-4-hydrogen:medium': { total: 300000, input: 75000, cache: 185000, output: 40000, steps: 3 },
+            'gemini-4-argon:high': { total: 100000, input: 25000, cache: 65000, output: 10000, steps: 1 }
+          },
+          [tKey]: {
+            'gemini-4-hydrogen:xhigh': { total: 300000, input: 70000, cache: 200000, output: 30000, steps: 3 },
+            __unattributed__: { total: 100000, input: 30000, cache: 50000, output: 20000, steps: 1 }
+          }
+        }
+      },
+      modelMetaByKey
+    });
+
+    // Switch to By Model view
+    h.elements.get('tok-view-models').click();
+    assert.equal(h.elements.get('model-usage-view').style.display, 'block');
+    assert.equal(h.elements.get('tokens-main-view').style.display, 'none');
+    assert.equal(h.elements.get('cost-estimate-card').style.display, 'none');
+
+    const barsEl = h.elements.get('model-usage-bars');
+    const legendEl = h.elements.get('model-usage-legend');
+    assert.equal(barsEl.children.length, 7);
+    assert.equal(legendEl.children.length, 3); // Hydrogen, Argon, Unattributed
+    assert.equal(h.elements.get('model-usage-window-total').textContent, '1.0M Tokens');
+    assert.equal(h.elements.get('model-toggle-unattr').style.display, 'inline-flex');
+
+    // Hover today's bar (last column) -> shows heat-pop details
+    barsEl.children[6].trigger('mouseenter');
+    assert.equal(h.elements.get('heat-pop').style.opacity, '1');
+    assert.match(h.elements.get('heat-pop-val').textContent, /600\.0K Tokens/);
+
+    // Switch to variant breakdown
+    h.elements.get('model-group-variant').click();
+    assert.equal(legendEl.children.length, 4); // XHigh, Medium, Argon High, Unattributed
+
+    // Hide unattributed -> 3 variants and 900.0K total
+    h.elements.get('model-toggle-unattr').click();
+    assert.equal(legendEl.children.length, 3);
+    assert.equal(h.elements.get('model-usage-window-total').textContent, '900.0K Tokens');
+
+    // Switch to 30d and noCache
+    h.elements.get('model-period-30d').click();
+    assert.equal(barsEl.children.length, 30);
+    h.elements.get('model-metric-nocache').click();
+    assert.equal(h.elements.get('model-usage-window-total').textContent, '350.0K Tokens');
+
+    // Source switch to desktop
+    h.elements.get('src-tab-desktop').click();
+    assert.equal(h.elements.get('model-usage-window-total').textContent, '100.0K Tokens');
+    assert.equal(legendEl.children.length, 1);
+
+    // Switch back to all sources and verify variant effort shade + dark/light theme color adaptation
+    h.elements.get('src-tab-all').click();
+    h.sandbox.__AGContextMeter.setTheme('dark');
+    assert.equal(legendEl.children[0].children[0].style.background, '#826cc3'); // gemini-4-hydrogen:xhigh shade
+
+    h.elements.get('model-group-model').click();
+    h.elements.get('model-metric-total').click();
+    h.elements.get('model-toggle-unattr').click(); // show unattributed again
+    assert.equal(legendEl.children.length, 3);
+    assert.equal(legendEl.children[0].children[0].style.background, '#a78bfa');
+    assert.equal(legendEl.children[1].children[0].style.background, '#6366f1');
+    assert.equal(legendEl.children[2].children[0].style.background, 'rgba(161, 161, 170, 0.28)');
+
+    h.sandbox.__AGContextMeter.setTheme('light');
+    assert.equal(legendEl.children[0].children[0].style.background, '#7c3aed');
+    assert.equal(legendEl.children[1].children[0].style.background, '#4f46e5');
+    assert.equal(legendEl.children[2].children[0].style.background, 'rgba(113, 113, 122, 0.24)');
+
+    h.sandbox.__AGContextMeter.setTheme('dark');
+    assert.equal(legendEl.children[0].children[0].style.background, '#a78bfa');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.8.8 顶栏收尾回归: ring-only 保留溢出菜单入口，无菜单栏贴顶时主标题栏右侧自动避让 WCO', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  const stylesCssText = fs.readFileSync(path.join(__dirname, 'src/renderer/styles.css'), 'utf8');
+  try {
+    // 1. ring-only 模式下 CSS 与布局保持溢出按钮与已打开溢出菜单可用
+    assert.match(stylesCssText, /:host\(\[data-layout="ring-only"\]\)\s*#badge-overflow\{\s*display:inline-flex!important;/);
+    assert.doesNotMatch(stylesCssText, /:host\(\[data-layout="ring-only"\]\)[^}]*#badge-overflow[^}]*display:\s*none/);
+
+    api.setAvailableWidthForTest(90); // minimal
+    h.elements.get('badge-overflow').click();
+    assert.equal(h.elements.get('overflow-menu').hidden, false);
+    assert.equal(api.setAvailableWidthForTest(40), 'ring-only');
+    assert.equal(h.elements.get('overflow-menu').hidden, false, '切换到 ring-only 时不得强行关闭溢出菜单');
+
+    // 2. 无独立菜单栏行（titlebar top < 20 且贴窗口最右边）时，自动注入 padding-right 避让原生 138px 窗口控制区
+    if (!h.sandbox.document.head) {
+      h.sandbox.document.head = h.sandbox.document.createElement();
+    }
+    h.sandbox.navigator = { platform: 'Win32' };
+    h.sandbox.window.innerWidth = 1440;
+    h.sandbox.window.outerWidth = 1440;
+    const tb = h.sandbox.document.createElement();
+    tb.className = 'flex w-full min-w-0 select-none items-center justify-between overflow-hidden @container/titlebar';
+    tb.getBoundingClientRect = () => ({ top: 0, left: 256, right: 1440, bottom: 40, width: 1184, height: 40 });
+    h.sandbox.document.querySelector = sel => (sel.includes('@container/titlebar') ? tb : null);
+
+    api.syncWindowControlsOverlayForTest();
+    const fixEl = h.sandbox.document.getElementById('ag-topbar-host-fix');
+    assert.ok(fixEl, '应创建 #ag-topbar-host-fix 样式节点');
+    assert.match(fixEl.textContent, /\[class\*="@container\/titlebar"\][\s\S]*padding-right:\s*138px\s*!important/);
+
+    // 3. 当顶部有独立菜单栏行（titlebar top >= 20）时，立即撤销 titlebar padding-right 避让规则
+    tb.getBoundingClientRect = () => ({ top: 35, left: 256, right: 1440, bottom: 75, width: 1184, height: 40 });
+    api.syncWindowControlsOverlayForTest();
+    assert.doesNotMatch(fixEl.textContent, /\[class\*="@container\/titlebar"\]\s*\{\s*padding-right:/);
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-tier monotonic invariance, cumulative A+C strip/ruler/lock, stacked bars and theme/narrow', () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+
+  // 为 yearly/cum SVG 提供 createElementNS 与测量追踪能力
+  api.switchHeatView('cum');
+  api.switchHeatView('yearly');
+  api.switchHeatView('daily');
+  const origCreateEl = h.sandbox.document.createElement;
+  h.sandbox.document.createElementNS = (_ns, tag) => {
+    const node = origCreateEl();
+    node.tagName = tag;
+    return node;
+  };
+
+  const scrollBox = h.elements.get('h-scroll-box');
+  let mockChartWidth = 670;
+  scrollBox.getBoundingClientRect = () => ({ left: 0, top: 0, width: mockChartWidth, height: 120, right: mockChartWidth, bottom: 120 });
+
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  const pad = n => String(n).padStart(2, '0');
+  const todayStr = `${y}-${pad(m + 1)}-${pad(today.getDate())}`;
+  const ymCur = `${y}-${pad(m + 1)}`;
+
+  const findAll = (root, pred) => {
+    const out = [];
+    const walk = n => {
+      if (!n) return;
+      if (pred(n)) out.push(n);
+      if (Array.isArray(n.children)) n.children.forEach(walk);
+    };
+    walk(root);
+    return out;
+  };
+
+  try {
+    // 场景 1: 全年单月 1.82M（今天所在月，早先为未启用，未来为虚线）
+    const activeDay = `${ymCur}-${pad(Math.min(28, Math.max(1, today.getDate())))}`;
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: activeDay,
+      dailyMap: { [activeDay]: { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3 } },
+      dailyMapBySource: { all: { [activeDay]: { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3 } } },
+      summary: {
+        firstUseDate: activeDay,
+        grandTotalTokens: 1.82e6,
+        totalInputTokens: 100e3,
+        totalCacheTokens: 1.7e6,
+        totalOutputTokens: 20e3,
+        cacheReadStats: {
+          cacheStatus: 'hit',
+          totalUncachedInput: 100e3,
+          totalCacheRead: 1.7e6,
+          totalInput: 1.8e6,
+          totalOutput: 20e3,
+          cacheReadPct: 94.4,
+          missingCount: 0
+        }
+      },
+      dailyModelMap: { [activeDay]: { 'gemini-4-hydrogen': { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3, steps: 2 } } },
+      dailyModelMapBySource: { all: { [activeDay]: { 'gemini-4-hydrogen': { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3, steps: 2 } } } }
+    });
+
+    // 缓存占比条与 API 明细卡微进度条
+    const tcbState = api.getTokenCacheBreakdownForTest();
+    assert.equal(tcbState.ratio, '94.4%');
+    assert.equal(tcbState.ratioBarWidth, '94.4%');
+    h.elements.get('tok-view-cost').click();
+    assert.match(h.elements.get('ref-cost-output-share').textContent, /%$/);
+    h.elements.get('tok-view-tokens').click();
+
+    // 「今年」视图：单月 1.82M 直径 33.64px、无峰值圈、同心参考环、三态区分
+    api.switchHeatView('yearly');
+    const yearlyBox = h.elements.get('h-yearly-box');
+    assert.equal(yearlyBox.getAttribute('data-scale-tier'), '10M');
+    const svg = yearlyBox.children[0];
+    assert.equal(findAll(svg, n => String(n.className || '').includes('bubble-peak-badge')).length, 0);
+    assert.equal(findAll(svg, n => String(n.className || '').includes('yearly-ref-rings')).length, 1);
+    const monthGroups = findAll(svg, n => String(n.className || '').includes('heat-yearly-bubble-group'));
+    const curCircle182 = findAll(monthGroups[m], n => String(n.className || '').includes('bubble-main'))[0];
+    const diam182Single = Number(curCircle182.getAttribute('data-diameter'));
+    const color182Single = curCircle182.getAttribute('fill');
+    assert.ok(Math.abs(diam182Single - 33.64) < 0.08, `连续分锚点映射下 1.82M 气泡应约 33.64px，实测 ${diam182Single}`);
+
+    // 窄窗 (W=360) 验证：同心参考环不挡月份标签
+    mockChartWidth = 360;
+    api.switchHeatView('yearly');
+    const monthLbls = findAll(h.elements.get('h-yearly-box').children[0], n => String(n.className || '').includes('bubble-month-lbl'));
+    assert.ok(Number(monthLbls[11].getAttribute('x')) < 360 - 52);
+    mockChartWidth = 670;
+
+    // 场景 2: 同一张图跨 100M -> 1B+ 边界：其他同值月 1.82M 与 100M 的尺寸与颜色绝不缩小！
+    const otherMonth = m > 0 ? 0 : 1;
+    const mPad = pad(otherMonth + 1);
+    const crossDm = {
+      [`${y}-${mPad}-05`]: { total: 100e6, input: 10e6, cache: 85e6, output: 5e6 }
+    };
+    crossDm[activeDay] = { total: 1.82e6, input: 100e3, cache: 1.7e6, output: 20e3 };
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: `${y}-01-01`,
+      dailyMap: crossDm,
+      dailyMapBySource: { all: crossDm },
+      summary: { firstUseDate: `${y}-01-01`, grandTotalTokens: 101.82e6 }
+    });
+    api.switchHeatView('yearly');
+    assert.equal(h.elements.get('h-yearly-box').getAttribute('data-scale-tier'), '100M');
+    let mGroupsCross = findAll(h.elements.get('h-yearly-box').children[0], n => String(n.className || '').includes('heat-yearly-bubble-group'));
+    const d100M_at100M = Number(findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter'));
+    const c100M_at100M = findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('fill');
+    assert.equal(d100M_at100M, 49.0);
+    // 同值 1.82M 在 100M 包络下与 10M 包络下像素/颜色完全相等
+    assert.equal(Number(findAll(mGroupsCross[m], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter')), diam182Single);
+    assert.equal(findAll(mGroupsCross[m], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('fill'), color182Single);
+
+    // 将 otherMonth 增加到 100M + 1 -> 跨入 1B 包络，此时自身不得缩小且 1.82M 也不得缩小！
+    crossDm[`${y}-${mPad}-06`] = { total: 1, input: 1, cache: 0, output: 0 };
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: `${y}-01-01`,
+      dailyMap: crossDm,
+      dailyMapBySource: { all: crossDm },
+      summary: { firstUseDate: `${y}-01-01`, grandTotalTokens: 101.82e6 + 1 }
+    });
+    api.switchHeatView('yearly');
+    assert.equal(h.elements.get('h-yearly-box').getAttribute('data-scale-tier'), '1B');
+    mGroupsCross = findAll(h.elements.get('h-yearly-box').children[0], n => String(n.className || '').includes('heat-yearly-bubble-group'));
+    const d100M_at1B = Number(findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter'));
+    const c100M_at1B = findAll(mGroupsCross[otherMonth], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('fill');
+    assert.ok(d100M_at1B >= d100M_at100M, `100M+1 (${d100M_at1B}) 不得小于 100M (${d100M_at100M})`);
+    assert.equal(c100M_at1B, c100M_at100M);
+    assert.equal(Number(findAll(mGroupsCross[m], n => String(n.className || '').includes('bubble-main'))[0].getAttribute('data-diameter')), diam182Single);
+
+    // 场景 3: 重做「累计总量」A+C — 30 天 ~4.86B（含 4 个零用量日 + 3 个连续高峰日）
+    const d30End = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const d30Start = new Date(d30End.getTime() - 29 * 86400000);
+    const fmtD = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dm30 = {};
+    const zeroIdxSet = new Set([4, 13, 19, 20]);
+    const peakIdxMap = { 9: 620e6, 10: 710e6, 11: 580e6 };
+    let sum30 = 0;
+    for (let i = 0; i < 30; i++) {
+      const ds = fmtD(new Date(d30Start.getTime() + i * 86400000));
+      if (zeroIdxSet.has(i)) continue;
+      const val = peakIdxMap[i] || (i >= 7 && i <= 12 ? 220e6 : 100e6);
+      sum30 += val;
+      dm30[ds] = { total: val, input: Math.round(val * 0.1), cache: Math.round(val * 0.85), output: Math.round(val * 0.05) };
+    }
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d30Start),
+      dailyMap: dm30,
+      dailyMapBySource: { all: dm30 },
+      summary: { firstUseDate: fmtD(d30Start), grandTotalTokens: sum30 }
+    });
+    api.switchHeatView('cum');
+    const cumBox = h.elements.get('h-cum-box');
+    const byId = id => findAll(cumBox, n => n.id === id)[0];
+    const cumState30 = api.getCumulativeViewStateForTest();
+    assert.equal(cumState30.summary.totalDays, 30);
+    assert.equal(cumState30.summary.activeDays, 26);
+    assert.equal(cumState30.summary.zeroDays, 4);
+    assert.equal(cumState30.summary.grouping, 'daily');
+    assert.equal(h.elements.get('h-sum-tokens-wrap').style.display, 'none', '累计页顶部已显示总量，底部区间合计必须隐藏防重复');
+    assert.equal(h.elements.get('h-sum-cost-wrap').style.display, 'none', '累计页顶部已显示参考金额，底部预估费用必须隐藏防重复');
+    assert.equal(byId('cum-ruler-marker').getAttribute('data-ruler-status'), 'in_range');
+    const stripSegs = byId('cum-strip').children;
+    assert.equal(stripSegs.length, 26, '横带仅包含 26 个活跃日，4 个 0 用量日不占宽度');
+    const pctTotal = stripSegs.reduce((acc, el) => acc + parseFloat(el.getAttribute('data-width-pct')), 0);
+    assert.ok(Math.abs(pctTotal - 100) < 0.02);
+    const axisZeroSlots = byId('cum-axis-row').children.filter(el => el.getAttribute('data-zero') === 'true');
+    assert.equal(axisZeroSlots.length, 4, '等距日期轴应标出 4 个 0 用量日的 ✕ 标记');
+    assert.ok(byId('cum-peak-chips').children.length >= 1);
+    assert.match(byId('cum-conclusion-row').textContent, /50%/);
+
+    // 点击锁定某段 -> 出现详情与定位按钮 -> 按 Esc 取消锁定但不关闭面板 -> 再锁定并点击定位「每天」热力图高亮
+    const peakKey = cumState30.summary.peakDay.date;
+    const peakSegEl = stripSegs.find(el => el.getAttribute('data-cum-key') === peakKey);
+    peakSegEl.click();
+    assert.equal(api.getCumulativeViewStateForTest().lockedKey, peakKey);
+    assert.ok(byId('cum-inspector'));
+    api.getCumulativeViewStateForTest().pressEscape();
+    assert.equal(api.getCumulativeViewStateForTest().lockedKey, null, 'Esc 应取消累计段锁定');
+    // 再次点击锁定并定位到「每天」
+    byId('cum-strip').children.find(el => el.getAttribute('data-cum-key') === peakKey).click();
+    byId('cum-btn-locate-daily').click();
+    assert.equal(api.getActiveHeatView(), 'daily');
+    const linkedCell = findAll(h.elements.get('h-grid-cols'), n => n.getAttribute?.('data-date') === peakKey)[0];
+    assert.ok(linkedCell && String(linkedCell.className || '').includes('is-cum-linked'), '跳转「每天」后应高亮联动同一天格子');
+
+    // 场景 4: 3 天轻量账号 -> 省略集中度结论，保留峰值与 <10M 量级尺提示，切换清理旧锁定
+    const d3Start = new Date(d30End.getTime() - 2 * 86400000);
+    const dm3 = {};
+    for (let i = 0; i < 3; i++) {
+      dm3[fmtD(new Date(d3Start.getTime() + i * 86400000))] = { total: (i + 1) * 5000, input: 1000, cache: 3000, output: 1000 };
+    }
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d3Start),
+      dailyMap: dm3,
+      dailyMapBySource: { all: dm3 },
+      summary: { firstUseDate: fmtD(d3Start), grandTotalTokens: 30000 }
+    });
+    api.switchHeatView('cum');
+    const cum3State = api.getCumulativeViewStateForTest();
+    assert.equal(cum3State.lockedKey, null, '切换账号数据后应清理失效锁定');
+    assert.equal(cum3State.summary.totalDays, 3);
+    assert.equal(cum3State.summary.concentration, null);
+    assert.equal(byId('cum-ruler-marker').getAttribute('data-ruler-status'), 'below_min');
+
+    // 场景 5: 0 用量空态（避免除零）
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      isAccountSwitched: true,
+      firstUseDate: fmtD(d3Start),
+      dailyMap: {},
+      dailyMapBySource: { all: {} },
+      summary: { firstUseDate: fmtD(d3Start), grandTotalTokens: 0 }
+    });
+    api.switchHeatView('cum');
+    assert.ok(byId('cum-empty-state'));
+    assert.equal(byId('cum-ruler-marker').getAttribute('data-ruler-status'), 'zero');
+
+    // 场景 6: 超过 90 天 + 历史翻页 + 按周分组展开到日 + 窄窗 + 深浅主题切换
+    const d400Start = new Date(d30End.getTime() - 420 * 86400000);
+    const dmLong = {};
+    for (let i = 0; i <= 420; i += 3) {
+      dmLong[fmtD(new Date(d400Start.getTime() + i * 86400000))] = { total: 50e6, input: 5e6, cache: 40e6, output: 5e6 };
+    }
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d400Start),
+      dailyMap: dmLong,
+      dailyMapBySource: { all: dmLong },
+      summary: { firstUseDate: fmtD(d400Start), grandTotalTokens: 7e9 }
+    });
+    api.switchHeatView('cum');
+    assert.equal(api.getCumulativeViewStateForTest().summary.grouping, 'weekly');
+    // 点击第 1 段周分组并展开日明细
+    byId('cum-strip').children[0].click();
+    assert.ok(byId('cum-week-days'), '按周分组选中后可展开日明细');
+    // 历史翻页：保留历史窗口末日，不强制改成今天
+    h.elements.get('h-page-prev').click();
+    const pagedCum = api.getCumulativeViewStateForTest().summary;
+    assert.ok(pagedCum.endDate < todayStr, `历史翻页区间末日 (${pagedCum.endDate}) 应早于今天 (${todayStr})`);
+    // 窄窗模式 & 浅色主题切换
+    mockChartWidth = 360;
+    api.switchHeatView('cum');
+    assert.ok(String(cumBox.children[0].className || '').includes('is-narrow'));
+    h.sandbox.__AGContextMeter.setTheme('light');
+    assert.equal(h.elements.get('h-cum-box').style.display, 'block');
+    h.sandbox.__AGContextMeter.setTheme('dark');
+    mockChartWidth = 670;
+
+    // 场景 7: 按模型 100 vs 418.3M -> 跨 500M+ 与 800M 边界柱高单调 + 1.5px 微段保底 & 求和恒等 + 图例折叠与锁定
+    const modelDayMap = {};
+    for (let k = 0; k < 7; k++) {
+      modelDayMap[`series-${k}`] = { total: k === 0 ? 418.3e6 : (k === 1 ? 100 : (7 - k) * 1e6), input: 10, cache: 10, output: 10, steps: 1 };
+    }
+    const dayMinorKey = fmtD(new Date(today.getTime() - 86400000));
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: fmtD(d3Start),
+      dailyMap: dm30,
+      dailyMapBySource: { all: dm30 },
+      summary: { firstUseDate: fmtD(d3Start), grandTotalTokens: sum30 },
+      dailyModelMap: {
+        [todayStr]: modelDayMap,
+        [dayMinorKey]: { 'series-0': { total: 100, input: 40, cache: 40, output: 20, steps: 1 } }
+      },
+      dailyModelMapBySource: {
+        all: {
+          [todayStr]: modelDayMap,
+          [dayMinorKey]: { 'series-0': { total: 100, input: 40, cache: 40, output: 20, steps: 1 } }
+        }
+      }
+    });
+    h.elements.get('tok-view-models').click();
+    const mLegend = h.elements.get('model-usage-legend');
+    assert.equal(mLegend.children.length, 6);
+    assert.equal(mLegend.children[5].getAttribute('data-series-key'), '__other_series__');
+
+    const mBars = h.elements.get('model-usage-bars');
+    const todayStack = mBars.children[mBars.children.length - 1].children[0];
+    const todayTotalH = parseFloat(todayStack.getAttribute('data-total-height'));
+    const segHeights = todayStack.children.map(seg => parseFloat(seg.style.height));
+    assert.ok(Math.abs(segHeights.reduce((a, b) => a + b, 0) - todayTotalH) < 0.01);
+    assert.ok(segHeights.every(sh => sh >= 1.49));
+
+    const minorBarH_mixed = parseFloat(mBars.children[mBars.children.length - 2].children[0].getAttribute('data-total-height'));
+    h.elements.get('model-scale-linear').click();
+    const minorBarH_linear = parseFloat(mBars.children[mBars.children.length - 2].children[0].getAttribute('data-total-height'));
+    assert.ok(minorBarH_mixed > minorBarH_linear + 5);
+    h.elements.get('model-scale-mixed').click();
+
+    const targetLegendKey = mLegend.children[1].getAttribute('data-series-key');
+    mLegend.children[1].click();
+    assert.equal(api.getModelUsageScaleForTest().lockedKey, targetLegendKey);
+    assert.equal(mBars.children[mBars.children.length - 1].children[0].children[0].getAttribute('data-series-key'), targetLegendKey);
+
+    // 场景 8: 累计页容器不被 height:105px 或 overflow-y:hidden 裁切，切回其他页正确还原
+    const stylesSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+    assert.ok(!/#h-cum-box\s*\{[^}]*height\s*:\s*105px/i.test(stylesSrc), '#h-cum-box 不得存在 height:105px 覆盖规则');
+    assert.ok(/\.heat-scroll-box\.is-cum-active\s*\{\s*overflow\s*:\s*visible\s*\}/i.test(stylesSrc), '缺少 .heat-scroll-box.is-cum-active{overflow:visible}');
+    api.switchHeatView('cum');
+    assert.ok(String(h.elements.get('h-scroll-box').className || '').includes('is-cum-active'));
+    api.switchHeatView('daily');
+    assert.ok(!String(h.elements.get('h-scroll-box').className || '').includes('is-cum-active'));
+  } finally {
+    api.dispose();
+  }
+});
+
+test('v0.8.8 α 版本展示与更新比较隔离: 界面展示当前版本号且无正式版字样, 同版本判最新, 0.8.9 判有更新', async () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  assert.equal(pkg.version, '0.8.8-1');
+
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 v0.8.8-1，且渲染源码中不含“正式版”字样
+  const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+  assert.match(builtCode, /<span id="v">v0\.8\.8-1<\/span>/);
+  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>v0\.8\.8-1<\/span>/);
+  assert.equal(builtCode.includes('正式版'), false);
+
+  // 2. 0.8.8-1 vs 0.8.8-1 判为已是最新
+  {
+    const h = harness();
+    const api = h.sandbox.__AGContextMeter;
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      checkUpdate: async (req) => {
+        assert.equal(req.currentVersion, '0.8.8-1');
+        return { ok: true, hasUpdate: false, currentVersion: '0.8.8-1', installedVersion: '0.8.8-1' };
+      }
+    };
+    try {
+      await api.checkUpdate(true);
+      await h.flush();
+      assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.8-1 (已是最新)');
+      assert.match(h.elements.get('up-pop-body').textContent, /v0\.8\.8-1/);
+      assert.equal(h.elements.get('up-pop-body').textContent.includes('正式版'), false);
+    } finally {
+      api.dispose();
+    }
+  }
+
+  // 3. 0.8.8-1 vs 0.8.9 判为有更新，且展示 v0.8.8-1 → v0.8.9
+  {
+    const h = harness();
+    const api = h.sandbox.__AGContextMeter;
+    h.sandbox.window.contextMeterAPI = {
+      ...h.sandbox.window.contextMeterAPI,
+      checkUpdate: async (req) => {
+        assert.equal(req.currentVersion, '0.8.8-1');
+        return { ok: true, hasUpdate: true, currentVersion: '0.8.8-1', latestVersion: '0.8.9', releaseNotes: 'v0.8.9 test' };
+      }
+    };
+    try {
+      await api.checkUpdate(true);
+      await h.flush();
+      assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.8.8-1 → v0.8.9');
+      assert.match(h.elements.get('up-pop-body').textContent, /v0\.8\.9/);
+      assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
+    } finally {
+      api.dispose();
+    }
+  }
+});
+
+test('i18n completeness: all static t()/data-i18n keys and known dynamic keys exist in zh-CN/zh-TW/en', () => {
+  const vm = require('node:vm');
+  const i18nSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+  const ctx = {};
+  vm.runInNewContext(`${i18nSrc}\nthis.__I18N = PANEL_I18N;`, ctx);
+  const dict = ctx.__I18N;
+  const langs = ['zh-CN', 'zh-TW', 'en'];
+
+  const files = ['main.js', 'heatmap.js', 'colors.js', 'dropdown.js', 'context-budget-engine.js', 'template.html'];
+  const staticKeys = new Set();
+  const reT = /\bt\(\s*'([^']+)'/g;
+  const reAttr = /data-i18n(?:-title|-aria|-placeholder|-html)?="([^"]+)"/g;
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(__dirname, 'src', 'renderer', rel), 'utf8');
+    let m;
+    while ((m = reT.exec(src))) staticKeys.add(m[1]);
+    while ((m = reAttr.exec(src))) staticKeys.add(m[1]);
+  }
+
+  // 补充扫描到的动态模板键值
+  for (let i = 0; i <= 4; i++) {
+    ['desc', 'keeps', 'clears', 'replaces', 'meaning'].forEach(p => staticKeys.add(`enhance.tier.${i}.${p}`));
+    if (i >= 1) staticKeys.add(`enhance.tier.${i}.short`);
+  }
+  ['exhausted', 'no_permission', 'error', 'stale', 'unknown'].forEach(s => staticKeys.add(`quota.short.${s}`));
+  ['disabled', 'watching', 'pending_debounce', 'waiting_idle', 'cooldown', 'switching', 'all_candidates_exhausted', 'blocked_untrusted_quota', 'error'].forEach(s => staticKeys.add(`accounts.status.${s}`));
+  ['account_switched', 'quota_reset', 'rolling_recovery', 'sampling_gap'].forEach(s => staticKeys.add(`quota.split.${s}`));
+  for (let i = 0; i <= 4; i++) staticKeys.add(`colors.lvl${i}`);
+
+  const missing = [];
+  for (const key of staticKeys) {
+    const entry = dict[key];
+    for (const lang of langs) {
+      if (!entry || typeof entry[lang] !== 'string' || !entry[lang].trim()) {
+        missing.push(`${key}:${lang}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, [], `发现缺失的 i18n 词条: ${missing.join(', ')}`);
+  assert.equal(dict['tokens.cum.zeroDayBadge']['zh-CN'], '0 用量');
+  assert.equal(dict['tokens.cum.zeroDayBadge']['en'], '0 Tokens');
+  assert.equal(dict['models.btnRestartHost']['en'], 'Restart Client');
+});
+
+test('cumulative ResizeObserver auto-toggles is-narrow across 460px threshold without redundant rerenders and disconnects on dispose', () => {
+  const observerInstances = [];
+  class MockResizeObserver {
+    constructor(cb) {
+      this.cb = cb;
+      this.observed = [];
+      this.disconnected = false;
+      observerInstances.push(this);
+    }
+    observe(target) { this.observed.push(target); }
+    disconnect() { this.disconnected = true; }
+    trigger() { if (!this.disconnected) this.cb([]); }
+  }
+
+  const h = harness(session(), { ResizeObserver: MockResizeObserver });
+  const api = h.sandbox.__AGContextMeter;
+  const origCreateEl = h.sandbox.document.createElement;
+  h.sandbox.document.createElementNS = (_ns, tag) => {
+    const node = origCreateEl();
+    node.tagName = tag;
+    return node;
+  };
+
+  let mockWidth = 670;
+  const scrollBox = h.elements.get('h-scroll-box');
+  const panelTokens = h.elements.get('panel-tokens');
+  scrollBox.getBoundingClientRect = () => ({ left: 0, top: 0, width: mockWidth, height: 120, right: mockWidth, bottom: 120 });
+  panelTokens.getBoundingClientRect = () => ({ left: 0, top: 0, width: mockWidth + 56, height: 420, right: mockWidth + 56, bottom: 420 });
+
+  const today = new Date();
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const d0 = fmt(today);
+  const d1 = fmt(new Date(today.getTime() - 86400000));
+  const dm = {
+    [d1]: { total: 10e6, input: 1e6, cache: 8e6, output: 1e6 },
+    [d0]: { total: 20e6, input: 2e6, cache: 16e6, output: 2e6 }
+  };
+
+  try {
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      firstUseDate: d1,
+      dailyMap: dm,
+      dailyMapBySource: { all: dm },
+      summary: { firstUseDate: d1, grandTotalTokens: 30e6 }
+    });
+    api.switchHeatView('cum');
+
+    const cumBox = h.elements.get('h-cum-box');
+    const panelObserver = observerInstances.find(inst => inst.observed.includes(panelTokens));
+    assert.ok(panelObserver, '#panel-tokens 必须被 ResizeObserver 监听');
+
+    const rootWide1 = cumBox.children[0];
+    assert.equal(String(rootWide1.className || '').includes('is-narrow'), false);
+
+    // 仍在 >=460px 同一侧收缩，不应触发冗余重绘（DOM 根节点引用不变）
+    mockWidth = 520;
+    panelObserver.trigger();
+    assert.equal(cumBox.children[0], rootWide1);
+
+    // 跨过 460px 阈值降至 360px：自动重绘并加上 .is-narrow
+    mockWidth = 360;
+    panelObserver.trigger();
+    const rootNarrow = cumBox.children[0];
+    assert.notEqual(rootNarrow, rootWide1);
+    assert.ok(String(rootNarrow.className || '').includes('is-narrow'));
+
+    // 再从 360px 恢复至 670px：自动重绘并移除 .is-narrow
+    mockWidth = 670;
+    panelObserver.trigger();
+    const rootWide2 = cumBox.children[0];
+    assert.notEqual(rootWide2, rootNarrow);
+    assert.equal(String(rootWide2.className || '').includes('is-narrow'), false);
+
+    api.dispose();
+    assert.equal(panelObserver.disconnected, true, 'dispose 时必须断开 panelTokensResizeObserver');
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});
+
+function htmlAwareRendererHarness(extraSandbox = null) {
+  const elements = new Map();
+  const docElements = new Map();
+  const listeners = new Map();
+  let shadowRootNode = null;
+
+  const makeEl = (tagName = 'div') => {
+    const attrs = new Map();
+    const props = new Map();
+    let _innerHTML = '';
+    const el = {
+      tagName: String(tagName).toUpperCase(),
+      style: {
+        display: '',
+        opacity: '',
+        setProperty(k, v) { props.set(k, v); },
+        removeProperty(k) { props.delete(k); },
+        getPropertyValue(k) { return props.get(k) || ''; }
+      },
+      children: [],
+      hidden: false,
+      textContent: '',
+      value: '',
+      checked: false,
+      disabled: false,
+      get options() {
+        return this.children.filter(c => String(c.tagName).toUpperCase() === 'OPTION');
+      },
+      get selectedOptions() {
+        return this.options.filter(o => o.value === this.value);
+      },
+      get innerHTML() { return _innerHTML; },
+      set innerHTML(v) {
+        _innerHTML = String(v || '');
+        if (!shadowRootNode || this !== shadowRootNode) return;
+        const bodyHtml = _innerHTML
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<!--[\s\S]*?-->/g, '');
+        const VOID_TAGS = new Set(['INPUT', 'BR', 'HR', 'IMG', 'META', 'LINK', 'PATH', 'CIRCLE', 'RECT', 'LINE', 'POLYLINE', 'POLYGON']);
+        const stack = [shadowRootNode];
+        const tokRe = /<(\/?)([a-zA-Z0-9-]+)((?:[^>"']|"[^"]*"|'[^']*')*?)\s*(\/?)>|([^<]+)/g;
+        let m;
+        while ((m = tokRe.exec(bodyHtml))) {
+          if (m[5] !== undefined) {
+            const txt = m[5].replace(/\s+/g, ' ');
+            const curParent = stack[stack.length - 1];
+            if (txt.trim() && curParent && !curParent.children.length) {
+              curParent.textContent = (curParent.textContent ? curParent.textContent + ' ' : '') + txt.trim();
+            } else if (txt.trim() && curParent) {
+              curParent.textContent = (curParent.textContent ? curParent.textContent + ' ' : '') + txt.trim();
+            }
+            continue;
+          }
+          const isClose = m[1] === '/';
+          const tName = m[2].toUpperCase();
+          const attrStr = m[3] || '';
+          const selfClose = m[4] === '/' || VOID_TAGS.has(tName);
+          if (isClose) {
+            while (stack.length > 1) {
+              const popped = stack.pop();
+              if (popped.tagName === tName) break;
+            }
+            continue;
+          }
+          const node = makeEl(tName);
+          const attrRe = /([a-zA-Z0-9_:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+          let am;
+          while ((am = attrRe.exec(attrStr))) {
+            const ak = am[1];
+            const av = am[2] ?? am[3] ?? am[4] ?? '';
+            node.setAttribute(ak, av);
+            if (ak === 'value') node.value = av;
+            if (ak === 'hidden') node.hidden = true;
+            if (ak === 'disabled') node.disabled = true;
+            if (ak === 'style') {
+              const dispMatch = /display\s*:\s*([^;]+)/i.exec(av);
+              if (dispMatch) node.style.display = dispMatch[1].trim();
+            }
+          }
+          const parent = stack[stack.length - 1];
+          parent.appendChild(node);
+          if (node.id) elements.set(node.id, node);
+          if (!selfClose) stack.push(node);
+        }
+      },
+      get id() { return attrs.get('id') || ''; },
+      set id(v) { attrs.set('id', String(v)); if (v) { docElements.set(String(v), el); elements.set(String(v), el); } },
+      get className() { return attrs.get('class') || ''; },
+      set className(v) { attrs.set('class', String(v || '')); },
+      classList: {
+        add(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(c)) cur.push(c);
+          attrs.set('class', cur.join(' '));
+        },
+        remove(c) {
+          const cur = (attrs.get('class') || '').split(/\s+/).filter(x => x && x !== c);
+          attrs.set('class', cur.join(' '));
+        },
+        contains(c) {
+          return (attrs.get('class') || '').split(/\s+/).includes(c);
+        }
+      },
+      addEventListener(type, fn) {
+        if (!listeners.has(el)) listeners.set(el, []);
+        listeners.get(el).push({ type, fn });
+      },
+      dispatchEvent(ev) {
+        const type = ev?.type || ev;
+        const handlers = listeners.get(el) || [];
+        for (const h of handlers) {
+          if (h.type === type) h.fn({ target: el, ...ev });
+        }
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id' && v) { docElements.set(String(v), el); elements.set(String(v), el); }
+      },
+      getAttribute(k) { return attrs.get(k) ?? null; },
+      removeAttribute(k) { attrs.delete(k); },
+      closest(sel) {
+        const cl = String(sel || '').replace(/^\./, '');
+        let cur = this;
+        while (cur) {
+          if (cur.classList?.contains?.(cl)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      appendChild(x) {
+        if (x) {
+          x.parentElement = this;
+          this.children.push(x);
+          const xId = x.id || x.getAttribute?.('id');
+          if (xId) { docElements.set(xId, x); elements.set(xId, x); }
+        }
+      },
+      insertBefore(x, ref) {
+        if (!x) return;
+        x.parentElement = this;
+        const idx = ref ? this.children.indexOf(ref) : -1;
+        if (idx >= 0) this.children.splice(idx, 0, x);
+        else this.children.push(x);
+        const xId = x.id || x.getAttribute?.('id');
+        if (xId) { docElements.set(xId, x); elements.set(xId, x); }
+      },
+      replaceChildren(...nodes) {
+        this.children = [];
+        for (const n of nodes) this.appendChild(n);
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (n) => {
+          if (!n || n === this) {
+            for (const c of (n?.children || [])) walk(c);
+            return;
+          }
+          let ok = false;
+          if (sel.startsWith('[') && sel.endsWith(']')) {
+            const inner = sel.slice(1, -1);
+            const eq = inner.indexOf('=');
+            if (eq > 0) {
+              const ak = inner.slice(0, eq).trim();
+              const av = inner.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+              ok = n.getAttribute?.(ak) === av;
+            } else {
+              ok = n.getAttribute?.(inner) !== null;
+            }
+          } else if (sel.startsWith('.')) {
+            const parts = sel.split('.').filter(Boolean);
+            ok = parts.every(p => n.classList?.contains?.(p));
+          } else if (sel.startsWith('#')) {
+            ok = n.id === sel.slice(1);
+          } else if (/^input\[type="date"\]$/i.test(sel)) {
+            ok = n.tagName === 'INPUT' && n.getAttribute?.('type') === 'date';
+          } else {
+            ok = n.tagName === sel.toUpperCase();
+          }
+          if (ok) res.push(n);
+          for (const c of (n.children || [])) walk(c);
+        };
+        walk(this);
+        return res;
+      },
+      click() {
+        const handlers = listeners.get(el) || [];
+        for (const h of handlers) {
+          if (h.type === 'click') h.fn({ target: el, stopPropagation() {} });
+        }
+      },
+      trigger(type, ev = {}) {
+        const handlers = listeners.get(el) || [];
+        for (const h of handlers) {
+          if (h.type === type) h.fn({ target: el, preventDefault() {}, stopPropagation() {}, ...ev });
+        }
+      },
+      getBoundingClientRect() { return { left: 100, top: 100, width: 120, height: 26, right: 220, bottom: 126 }; },
+      get nextSibling() {
+        if (!this.parentElement) return null;
+        const i = this.parentElement.children.indexOf(this);
+        return i >= 0 ? (this.parentElement.children[i + 1] || null) : null;
+      },
+      remove() {
+        if (this.parentElement && Array.isArray(this.parentElement.children)) {
+          const i = this.parentElement.children.indexOf(this);
+          if (i >= 0) this.parentElement.children.splice(i, 1);
+        }
+      }
+    };
+    return el;
+  };
+
+  const host = makeEl('div');
+  host.attachShadow = () => {
+    shadowRootNode = makeEl('shadow-root');
+    shadowRootNode.getElementById = (id) => {
+      if (!elements.has(id)) elements.set(id, makeEl('div'));
+      return elements.get(id);
+    };
+    return shadowRootNode;
+  };
+
+  const savedSettings = [];
+  const docListeners = [];
+  const sandbox = {
+    location: { protocol: 'https:', hostname: '127.0.0.1', pathname: '/c/11111111-1111-1111-1111-111111111111' },
+    document: {
+      createElement: (tag) => makeEl(tag || 'div'),
+      createElementNS: (_ns, tag) => makeEl(tag || 'svg'),
+      getElementById: id => docElements.get(id) || null,
+      documentElement: { appendChild() {} },
+      addEventListener(type, fn) { docListeners.push({ type, fn }); },
+      removeEventListener() {},
+      hidden: false
+    },
+    window: {
+      __APP_CONFIG__: { csrfToken: 'test' },
+      innerWidth: 1000,
+      innerHeight: 800,
+      contextMeterAPI: {
+        scan: () => Promise.resolve(null),
+        saveSettings: async (payload) => { savedSettings.push(payload); return { ok: true, settings: payload }; },
+        getSettings: async () => ({}),
+        checkUpdate: async () => ({ ok: true, currentVersion: '0.8.8', latestVersion: '0.8.8', hasUpdate: false, tagName: 'v0.8.8' })
+      }
+    },
+    __AGContextMeterCore: core,
+    AbortController,
+    Date,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    fetch: () => new Promise(() => {}),
+    ...(extraSandbox && typeof extraSandbox === 'object' ? extraSandbox : {})
+  };
+  let first = true;
+  sandbox.document.createElement = (tag) => { if (first) { first = false; return host; } return makeEl(tag || 'div'); };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  return { sandbox, host, get shadow() { return shadowRootNode; }, elements, savedSettings };
+}
+
+test('v0.8.8 英文界面完整去汉字回归、地区预设自动转换与零 native input[type="date"] 门禁', async () => {
+  const h = htmlAwareRendererHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const today = new Date();
+    const ym = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const d0 = `${ym}-10`;
+    const d1 = `${ym}-09`;
+    const oldDates = [];
+    for (let i = 100; i >= 1; i--) {
+      const dt = new Date(today.getTime() - i * 86400000);
+      oldDates.push(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`);
+    }
+    const dm = {
+      [d1]: { total: 40e6, input: 10e6, cache: 25e6, output: 5e6, costUSD: 20.5 },
+      [d0]: { total: 80e6, input: 20e6, cache: 50e6, output: 10e6, costUSD: 40.0 }
+    };
+    dm[oldDates[0]] = { total: 5e6, input: 1e6, cache: 3e6, output: 1e6, costUSD: 2.0 };
+
+    // 1. 先在简体中文环境下注入完整真实场景数据并打开各主要子面板/自定义表单/日期选择器
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    api.applyTokenHistoryPayload({
+      schemaVersion: '0.8.5',
+      currentPeriod: { key: ym, periodType: 'calendar_month', label: ym, isCurrentMonth: true },
+      firstUseDate: oldDates[0],
+      dailyMap: dm,
+      dailyMapBySource: { all: dm },
+      summary: {
+        firstUseDate: oldDates[0],
+        grandTotalTokens: 125e6,
+        totalInputTokens: 31e6,
+        totalCacheTokens: 78e6,
+        totalOutputTokens: 16e6,
+        monthTokens: 120e6,
+        currentMonthInput: 30e6,
+        currentMonthCache: 75e6,
+        currentMonthOutput: 15e6,
+        todayTokens: 80e6
+      },
+      planStatus: {
+        tierKey: 'pro',
+        tierName: 'Google AI Pro',
+        email: 'elvis@example.com',
+        country: '美国 (US)',
+        countrySource: 'custom',
+        region: '美国 (USD)',
+        subscriptionRegion: '美国 (USD)',
+        regionSource: 'custom',
+        currency: 'USD',
+        currencySymbol: '$',
+        actualPricePaid: 19.99,
+        billingCycle: '月付',
+        validEndDate: `${ym}-28`,
+        acquisitionSource: 'normal_paid',
+        acquisitionSourceName: '正常付费订阅',
+        priceMode: 'preset',
+        priceSource: 'preset_region'
+      },
+      byModel: {
+        'gemini-3.8-flash': { modelLabel: 'Gemini 3.8 Flash', totalTokens: 80e6, inputTokens: 20e6, cacheTokens: 50e6, outputTokens: 10e6, requestCount: 12 },
+        'claude-opus-4-7': { modelLabel: 'Claude Opus 4.7', totalTokens: 45e6, inputTokens: 11e6, cacheTokens: 28e6, outputTokens: 6e6, requestCount: 8 }
+      }
+    });
+
+    h.elements.get('badge-tokens').click();
+    h.elements.get('tok-view-models').click();
+    h.elements.get('tok-view-tokens').click();
+    h.elements.get('tok-view-cost').click();
+    h.elements.get('btn-plan-detail-toggle').click();
+    h.elements.get('btn-edit-plan-custom').click();
+    h.elements.get('valid-end-trigger').click();
+    api.switchHeatView('cum');
+
+    // 2. 切换为英文（en），验证所有可见节点与控件值、提示属性零汉字残留
+    await api.setPanelLanguage('en', { persist: false });
+
+    assert.equal(h.shadow.querySelectorAll('input[type="date"]').length, 0, '不允许存在原生 input[type="date"]');
+    assert.equal(h.elements.get('input-custom-country').value, 'United States (US)');
+    assert.equal(h.elements.get('input-custom-region').value, 'United States (USD)');
+    assert.equal(h.elements.get('cost-period-tag').textContent, `${ym} (Calendar Month)`);
+    assert.doesNotMatch(h.elements.get('cost-scope-desc').textContent, /[\u4e00-\u9fff]/);
+    assert.doesNotMatch(h.elements.get('plan-summary-price-val').textContent, /[\u4e00-\u9fff]/);
+    assert.equal(h.elements.get('plan-summary-price-cny').textContent, '', 'en 下默认 USD 订阅不显示人民币换算');
+    assert.doesNotMatch(h.elements.get('p-det-price').textContent, /CNY|¥/);
+
+    const leaks = [];
+    const ALLOWED_SWITCHER_IDS = new Set(['btn-top-lang-zh-CN', 'btn-top-lang-zh-TW', 'btn-lang-zh-CN', 'btn-lang-zh-TW', 'btn-ctx-lang-zh-CN', 'btn-ctx-lang-zh-TW']);
+    const isInsideHiddenOrOption = (node) => {
+      if (node.tagName === 'OPTION') return true;
+      let cur = node;
+      while (cur) {
+        if (cur.style?.display === 'none' || cur.hidden) return true;
+        if (ALLOWED_SWITCHER_IDS.has(cur.id)) return true;
+        cur = cur.parentElement;
+      }
+      return false;
+    };
+    const walkShadow = (node) => {
+      if (!node) return;
+      if (isInsideHiddenOrOption(node)) return;
+      const fields = [
+        ['textContent', node.textContent],
+        ['value', node.value],
+        ['title', node.getAttribute?.('title')],
+        ['placeholder', node.getAttribute?.('placeholder')],
+        ['aria-label', node.getAttribute?.('aria-label')]
+      ];
+      for (const [fName, val] of fields) {
+        if (typeof val === 'string' && /[\u4e00-\u9fff]/.test(val)) {
+          leaks.push({ id: node.id || node.className || node.tagName, field: fName, val });
+        }
+      }
+      for (const child of (node.children || [])) walkShadow(child);
+    };
+    // 将主看板全部设为可见以便全量遍历
+    h.elements.get('panel-tokens').style.display = 'flex';
+    h.elements.get('plan-detail-card').style.display = 'block';
+    h.elements.get('plan-custom-form').style.display = 'block';
+    h.elements.get('valid-end-popover').style.display = 'block';
+    h.elements.get('cost-details-pane').style.display = 'block';
+    walkShadow(h.shadow);
+    assert.deepEqual(leaks, [], `en 模式下发现汉字泄露: ${JSON.stringify(leaks, null, 2)}`);
+  } finally {
+    try { api.dispose(); } catch {}
+  }
+});
+
+test('v0.8.8 三语货币参考规则（en 纯 USD / zh-CN USD+CNY / zh-TW 四币种且零简体）与自定义日期选择器全流程', async () => {
+  const h = htmlAwareRendererHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    const today = new Date();
+    const pad2 = n => String(n).padStart(2, '0');
+    const todayYmd = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+    const ym = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}`;
+    const d0 = `${ym}-${pad2(Math.max(1, today.getDate()))}`;
+    const dm = { [d0]: { total: 50e6, input: 10e6, cache: 35e6, output: 5e6, costUSD: 100.0 } };
+
+    const basePayload = {
+      schemaVersion: '0.8.5',
+      currentPeriod: { key: ym, periodType: 'calendar_month', label: ym, isCurrentMonth: true },
+      firstUseDate: d0,
+      dailyMap: dm,
+      dailyMapBySource: { all: dm },
+      summary: {
+        firstUseDate: d0,
+        grandTotalTokens: 50e6,
+        totalInputTokens: 10e6,
+        totalCacheTokens: 35e6,
+        totalOutputTokens: 5e6,
+        monthTokens: 50e6,
+        currentMonthInput: 10e6,
+        currentMonthCache: 35e6,
+        currentMonthOutput: 5e6,
+        todayTokens: 50e6
+      },
+      planStatus: {
+        tierKey: 'pro',
+        tierName: 'Google AI Pro',
+        country: '美国 (US)',
+        region: '美国 (USD)',
+        currency: 'USD',
+        currencySymbol: '$',
+        actualPricePaid: 19.99,
+        billingCycle: '月付',
+        priceMode: 'custom',
+        priceSource: 'custom'
+      }
+    };
+
+    // A. en: 纯 USD，绝无 ¥ / CNY；非 USD 订阅展示 approx. $... USD
+    await api.setPanelLanguage('en', { persist: false });
+    api.applyTokenHistoryPayload(basePayload);
+    h.elements.get('tok-view-cost').click();
+    assert.doesNotMatch(h.elements.get('t-total-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('t-today-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('t-month-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('t-year-cost').textContent, /¥|CNY/);
+    assert.doesNotMatch(h.elements.get('cost-grand-val').textContent, /¥|CNY/);
+    assert.equal(h.elements.get('plan-summary-price-cny').textContent, '');
+
+    api.applyTokenHistoryPayload({
+      ...basePayload,
+      planStatus: { ...basePayload.planStatus, region: '日本 (JPY)', currency: 'JPY', currencySymbol: '¥', actualPricePaid: 2900 }
+    });
+    assert.match(h.elements.get('plan-summary-price-cny').textContent, /approx\. \$\d+\.\d{2} USD/);
+
+    // B. zh-CN: USD + CNY (¥)
+    await api.setPanelLanguage('zh-CN', { persist: false });
+    api.applyTokenHistoryPayload(basePayload);
+    assert.match(h.elements.get('t-total-cost').textContent, /≈ \$.*\(¥/);
+    assert.match(h.elements.get('p-det-price').textContent, /¥[\d.]+ CNY/);
+
+    // C. zh-TW: 紧凑卡片 USD + HK$/NT$；详情四币种 USD/HKD/TWD/CNY；地区转繁体且零简体字
+    await api.setPanelLanguage('zh-TW', { persist: false });
+    api.applyTokenHistoryPayload(basePayload);
+    assert.match(h.elements.get('t-total-cost').textContent, /HK\$[\d.]+.*NT\$[\d.]+/);
+    assert.match(h.elements.get('cost-grand-val').textContent, /HK\$.*NT\$.*¥[\d.]+ CNY/);
+    assert.match(h.elements.get('cost-sub-line').textContent, /HK\$.*NT\$.*¥[\d.]+ CNY/);
+
+    h.elements.get('btn-plan-detail-toggle').click();
+    h.elements.get('btn-edit-plan-custom').click();
+    assert.equal(h.elements.get('input-custom-country').value, '美國 (US)');
+    assert.equal(h.elements.get('input-custom-region').value, '美國 (USD)');
+
+    // 扫描 PANEL_I18N zh-TW 全字典不含明确简体专属字
+    const simpOnlyRe = /[国韩亚欧乌罗马联东陆区宾兰达尔义书买云亿仅从仓优会体佣储兑划创删剂剑劝办务动励劳势协单卖卫却压厌双变叠叶号叹启员响哑唤严丰临举么乐习乡乱亏亚产亲们价众伙伞伟传伤伦伪侣侦侧侨俩仓个倾偿催傲傻]/;
+    const i18nSrc = fs.readFileSync(path.join(__dirname, 'src', 'renderer', 'i18n.js'), 'utf8');
+    const iCtx = {};
+    vm.runInNewContext(`${i18nSrc}\nthis.__I18N = PANEL_I18N;`, iCtx);
+    const twSimpHits = [];
+    for (const [k, v] of Object.entries(iCtx.__I18N)) {
+      if (typeof v['zh-TW'] === 'string' && simpOnlyRe.test(v['zh-TW'])) {
+        twSimpHits.push(`${k}: ${v['zh-TW']}`);
+      }
+    }
+    assert.deepEqual(twSimpHits, [], `zh-TW 字典存在简体字: ${twSimpHits.join('; ')}`);
+
+    // D. 自定义日期选择器全流程：英文表头、选日、清空、今天、保存持久化
+    await api.setPanelLanguage('en', { persist: false });
+    const dpTrigger = h.elements.get('valid-end-trigger');
+    const dpPopover = h.elements.get('valid-end-popover');
+    const dpHidden = h.elements.get('input-valid-end');
+    const dpLabel = h.elements.get('valid-end-label');
+
+    dpTrigger.click();
+    assert.equal(dpPopover.style.display, 'block');
+    const wkTexts = dpPopover.querySelectorAll('.ag-dp-weekday').map(n => n.textContent);
+    assert.deepEqual(wkTexts, ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']);
+
+    const targetCell = dpPopover.querySelectorAll('.ag-dp-day').find(b => b.getAttribute('data-date') === d0);
+    assert.ok(targetCell, `应存在日期格 ${d0}`);
+    targetCell.click();
+    assert.equal(dpHidden.value, d0);
+    assert.equal(dpLabel.textContent, d0);
+    assert.equal(dpPopover.style.display, 'none');
+
+    // 重新打开点 Clear
+    dpTrigger.click();
+    dpPopover.querySelector('[data-dp-action="clear"]').click();
+    assert.equal(dpHidden.value, '');
+    assert.equal(dpLabel.textContent, 'YYYY-MM-DD');
+
+    // 重新打开点 Today 并保存
+    dpTrigger.click();
+    dpPopover.querySelector('[data-dp-action="today"]').click();
+    assert.equal(dpHidden.value, todayYmd);
+    assert.equal(dpLabel.textContent, todayYmd);
+
+    h.elements.get('btn-custom-plan-save').click();
+    const lastSave = h.savedSettings[h.savedSettings.length - 1];
+    assert.equal(lastSave?.customPlan?.validEndDate, todayYmd);
+  } finally {
+    try { api.dispose(); } catch {}
   }
 });
