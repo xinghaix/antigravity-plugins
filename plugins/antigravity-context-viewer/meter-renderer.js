@@ -27697,12 +27697,26 @@ function closeAllDropdowns(exceptWrap = null) {
       stepsFromScan > 0 || maxCallStep > 0 || callsCount > 0 || state.sessionStats?.stepCount != null
     );
 
-    const speedCandidate = state.lastSpeedEval?.tps
-      ?? state.lastSpeedEval?.streamingTps
-      ?? state.liveSpeed?.tps
-      ?? state.latest?.speed?.tps
-      ?? state.speedOverrideForTest?.tps
-      ?? null;
+    const latestSessionCall = Array.isArray(state.sessionCalls) && state.sessionCalls.length > 0
+      ? state.sessionCalls[state.sessionCalls.length - 1]
+      : null;
+    const speedCandidate = (state.liveSpeed?.isActivelyStreaming && Number.isFinite(Number(state.liveSpeed?.emaTps)) && Number(state.liveSpeed.emaTps) > 0)
+      ? state.liveSpeed.emaTps
+      : (
+        state.lastSpeedEval?.streamSpeed
+        ?? state.lastSpeedEval?.streamingTps
+        ?? state.latest?.speed?.streamingTps
+        ?? latestSessionCall?.streamingTps
+        ?? state.liveSpeed?.emaTps
+        ?? state.liveSpeed?.tps
+        ?? state.lastSpeedEval?.tps
+        ?? state.speedOverrideForTest?.streamSpeed
+        ?? state.speedOverrideForTest?.tps
+        ?? state.lastSpeedEval?.overallTps
+        ?? state.latest?.speed?.tps
+        ?? latestSessionCall?.tps
+        ?? null
+      );
     const hasSpeedVal = speedCandidate !== null && speedCandidate !== undefined && Number.isFinite(Number(speedCandidate)) && Number(speedCandidate) >= 0;
     const speedStr = hasSpeedVal
       ? `${Number(speedCandidate).toFixed(0)} tok/s`
@@ -48460,7 +48474,7 @@ var cumLockedKey = null;
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch { }
   globalThis.__AGContextMeter = {
-    buildId: 'ee250515c1eead67',
+    buildId: '964ae7452c936052',
     version: METER_RENDERER_VERSION,
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {

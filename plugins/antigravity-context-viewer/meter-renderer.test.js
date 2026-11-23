@@ -9633,4 +9633,38 @@ test('性能回归：checkHostDomCompactionSignals 跳过多层级容器、TurnF
   }
 });
 
+test('输入栏底栏展示当前会话最后 1 步纯吐字速度（不含 TTFT），同时保持顶栏全会话均速不变', async () => {
+  const h = harness();
+  try {
+    h.scans[0].resolve({
+      ok: true,
+      data: {
+        session: session(),
+        scannedAt: Date.now(),
+        latest: null,
+        recentGeneratorCalls: [
+          { callId: 'call-1', status: 'final', outputTokens: 100, durationSec: 1.5, streamingSec: 1.0, tps: 66.7, streamingTps: 100 }
+        ]
+      }
+    });
+    h.pending[0].resolve(response({
+      timeToFirstToken: '4.5s',
+      streamingDuration: '1.0s',
+      usage: { inputTokens: 1000, outputTokens: 150 },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } }
+    }));
+    await h.flush();
+
+    const api = h.sandbox.__AGContextMeter;
+    // 顶栏保持全会话加权纯流式均速: (100 + 150) / (1.0 + 1.0) = 125 tok/s
+    assert.equal(h.elements.get('speed-amount').textContent, '125 tok/s');
+    // 底栏读取最后 1 步纯吐字速度: 150 tok/s，而非含 TTFT 的 27 tok/s
+    const csb = api.getComposerStatusBarStateForTest();
+    assert.match(csb.speedText, /150 tok\/s/);
+    assert.doesNotMatch(csb.speedText, /\b27 tok\/s\b/);
+  } finally {
+    h.sandbox?.__AGContextMeter?.dispose?.();
+  }
+});
+
 
