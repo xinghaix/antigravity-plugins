@@ -162,7 +162,7 @@ try {
   const docReportWithAgy = runDoctor({
     rootDir: MONOREPO_ROOT,
     home: doctorHome,
-    platform: 'darwin',
+    platform: process.platform,
     appPath: mockAppBundle,
     envPath: mockBinDir,
   });
