@@ -642,7 +642,7 @@ try {
     },
     { pluginRoot: pRootDir, pluginData: pDataDir },
   );
-  assert.equal(expandedCfg.command, fakeBin);
+  assert.equal(resolve(expandedCfg.command), resolve(fakeBin));
   assert.equal(expandedCfg.args[1], pDataDir);
   assert.equal(expandedCfg.cwd, pDataDir);
   assert.equal(expandedCfg.env.DATA_DIR, pDataDir);
