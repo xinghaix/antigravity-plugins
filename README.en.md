@@ -16,7 +16,7 @@ A curated monorepo of native **Google Antigravity** plugins (Desktop & IDE). Eve
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `mcp-manager` | **MCP Manager** | First-party · MIT | Multi-scope MCP manager, 2.34+ host `RefreshMcpServers` reload, MCP Apps (`ui://`) inspector, `tools/call` runner & hook prompts | 1 Skill · Hooks · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [Details](plugins/mcp-manager/README.en.md) |
 | `mattpocock-skills` | **Mattpocock Skills** | Native port ([`mattpocock/skills`](https://github.com/mattpocock/skills)) · MIT | 39 skills, 4 leaf subagents, 2.34+ `run_workflow`/Swarm topological wave orchestrator & live Studio dispatch | 28 Default Skills · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [Details](plugins/mattpocock-skills/README.en.md) |
-| `antigravity-context-viewer` | **Context Viewer** | Modified edition (upstream: [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)) · MIT | Live context gauge, token history heatmap, cost estimator & zero-patch Sidecar CDP auto-loader | 1 Skill · 1 Sidecar Auto-Loader | `customization://antigravity-context-viewer` | [Details](plugins/antigravity-context-viewer/README.en.md) |
+| `antigravity-context-viewer` | **Context Viewer** | Modified edition (upstream: [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)) · MIT | 2.34+ Aux Pane live context board, 4-row Bento workbench, Gemini 4 Neon & unified quota pool, heatmaps & low-overhead CDP auto-loader | 1 Skill · 1 Sidecar UI & Auto-Loader | `sidecar://antigravity-context-viewer/live-loader/` | [Details](plugins/antigravity-context-viewer/README.en.md) |
 
 ---
 

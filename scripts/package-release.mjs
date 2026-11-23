@@ -17,7 +17,7 @@ import { scanPlugins } from './sync-registry.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const MONOREPO_ROOT = resolve(__dirname, '..');
 
-const EXCLUDE_DIRS = new Set(['.git', '.github', 'dist', 'node_modules', 'tests']);
+const EXCLUDE_DIRS = new Set(['.git', '.github', 'dist', 'node_modules', 'tests', '__pycache__']);
 const EXCLUDE_FILES = new Set(['.DS_Store']);
 
 function collectEntries(absBase, archivePrefix, out = [], { skipTests = true } = {}) {
@@ -25,8 +25,8 @@ function collectEntries(absBase, archivePrefix, out = [], { skipTests = true } =
   const st = statSync(absBase);
   if (st.isDirectory()) {
     for (const ent of readdirSync(absBase, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (EXCLUDE_FILES.has(ent.name)) continue;
-      if (ent.isDirectory() && (ent.name === '.git' || ent.name === 'node_modules' || ent.name === 'dist')) continue;
+      if (EXCLUDE_FILES.has(ent.name) || ent.name.endsWith('.pyc')) continue;
+      if (ent.isDirectory() && (ent.name === '.git' || ent.name === 'node_modules' || ent.name === 'dist' || ent.name === '__pycache__')) continue;
       if (skipTests && ent.isDirectory() && EXCLUDE_DIRS.has(ent.name)) continue;
       collectEntries(join(absBase, ent.name), `${archivePrefix}/${ent.name}`, out, { skipTests });
     }

@@ -8,6 +8,7 @@ import {
   readlinkSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -18,7 +19,7 @@ import { scanPlugins } from './sync-registry.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const MONOREPO_ROOT = resolve(__dirname, '..');
 
-const COPY_EXCLUDE = new Set(['.DS_Store', 'node_modules', 'dist', 'tests', '.git']);
+const COPY_EXCLUDE = new Set(['.DS_Store', 'node_modules', 'dist', 'tests', '.git', '__pycache__']);
 
 export function pluginsHomeDir(home = homedir()) {
   return join(home, '.gemini', 'config', 'plugins');
@@ -80,7 +81,7 @@ function copyFilteredPlugin(srcDir, dstDir) {
       const firstSeg = rel.split(/[/\\]/)[0];
       if (COPY_EXCLUDE.has(firstSeg)) return false;
       const base = rel.split(/[/\\]/).pop();
-      if (base === '.DS_Store' || base === 'node_modules') return false;
+      if (base === '.DS_Store' || base === 'node_modules' || base === '__pycache__' || base.endsWith('.pyc')) return false;
       return true;
     },
   });
@@ -184,6 +185,144 @@ export function uninstallPlugins(
   return results;
 }
 
+export function detectAntigravityClient({ platform = process.platform, home = homedir(), appPath = '' } = {}) {
+  const candidates = appPath
+    ? [appPath]
+    : platform === 'darwin'
+      ? ['/Applications/Antigravity.app', join(home, 'Applications', 'Antigravity.app')]
+      : [];
+
+  for (const cand of candidates) {
+    if (!cand || !existsSync(cand)) continue;
+    let version = null;
+    const plistPath = join(cand, 'Contents', 'Info.plist');
+    if (existsSync(plistPath)) {
+      try {
+        const plistRaw = readFileSync(plistPath, 'utf-8');
+        const m = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/i.exec(plistRaw);
+        if (m) version = m[1].trim();
+      } catch {
+        // ignore unreadable Info.plist
+      }
+    }
+    return { found: true, version, appPath: cand };
+  }
+  return { found: false, version: null, appPath: null };
+}
+
+export function readPluginConfigStates(home = homedir()) {
+  const configPath = join(home, '.gemini', 'config', 'config.json');
+  if (!existsSync(configPath)) {
+    return { exists: false, path: configPath, plugins: {}, parseError: false };
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const rawPlugins = parsed && typeof parsed.plugins === 'object' && parsed.plugins !== null ? parsed.plugins : {};
+    const plugins = {};
+    for (const [id, val] of Object.entries(rawPlugins)) {
+      if (val && typeof val === 'object') {
+        plugins[id] = { ...val };
+      }
+    }
+    return { exists: true, path: configPath, plugins, parseError: false };
+  } catch {
+    return { exists: true, path: configPath, plugins: {}, parseError: true };
+  }
+}
+
+export function detectAgyCli({ envPath = process.env.PATH || '', home = homedir(), platform = process.platform } = {}) {
+  const sep = platform === 'win32' ? ';' : ':';
+  const searchDirs = [
+    ...String(envPath || '').split(sep).filter(Boolean),
+    join(home, '.gemini', 'bin'),
+    join(home, '.gemini', 'antigravity', 'bin'),
+  ];
+  const exeNames = platform === 'win32' ? ['agy.exe', 'agy.cmd', 'agy.bat', 'agy'] : ['agy'];
+
+  for (const dir of [...new Set(searchDirs)]) {
+    for (const exe of exeNames) {
+      const candidate = join(dir, exe);
+      try {
+        if (existsSync(candidate) && statSync(candidate).isFile()) {
+          return { found: true, path: candidate };
+        }
+      } catch {
+        // ignore stat errors
+      }
+    }
+  }
+  return { found: false, path: null };
+}
+
+export function runDoctor({
+  rootDir = MONOREPO_ROOT,
+  home = homedir(),
+  platform = process.platform,
+  appPath = '',
+  envPath = process.env.PATH || '',
+} = {}) {
+  const major = Number(process.versions.node.split('.')[0]);
+  const nodeOk = Number.isFinite(major) && major >= 20;
+  const antigravity = detectAntigravityClient({ platform, home, appPath });
+  const configState = readPluginConfigStates(home);
+  const agyCli = detectAgyCli({ envPath, home, platform });
+
+  const warnings = [];
+  const hints = [];
+  if (configState.parseError) {
+    warnings.push({
+      code: 'config_parse_error',
+      pluginId: null,
+      message: `Unable to parse ${configState.path}`,
+    });
+  }
+
+  const plugins = listPlugins({ rootDir, home }).map((p) => {
+    const cfgEntry = configState.plugins[p.id];
+    const enabled = typeof cfgEntry?.enabled === 'boolean' ? cfgEntry.enabled : true;
+    if (p.installMode === 'linked-other') {
+      warnings.push({
+        code: 'linked_other',
+        pluginId: p.id,
+        message: `${p.id}: symlink points outside monorepo (${p.linkedTo})`,
+      });
+    } else if (p.installMode !== 'not_installed' && !enabled) {
+      warnings.push({
+        code: 'plugin_disabled',
+        pluginId: p.id,
+        message: `${p.id}: installed (${p.installMode}) but disabled in config.json`,
+      });
+    }
+    return { ...p, enabled };
+  });
+
+  if (!agyCli.found) {
+    hints.push({
+      code: 'agy_not_in_path',
+      message: '`agy` CLI not found in PATH or ~/.gemini/bin (optional; scripts/cli.mjs works standalone)',
+    });
+  }
+  if (platform === 'darwin' && !antigravity.found) {
+    hints.push({
+      code: 'antigravity_app_not_found',
+      message: 'Antigravity.app not detected in /Applications or ~/Applications',
+    });
+  }
+
+  return {
+    ok: nodeOk,
+    nodeVersion: process.version,
+    nodeOk,
+    antigravity,
+    agyCli,
+    configPath: configState.path,
+    configExists: configState.exists,
+    plugins,
+    warnings,
+    hints,
+  };
+}
+
 export function getMonorepoStatus({ rootDir = MONOREPO_ROOT, home = homedir() } = {}) {
   const rootPkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf-8'));
   return {
@@ -227,7 +366,7 @@ Usage:
   node scripts/cli.mjs status [--json]
   node scripts/cli.mjs install [<plugin-id>... | --all] [--link | --copy]
   node scripts/cli.mjs uninstall [<plugin-id>... | --all]
-  node scripts/cli.mjs doctor
+  node scripts/cli.mjs doctor [--json]
 
 Available plugins: ${available || '(none)'}
 
@@ -275,22 +414,45 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.log(r.removed ? `Removed ${r.id} from ${r.target}` : `${r.id} not found at ${r.target}`);
     }
   } else if (opts.cmd === 'doctor') {
-    const major = Number(process.versions.node.split('.')[0]);
-    if (major < 20) {
-      console.error(`Node.js >= 20 required (found ${process.version})`);
-      process.exit(1);
-    }
-    const items = listPlugins({ home: opts.home });
-    let issues = 0;
-    for (const p of items) {
-      if (p.installMode === 'linked-other') {
-        console.warn(`WARN ${p.id}: symlink points outside monorepo (${p.linkedTo})`);
-        issues += 1;
-      } else {
-        console.log(`OK   ${p.id}: ${p.installMode}`);
+    const report = runDoctor({ home: opts.home });
+    if (opts.json) {
+      console.log(JSON.stringify(report, null, 2));
+      if (!report.nodeOk) process.exit(1);
+    } else {
+      if (!report.nodeOk) {
+        console.error(`Node.js >= 20 required (found ${report.nodeVersion})`);
+        process.exit(1);
       }
+      console.log(`OK   Node.js: ${report.nodeVersion}`);
+      if (report.antigravity.found) {
+        const verStr = report.antigravity.version ? `v${report.antigravity.version}` : 'unknown version';
+        console.log(`OK   Antigravity client: ${verStr} (${report.antigravity.appPath})`);
+      }
+      if (report.agyCli.found) {
+        console.log(`OK   agy CLI: ${report.agyCli.path}`);
+      }
+      for (const p of report.plugins) {
+        const stateTag = p.installMode === 'not_installed' ? '' : (p.enabled ? ' [enabled]' : ' [disabled in config.json]');
+        if (p.installMode === 'linked-other') {
+          console.warn(`WARN ${p.id}: symlink points outside monorepo (${p.linkedTo})`);
+        } else if (p.installMode !== 'not_installed' && !p.enabled) {
+          console.warn(`WARN ${p.id}: ${p.installMode}${stateTag}`);
+        } else {
+          console.log(`OK   ${p.id}: ${p.installMode}${stateTag}`);
+        }
+      }
+      for (const w of report.warnings.filter((x) => !x.pluginId)) {
+        console.warn(`WARN ${w.message}`);
+      }
+      for (const h of report.hints) {
+        console.log(`INFO ${h.message}`);
+      }
+      console.log(
+        report.warnings.length === 0
+          ? 'Doctor check passed.'
+          : `Doctor finished with ${report.warnings.length} warning(s).`,
+      );
     }
-    console.log(issues === 0 ? 'Doctor check passed.' : `Doctor finished with ${issues} warning(s).`);
   } else {
     printHelp();
   }

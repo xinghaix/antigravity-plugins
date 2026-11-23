@@ -5,6 +5,10 @@ All notable changes to the `antigravity-plugins` monorepo will be documented in 
 ## [Unreleased]
 
 ### Changed
+- Upgraded monorepo CLI diagnostics, packaging hygiene, docs, and CI toolchains:
+  - Enhanced [scripts/cli.mjs](scripts/cli.mjs) `doctor` (plus `--json` mode) to report Antigravity desktop client version (`Info.plist`), read-only `~/.gemini/config/config.json` per-plugin enable/disable state, `linked-other` warnings, and optional `agy` CLI `PATH` hints.
+  - Excluded `__pycache__/` and `*.pyc` artifacts across `scripts/cli.mjs --copy` installs and `scripts/package-release.mjs` archives.
+  - Synced `antigravity-context-viewer` catalog descriptions & Sidecar entrypoints in `README.md` / `README.en.md` and merged Dependabot GitHub Actions upgrades (`actions/checkout@v7`, `actions/setup-node@v7`, `softprops/action-gh-release@v3`).
 - Optimized `antigravity-context-viewer` CDP live UI runtime & GPU overhead:
   - Fixed `i18n-runtime.js` `applyBrandTitleToText()` calling synchronous layout reflow (`getBoundingClientRect()` / `.closest()`) on non-brand UI text nodes, filtered ignored chat/markdown/editor/`#composer-status-bar` mutations out of `MutationObserver`/`rAF`, throttled hover scans to interactive elements at `350ms`, raised idle scan interval from `15s` to `60s` (skipping hidden windows), and synced `src/i18n/i18n-runtime.js` -> `i18n/i18n-runtime.js`.
   - Throttled `checkHostDomCompactionSignals()` (`1s` during compaction / `2.5s` idle), scoped DOM queries to `[data-testid="conversation-view"]` when present (`1200`-node tail cap), and skipped multi-level React containers before reading `.textContent`.

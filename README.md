@@ -16,7 +16,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `mcp-manager` | **MCP Manager** | 自研 · MIT | 多作用域 MCP 服务管理、2.34+ 宿主状态与热重载、MCP Apps (`ui://`) 体检、`tools/call` 测试器与 Hook 提示词注入 | 1 Skill · Hooks · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [查看详情](plugins/mcp-manager/README.md) |
 | `mattpocock-skills` | **Mattpocock Skills** | 自研原生迁移（上游 [`mattpocock/skills`](https://github.com/mattpocock/skills)）· MIT | 39 技能、4 叶子子代理、2.34+ `run_workflow` / Swarm 拓扑波次编排、Aux Pane 文档打开与新会话直发 | 28 默认技能 · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [查看详情](plugins/mattpocock-skills/README.md) |
-| `antigravity-context-viewer` | **Context Viewer** | 改版增强（上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)）· MIT | 顶栏上下文占用仪表、生成速度与 Token 历史热力图、API 等值费用估算及免改盘 Sidecar CDP 自动挂载 | 1 Skill · 1 Sidecar Auto-Loader | `customization://antigravity-context-viewer` | [查看详情](plugins/antigravity-context-viewer/README.md) |
+| `antigravity-context-viewer` | **Context Viewer** | 改版增强（上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)）· MIT | 2.34+ Aux Pane 实时上下文看板、4 行 Bento 会话工作台、Gemini 4 Neon 与统一配额池、Token 热力图及低功耗 CDP 自动挂载 | 1 Skill · 1 Sidecar UI & Auto-Loader | `sidecar://antigravity-context-viewer/live-loader/` | [查看详情](plugins/antigravity-context-viewer/README.md) |
 
 ---
 

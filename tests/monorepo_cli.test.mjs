@@ -8,11 +8,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getMonorepoStatus, installPlugins, listPlugins, uninstallPlugins } from '../scripts/cli.mjs';
+import { getMonorepoStatus, installPlugins, listPlugins, runDoctor, uninstallPlugins } from '../scripts/cli.mjs';
 import { runChecks } from '../scripts/check-all.mjs';
 import { scaffoldPlugin } from '../scripts/new-plugin.mjs';
 import { packageRelease } from '../scripts/package-release.mjs';
@@ -115,6 +117,73 @@ try {
   const tagPack = packageRelease(mockRepo, { refName: `mcp-manager-v${mcpVer}` });
   assert.equal(tagPack.pluginId, 'mcp-manager');
   assert.equal(tagPack.pluginCount, 1);
+
+  // 5. __pycache__ / *.pyc exclusion in both --copy install and packageRelease
+  const pycacheDir = join(mockRepo, 'plugins', 'mcp-manager', '__pycache__');
+  mkdirSync(pycacheDir, { recursive: true });
+  writeFileSync(join(pycacheDir, 'junk.pyc'), 'compiled-bytecode');
+
+  const pyCopyHome = join(tempRoot, 'py-copy-home');
+  const pyCopyRes = installPlugins(['mcp-manager'], { link: false, rootDir: mockRepo, home: pyCopyHome });
+  assert.equal(existsSync(join(pyCopyRes[0].target, '__pycache__')), false, '__copy must exclude __pycache__');
+
+  const pyPackRes = packageRelease(mockRepo, { pluginId: 'mcp-manager', refName: '' });
+  const zipRaw = readFileSync(join(pyPackRes.outDir, 'mcp-manager.zip'));
+  assert.equal(zipRaw.includes(Buffer.from('junk.pyc')), false, 'packageRelease zip must exclude *.pyc files');
+
+  // 6. runDoctor environment & config.json diagnostics + linked-other check
+  const doctorHome = join(tempRoot, 'doctor-home');
+  installPlugins([], { all: true, link: true, rootDir: MONOREPO_ROOT, home: doctorHome });
+
+  const externalPluginDir = join(tempRoot, 'external-plugin-target');
+  mkdirSync(externalPluginDir, { recursive: true });
+  const mcpInstalledPath = join(doctorHome, '.gemini', 'config', 'plugins', 'mcp-manager');
+  rmSync(mcpInstalledPath, { recursive: true, force: true });
+  symlinkSync(externalPluginDir, mcpInstalledPath, process.platform === 'win32' ? 'junction' : 'dir');
+
+  mkdirSync(join(doctorHome, '.gemini', 'config'), { recursive: true });
+  writeFileSync(
+    join(doctorHome, '.gemini', 'config', 'config.json'),
+    JSON.stringify({ plugins: { 'mattpocock-skills': { enabled: false } } }),
+  );
+
+  const mockAppBundle = join(tempRoot, 'Antigravity.app');
+  mkdirSync(join(mockAppBundle, 'Contents'), { recursive: true });
+  writeFileSync(
+    join(mockAppBundle, 'Contents', 'Info.plist'),
+    '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>2.34.0</string></dict></plist>',
+  );
+
+  const mockBinDir = join(tempRoot, 'mock-bin');
+  mkdirSync(mockBinDir, { recursive: true });
+  const mockAgyPath = join(mockBinDir, process.platform === 'win32' ? 'agy.exe' : 'agy');
+  writeFileSync(mockAgyPath, '#!/bin/sh\necho ok\n');
+
+  const docReportWithAgy = runDoctor({
+    rootDir: MONOREPO_ROOT,
+    home: doctorHome,
+    platform: 'darwin',
+    appPath: mockAppBundle,
+    envPath: mockBinDir,
+  });
+  assert.equal(docReportWithAgy.nodeOk, true);
+  assert.equal(docReportWithAgy.antigravity.found, true);
+  assert.equal(docReportWithAgy.antigravity.version, '2.34.0');
+  assert.equal(docReportWithAgy.agyCli.found, true);
+  assert.equal(docReportWithAgy.agyCli.path, mockAgyPath);
+  assert.equal(docReportWithAgy.plugins.find((p) => p.id === 'mattpocock-skills')?.enabled, false);
+  assert.equal(docReportWithAgy.plugins.find((p) => p.id === 'antigravity-context-viewer')?.enabled, true);
+  assert.ok(docReportWithAgy.warnings.some((w) => w.code === 'plugin_disabled' && w.pluginId === 'mattpocock-skills'));
+  assert.ok(docReportWithAgy.warnings.some((w) => w.code === 'linked_other' && w.pluginId === 'mcp-manager'));
+
+  const docReportNoAgy = runDoctor({
+    rootDir: MONOREPO_ROOT,
+    home: join(tempRoot, 'empty-home'),
+    platform: 'linux',
+    envPath: '',
+  });
+  assert.equal(docReportNoAgy.agyCli.found, false);
+  assert.ok(docReportNoAgy.hints.some((h) => h.code === 'agy_not_in_path'));
 
   console.log('MONOREPO CLI & SCAFFOLD TESTS PASSED');
 } finally {
