@@ -14,8 +14,8 @@
 
 | 插件 ID | 名称 | 来源与协议 | 能力简介 | 组件构成 | 入口 / 面板 | 文档 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `mcp-manager` | **MCP Manager** | 自研 · MIT | 多作用域 MCP 服务管理、宿主状态直连、Stdio/HTTP 实时协议探测、工具白/黑名单过滤与原子备份恢复 | 1 Skill · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [查看详情](plugins/mcp-manager/README.md) |
-| `mattpocock-skills` | **Mattpocock Skills** | 自研原生迁移（上游技能 [`mattpocock/skills`](https://github.com/mattpocock/skills)）· MIT | 39 研发与生产力技能、4 受限叶子子代理、分桶编排、流程领航、项目初始化与票据前沿看板 | 28 默认技能 · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [查看详情](plugins/mattpocock-skills/README.md) |
+| `mcp-manager` | **MCP Manager** | 自研 · MIT | 多作用域 MCP 服务管理、2.34+ 宿主状态与热重载、MCP Apps (`ui://`) 体检、`tools/call` 测试器与 Hook 提示词注入 | 1 Skill · Hooks · 1 Sidecar UI | `sidecar://mcp-manager/mcp_manager/` | [查看详情](plugins/mcp-manager/README.md) |
+| `mattpocock-skills` | **Mattpocock Skills** | 自研原生迁移（上游 [`mattpocock/skills`](https://github.com/mattpocock/skills)）· MIT | 39 技能、4 叶子子代理、2.34+ `run_workflow` / Swarm 拓扑波次编排、Aux Pane 文档打开与新会话直发 | 28 默认技能 · 4 Subagents · 1 Sidecar UI | `sidecar://mattpocock-skills/mp_studio/` | [查看详情](plugins/mattpocock-skills/README.md) |
 | `antigravity-context-viewer` | **Context Viewer** | 改版增强（上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)）· MIT | 顶栏上下文占用仪表、生成速度与 Token 历史热力图、API 等值费用估算及免改盘 Sidecar CDP 自动挂载 | 1 Skill · 1 Sidecar Auto-Loader | `customization://antigravity-context-viewer` | [查看详情](plugins/antigravity-context-viewer/README.md) |
 
 ---

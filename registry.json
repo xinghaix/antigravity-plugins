@@ -8,8 +8,8 @@
       "dirName": "antigravity-context-viewer",
       "path": "plugins/antigravity-context-viewer",
       "displayName": "Context Viewer",
-      "version": "0.8.8-1",
-      "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, quota & cost analytics via Aux Pane Sidecar UI (Antigravity 2.33+ ready) or CDP topbar.",
+      "version": "0.9.0-1",
+      "description": "Modified edition of antigravity-context-viewer (v0.9.0-1): live context window gauge, 4-row Bento session workbench, Gemini 4 Neon & unified quota pool, and cost analytics via Aux Pane Sidecar UI (Antigravity 2.34+ ready) or CDP topbar.",
       "logo": "assets/logo.svg",
       "components": {
         "skills": 1,
@@ -24,7 +24,7 @@
       ],
       "suggestedPrompts": [
         "打开 Context Viewer 侧边面板 (sidecar://antigravity-context-viewer/live-loader/)",
-        "检查 Context Viewer 当前运行状态与 Antigravity 2.33+ 兼容情况",
+        "检查 Context Viewer 当前运行状态与 Antigravity 2.34+ 兼容情况",
         "查看 Context Viewer 支持哪些上下文监控与界面增强模块"
       ]
     },
@@ -33,8 +33,8 @@
       "dirName": "mattpocock-skills",
       "path": "plugins/mattpocock-skills",
       "displayName": "Mattpocock Skills",
-      "version": "1.0.0",
-      "description": "Native Antigravity edition of Matt Pocock's engineering & productivity skills (grilling, spec/ticket flows, TDD, two-axis code review, domain modeling) with a visual Aux Pane Studio.",
+      "version": "1.1.0",
+      "description": "Native Antigravity edition of Matt Pocock's skills synced with upstream main, upgraded for Antigravity 2.34+ run_workflow / swarm DAG orchestration, fresh-session Studio dispatch, and topological ticket waves.",
       "logo": "assets/logo.svg",
       "components": {
         "skills": 28,
@@ -48,9 +48,9 @@
         "sidecar://mattpocock-skills/mp_studio/"
       ],
       "suggestedPrompts": [
-        "打开 Mattpocock Skills 面板管理技能或初始化当前仓库",
+        "打开 Mattpocock Skills Studio 查看 .scratch 拓扑波次并生成 2.34 编排脚本",
         "/ask-matt 帮我看看当前需求适合走哪条研发技能流",
-        "/grill-with-docs 对我接下来的功能设计进行极限追问并沉淀术语表"
+        "/implement-spec 按拓扑依赖波次并发执行当前 Spec 的所有票据并双轴审查"
       ]
     },
     {
@@ -58,8 +58,8 @@
       "dirName": "mcp-manager",
       "path": "plugins/mcp-manager",
       "displayName": "MCP Manager",
-      "version": "1.1.0",
-      "description": "Visual MCP server manager for Antigravity: inspect, add, edit, toggle, probe tools, configure global/workspace/plugin MCP servers, and auto-inject per-MCP prompts via native hooks.",
+      "version": "1.2.0",
+      "description": "Visual MCP server manager for Antigravity 2.34+: inspect & test MCP Apps (ui://), live-reload host servers, configure global/workspace/plugin MCP servers, and auto-inject per-MCP prompts via hooks.",
       "logo": "assets/logo.svg",
       "components": {
         "skills": 1,
@@ -73,9 +73,9 @@
         "sidecar://mcp-manager/mcp_manager/"
       ],
       "suggestedPrompts": [
-        "打开 MCP Manager 面板查看当前已配置的 MCP 服务",
-        "帮我在 MCP Manager 中添加一个新的本地或远程 MCP 服务",
-        "检查当前 MCP 配置是否有协议或命令路径问题"
+        "打开 MCP Manager 面板查看当前 MCP 服务与 MCP Apps 状态",
+        "帮我在 MCP Manager 中探测并测试目标 MCP 服务的工具或 ui:// 视图",
+        "检查当前工作区与插件 MCP 配置是否有协议、路径或变量问题并重载宿主状态"
       ]
     }
   ]
