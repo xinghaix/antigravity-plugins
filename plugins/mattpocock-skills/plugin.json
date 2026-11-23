@@ -1,8 +1,8 @@
 {
   "name": "mattpocock-skills",
   "displayName": "Mattpocock Skills",
-  "description": "Native Antigravity edition of Matt Pocock's engineering & productivity skills (grilling, spec/ticket flows, TDD, two-axis code review, domain modeling) with a visual Aux Pane Studio.",
-  "version": "1.0.0",
+  "description": "Native Antigravity edition of Matt Pocock's skills synced with upstream main, upgraded for Antigravity 2.34+ run_workflow / swarm DAG orchestration, fresh-session Studio dispatch, and topological ticket waves.",
+  "version": "1.1.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "xinghaix",
@@ -14,8 +14,8 @@
     "url": "https://github.com/xinghaix/antigravity-plugins.git"
   },
   "suggestedPrompts": [
-    "打开 Mattpocock Skills 面板管理技能或初始化当前仓库",
+    "打开 Mattpocock Skills Studio 查看 .scratch 拓扑波次并生成 2.34 编排脚本",
     "/ask-matt 帮我看看当前需求适合走哪条研发技能流",
-    "/grill-with-docs 对我接下来的功能设计进行极限追问并沉淀术语表"
+    "/implement-spec 按拓扑依赖波次并发执行当前 Spec 的所有票据并双轴审查"
   ]
 }

@@ -1,20 +1,21 @@
 ---
 name: mp-studio
-description: Open the visual Mattpocock Skills panel in the auxiliary pane to browse, toggle, preview, sync skills, deliver skills to .agents/skills/, or visually configure repository setup and inspect .scratch ticket frontiers.
+description: Open the visual Mattpocock Skills panel in the auxiliary pane to browse, toggle, preview, sync skills, orchestrate .scratch ticket waves with 2.34+ run_workflow/swarm, or dispatch tasks directly into conversations.
 ---
 
 # Mattpocock Skills (`mp-studio`)
 
-This plugin provides the **Mattpocock Skills** visual UI panel in the auxiliary pane (`sidecar://mattpocock-skills/mp_studio/`).
+This plugin provides the **Mattpocock Skills** (`v1.1.0`) visual UI panel in the auxiliary pane (`sidecar://mattpocock-skills/mp_studio/`).
 
 ## When to Surface the Studio Panel
 
 Whenever the user asks to:
 - open the Mattpocock Skills / dashboard / UI panel,
-- browse, enable, disable, preview, or sync Matt Pocock's skills,
+- browse, enable, disable, preview, or sync Matt Pocock's skills with upstream,
 - deliver skills into a project's `.agents/skills/` directory,
-- visually initialize a repository (`setup-matt-pocock-skills`), or
-- inspect `.scratch/` tracer-bullet tickets, `GLOSSARY.md`, or ADRs visually,
+- visually initialize a repository (`setup-matt-pocock-skills`),
+- inspect `.scratch/` tracer-bullet ticket waves, `GLOSSARY.md`, or ADRs in Aux Pane tabs, or
+- generate Antigravity `2.34+` `run_workflow` Python scripts or native `swarm` briefs from a `.scratch/` feature board,
 
 surface the clickable sidecar pill link in your response:
 

@@ -136,3 +136,7 @@ Required before declaring done:
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
 - [ ] Throwaway prototypes deleted (or moved to a clearly-marked debug location)
 - [ ] The hypothesis that turned out correct is stated in the commit / PR message, so the next debugger learns
+
+## Antigravity Native Runtime Notes
+
+- **Isolated reproducer & fact-finding**: Use `mp-explorer` via `invoke_subagent` for read-only trace/log investigation without filling the main diagnostic window, or `run_workflow` when bisecting multiple candidate hypotheses in parallel.

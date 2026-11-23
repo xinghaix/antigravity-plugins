@@ -14,7 +14,15 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BUCKETS, inferFallbackMeta, PRESETS, SCENARIOS, SKILL_META, WORKFLOW_SPINE } from '../../overrides/metadata.mjs';
+import {
+  BUCKETS,
+  inferFallbackMeta,
+  ORCHESTRATION_RECIPES,
+  PRESETS,
+  SCENARIOS,
+  SKILL_META,
+  WORKFLOW_SPINE,
+} from '../../overrides/metadata.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_REPO_ROOT = resolve(__dirname, '../..');
@@ -101,6 +109,33 @@ export function parseSkillMarkdown(raw) {
   };
 }
 
+/**
+ * Validate YAML frontmatter compatibility (quoted values, required name & description).
+ */
+export function validateFrontmatter(raw) {
+  const normalized = String(raw || '').replace(/\r\n/g, '\n');
+  const match = normalized.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!match) {
+    return { valid: false, errors: ['Missing YAML frontmatter delimiters (---)'] };
+  }
+  const parsed = parseSkillMarkdown(normalized);
+  const errors = [];
+  if (!parsed.name) errors.push('Frontmatter missing non-empty "name"');
+  if (!parsed.description) errors.push('Frontmatter missing non-empty "description"');
+  // Detect unquoted single-line scalar containing ": " which breaks strict YAML parsers
+  for (const line of match[1].split('\n')) {
+    const kv = line.match(/^description:\s*(.+)$/);
+    if (!kv) continue;
+    const rawVal = kv[1].trim();
+    const isBlock = rawVal === '|-' || rawVal === '|' || rawVal === '>-' || rawVal === '>';
+    const isQuoted = (rawVal.startsWith('"') && rawVal.endsWith('"')) || (rawVal.startsWith("'") && rawVal.endsWith("'"));
+    if (!isBlock && !isQuoted && /:\s/.test(rawVal)) {
+      errors.push('Unquoted "description" contains ": " which may fail strict YAML frontmatter checks');
+    }
+  }
+  return { valid: errors.length === 0, errors, parsed };
+}
+
 export function serializeSkillMarkdown({ name, description, disableSlashCommand = false, body }) {
   const safeDesc = JSON.stringify(String(description || '').replace(/\s+/g, ' ').trim());
   const lines = [
@@ -162,6 +197,7 @@ function buildNativeNotes({ skillName }) {
   if (skillName === 'code-review') {
     notes.push(
       '- **Subagent execution**: Dispatch `mp-standards-reviewer` and `mp-spec-reviewer` in parallel using `invoke_subagent` (`Workspace: "inherit"`). Both are read-only leaf subagents without subagent-spawning permissions, preventing recursive `/code-review` loops. Stop calling tools after dispatching and wait for Antigravity reactive wakeup.',
+      '- **Structured `run_workflow` option (Antigravity 2.34+)**: When reviewing large branches or automating verdicts in a pipeline, you can run `parallel(["standards", "spec"], ...)` via `run_workflow` with `type_name="mp-standards-reviewer"` and `type_name="mp-spec-reviewer"` and strict JSON verdict `schema` outputs.',
     );
   }
   if (skillName === 'research') {
@@ -171,12 +207,46 @@ function buildNativeNotes({ skillName }) {
   }
   if (skillName === 'implement-spec') {
     notes.push(
-      '- **Native parallel worktrees**: Launch each ready frontier ticket via `invoke_subagent` with `TypeName: "self"` and `Workspace: "share"` (Antigravity\'s built-in shared repository worktree). Do not poll; Antigravity wakes you reactively as each subagent finishes. For `codebase` exploration before kicking off tickets, prefer `mp-explorer`.',
+      '- **Antigravity 2.34+ Orchestration Modes** (pick the lightest fit for the DAG):',
+      '  - **Mode A · Topological Wave Runner (`run_workflow`, recommended for 3+ tickets)**: Read the `run-workflow` skill and execute topological waves deterministically in Python: `phase("Wave N")`, `await parallel(wave_tickets, lambda t: agent(..., workspace="share", schema=...))`, run a wave-merger/test turn, then close with `parallel` `mp-standards-reviewer` + `mp-spec-reviewer`. Pass sparse file-path pointers (`spec.md`, ticket `.md`, `GLOSSARY.md`) in every agent prompt because workflow agents do not share conversation history.',
+      '  - **Mode B · Collaborative Board (`swarm`, for cross-worker contract coordination)**: Read `swarm_pane`, spawn workers via `swarm(action="add", workspace="share", name=...)`, and publish `<appData>/brain/<conversationId>/.system_generated/swarm/plan.json` (`goal`, `tasks`, `threads`) so Antigravity\'s Swarm Overview UI tracks wave progress live.',
+      '  - **Mode C · Lightweight Subagents (`invoke_subagent`)**: For 1–2 tickets, launch `invoke_subagent` with `TypeName: "self"` and `Workspace: "share"` (no polling needed; reactive wakeup notifies on completion). Use `mp-explorer` before dispatching to inspect hotspots read-only.',
+      '- **Visual DAG Waves**: Users can inspect computed topological ticket waves and generate ready-to-run `run_workflow` / `swarm` scripts in `[Mattpocock Skills](sidecar://mattpocock-skills/mp_studio/)`.',
     );
   }
   if (skillName === 'codebase-design') {
     notes.push(
-      '- **Design-it-twice subagents**: When spawning parallel subagents to explore radically different module interfaces, use `invoke_subagent` (`Workspace: "inherit"` for read-only design proposals, or `"share"` if prototyping code).',
+      '- **Design-it-twice orchestration (`run_workflow` / `invoke_subagent`)**: Explore radically contrasting module seams in parallel via `run_workflow` `parallel(...)` (`workspace="inherit"` for read-only interface proposals or `"share"` for code prototypes) or parallel `invoke_subagent` calls.',
+    );
+  }
+  if (skillName === 'wayfinder') {
+    notes.push(
+      '- **Parallel primary-source fan-out (`run_workflow` + `mp-researcher`)**: When clearing 3+ independent decision unknowns simultaneously, use `run_workflow` `parallel()` dispatching `type_name="mp-researcher"` agents with structured citation schemas, and use `mp-explorer` for read-only codebase checks.',
+    );
+  }
+  if (skillName === 'triage') {
+    notes.push(
+      '- **Batch triage pipeline (`run_workflow`)**: When triaging a backlog of open issues or PRs at once, use `run_workflow` `parallel()` (with lighter `model="flash"` if appropriate) to deduplicate and gather evidence before interactive verification.',
+    );
+  }
+  if (skillName === 'diagnosing-bugs') {
+    notes.push(
+      '- **Isolated reproducer & fact-finding**: Use `mp-explorer` via `invoke_subagent` for read-only trace/log investigation without filling the main diagnostic window, or `run_workflow` when bisecting multiple candidate hypotheses in parallel.',
+    );
+  }
+  if (skillName === 'loop-me') {
+    notes.push(
+      '- **Antigravity 2.34+ stateful Generator ↔ Verifier loop (`run_workflow`)**: Read the `run-workflow` skill and instantiate two persistent multi-turn agents (`implementer = agent(..., workspace="share")` and `verifier = agent(...)`) inside a bounded `for i in range(max_iterations)` loop (`await implementer(...)` -> `await verifier(..., schema={"passed": boolean, "feedback": string})`), keeping iteration history across rounds without polluting the parent conversation.',
+    );
+  }
+  if (skillName === 'chief-of-staff') {
+    notes.push(
+      '- **Antigravity 2.34+ `schedule` + `run_workflow` / `swarm` mapping**: Map recurring briefings and inbox scans to `schedule(CronExpression=..., IsDaemon=True)`, and fan out per-stream repo/issue checks concurrently via `run_workflow` or `swarm`.',
+    );
+  }
+  if (skillName === 'software-factory') {
+    notes.push(
+      '- **Antigravity 2.34+ local factory mapping**: When prototyping or running factory pipelines inside Antigravity, map Orchestrator to `run_workflow`, isolated Runners to `agent(..., workspace="branch"|"share")` or `swarm`, scheduled triggers to `schedule`, and deterministic tool guardrails to plugin `hooks.json`.',
     );
   }
   if (skillName === 'improve-codebase-architecture') {
@@ -199,7 +269,7 @@ function buildNativeNotes({ skillName }) {
   if (skillName === 'ask-matt') {
     notes.push(
       '- **Context reset mapping**: Where this guide refers to `/clear`, start a **New Conversation** in Antigravity (`/compact` works natively).',
-      '- **Visual workflow navigator**: Users can browse the full flow visually in `[Mattpocock Skills](sidecar://mattpocock-skills/mp_studio/)`.',
+      '- **Visual workflow navigator & 2.34+ orchestration recipes**: Users can browse the full flow visually and launch `run_workflow` / `swarm` blueprints in `[Mattpocock Skills](sidecar://mattpocock-skills/mp_studio/)`.',
     );
   }
   if (skillName === 'handoff') {
@@ -401,6 +471,7 @@ export function compileUpstreamDirectory({
         enSummary: meta.enSummary,
         dependsOnSkills: meta.dependsOnSkills || [],
         usesAgents: meta.usesAgents || [],
+        orchestration: meta.orchestration || null,
         collisionNote: meta.collisionNote || '',
         samplePrompt: meta.samplePrompt || (adapted.invocation === 'user' ? `/${skillName}` : `Use ${skillName}`),
         companionFiles: companions,
@@ -422,6 +493,7 @@ export function compileUpstreamDirectory({
     scenarios: SCENARIOS,
     presets: PRESETS,
     workflow: WORKFLOW_SPINE,
+    orchestrationRecipes: ORCHESTRATION_RECIPES,
     skills,
   };
 

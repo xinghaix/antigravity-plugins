@@ -21,7 +21,10 @@
 1. **目录展平与清单对齐**：将上游二级分桶 `skills/<bucket>/<name>` 自动编译展平为 Antigravity 单层 `skills/<name>/SKILL.md`，剔除 Codex 专属 `agents/openai.yaml`，并保持插件根目录无 `AGENTS.md` 冲突（通过 `agy plugin validate --strict` 零告警）。
 2. **消除 `Skill tool` 幻觉**：将所有 `Call the Skill tool with "..."` 编译替换为 Antigravity 原生的相对路径 `read_file` 指针（`../<skill>/SKILL.md`），并在 UI 开关切换时自动联动启用依赖技能。
 3. **专用叶子子代理（防断网、防递归）**：新增 4 个受限原生子代理（`agents/mp-standards-reviewer.md`、`agents/mp-spec-reviewer.md`、`agents/mp-researcher.md`、`agents/mp-explorer.md`），修复内置 `research` 子代理无网只读问题，并从工具权限层面杜绝 `/code-review` 子代理递归重入。
-4. **原生并发 Worktree 与 Plan Mode 衔接**：`implement-spec` 映射到 `invoke_subagent(..., Workspace: "share")`；`improve-codebase-architecture` 与 `prototype` 原生支持 Antigravity Generative UI Artifact 渲染；涉写盘的面试型技能自动提示在落盘前先 `exit_plan_mode`。
+4. **Antigravity 2.34+ 原生多智能体编排引擎（`run_workflow` + `swarm` + `schedule`）**：
+   - `implement-spec` 新增三模式调度：3 张以上票据推荐 `run_workflow`（Python 拓扑波次 + `workspace="share"` + 波次合入 + 双轴收尾 Review），跨智能体协作推荐原生 `swarm` + `.system_generated/swarm/plan.json`（Swarm UI 实时追踪），1-2 票据沿用轻量 `invoke_subagent`。
+   - `code-review`、`wayfinder`、`codebase-design`、`triage` 与 `loop-me` 适配 `run_workflow` 的并发/有状态 `agent()` 循环；`chief-of-staff` 与 `software-factory` 映射 Antigravity `schedule` 与 `hooks.json`。
+   - **Studio 在线编排与会话直连**：支持动态感知 `2.34+` 工作区切换（`sidecar.getWorkspaceUris()` / `onWorkspaceChange`），自动为 `.scratch` 票据计算拓扑波次与环检测并生成可运行的 `run_workflow` Python 脚本 / `Swarm` 看板，同时支持**发送到当前对话**、**新会话执行**（落地阶段边界原则）以及在 **Aux Pane 打开票据 / `spec.md` / `GLOSSARY.md` / ADR**。
 
 ---
 

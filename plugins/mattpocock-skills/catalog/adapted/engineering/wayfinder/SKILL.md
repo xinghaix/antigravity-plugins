@@ -128,4 +128,5 @@ The user may run unblocked tickets in parallel, so expect other sessions to be e
 
 ## Antigravity Native Runtime Notes
 
+- **Parallel primary-source fan-out (`run_workflow` + `mp-researcher`)**: When clearing 3+ independent decision unknowns simultaneously, use `run_workflow` `parallel()` dispatching `type_name="mp-researcher"` agents with structured citation schemas, and use `mp-explorer` for read-only codebase checks.
 - **Plan Mode handoff**: If Antigravity Plan Mode is active while interviewing or exploring, stay read-only during questioning and call `exit_plan_mode` with the concrete file edits when ready to write `GLOSSARY.md`, `docs/adr/`, `docs/agents/`, or `.scratch/` artifacts.

@@ -115,4 +115,4 @@ Good interfaces make testing natural:
 
 ## Antigravity Native Runtime Notes
 
-- **Design-it-twice subagents**: When spawning parallel subagents to explore radically different module interfaces, use `invoke_subagent` (`Workspace: "inherit"` for read-only design proposals, or `"share"` if prototyping code).
+- **Design-it-twice orchestration (`run_workflow` / `invoke_subagent`)**: Explore radically contrasting module seams in parallel via `run_workflow` `parallel(...)` (`workspace="inherit"` for read-only interface proposals or `"share"` for code prototypes) or parallel `invoke_subagent` calls.

@@ -72,3 +72,7 @@ Finally, create environments (and codebases) that obey the **"no workarounds"** 
 - Any deviations from conventions must be fixed proactively, before feature work is done
 
 Be relentless in improving the environment. Use every user message as an excuse to search for these improvements.
+
+## Antigravity Native Runtime Notes
+
+- **Antigravity 2.34+ `schedule` + `run_workflow` / `swarm` mapping**: Map recurring briefings and inbox scans to `schedule(CronExpression=..., IsDaemon=True)`, and fan out per-stream repo/issue checks concurrently via `run_workflow` or `swarm`.

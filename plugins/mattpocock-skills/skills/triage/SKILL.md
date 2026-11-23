@@ -112,4 +112,5 @@ If prior triage notes exist on the issue or PR, read them, check whether the rep
 
 ## Antigravity Native Runtime Notes
 
+- **Batch triage pipeline (`run_workflow`)**: When triaging a backlog of open issues or PRs at once, use `run_workflow` `parallel()` (with lighter `model="flash"` if appropriate) to deduplicate and gather evidence before interactive verification.
 - **Plan Mode handoff**: If Antigravity Plan Mode is active while interviewing or exploring, stay read-only during questioning and call `exit_plan_mode` with the concrete file edits when ready to write `GLOSSARY.md`, `docs/adr/`, `docs/agents/`, or `.scratch/` artifacts.

@@ -21,7 +21,10 @@ A native **Google Antigravity** migration of [mattpocock/skills](https://github.
 1. **Flat Single-Level Plugin Layout**: Compiles `skills/<bucket>/<name>` into flat `skills/<name>/SKILL.md`, strips Codex-specific `agents/openai.yaml`, and keeps the plugin root free of `AGENTS.md` so `agy plugin validate --strict` passes with zero warnings.
 2. **Native `read_file` Cross-Skill Calls**: Rewrites every `Call the Skill tool with "..."` directive into relative `read_file` pointers (`../<skill>/SKILL.md`), with automatic dependency resolution when toggling skills in the UI.
 3. **Dedicated Leaf Subagents**: Ships 4 non-recursive subagents under `agents/` (`mp-standards-reviewer`, `mp-spec-reviewer`, `mp-researcher`, `mp-explorer`) so `research` has live `search_web` + `write_file` access and two-axis `code-review` never enters recursive subagent loops.
-4. **Native Shared Workspaces & Plan Mode Handoff**: Maps `implement-spec` parallel execution to `invoke_subagent(TypeName: "self", Workspace: "share")`, adds Generative UI Artifact guidance to `improve-codebase-architecture` & `prototype`, and handles Antigravity Plan/Execute mode handoffs cleanly.
+4. **Antigravity 2.34+ Native Multi-Agent Orchestration (`run_workflow` + `swarm` + `schedule`)**:
+   - Upgrades `implement-spec` with topological wave execution via `run_workflow` (`parallel(..., workspace="share")` + wave merger + closing two-axis `code-review`), native `swarm` + `.system_generated/swarm/plan.json`, and lightweight `invoke_subagent`.
+   - Adapts `code-review`, `wayfinder`, `codebase-design`, `triage`, and `loop-me` (stateful Generator ↔ Verifier `agent()` loops) to `run_workflow`, plus maps `chief-of-staff` & `software-factory` onto `schedule` crons and `hooks.json`.
+   - **Live Studio Wave Orchestrator & Host Dispatch**: Syncs workspaces via `sidecar.getWorkspaceUris()` / `onWorkspaceChange`, computes `.scratch` topological ticket waves & dependency cycles, generates runnable `run_workflow` Python scripts and `Swarm` `plan.json` prompts, supports one-click **Send to Chat** / **New Session**, and opens tickets, `spec.md`, `GLOSSARY.md`, and ADRs directly in Aux Pane tabs.
 
 ---
 

@@ -95,3 +95,7 @@ For each task, answer:
 For each ticket source, answer: what stops it filing the same ticket twice?
 
 A design is finished when every slot names a product (or, for the observability platform, a deliberate none) and every task and ticket source has an answer to every question.
+
+## Antigravity Native Runtime Notes
+
+- **Antigravity 2.34+ local factory mapping**: When prototyping or running factory pipelines inside Antigravity, map Orchestrator to `run_workflow`, isolated Runners to `agent(..., workspace="branch"|"share")` or `swarm`, scheduled triggers to `schedule`, and deterministic tool guardrails to plugin `hooks.json`.

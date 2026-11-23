@@ -16,8 +16,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getStatus, installPlugin, uninstallPlugin } from '../scripts/cli.mjs';
-import { createStore, parseScratchTickets } from '../sidecars/mp_studio/studio_store.mjs';
-import { adaptSkillMarkdown, compileUpstreamDirectory, parseSkillMarkdown } from '../sidecars/mp_studio/upstream_sync.mjs';
+import { buildOrchestrationPlan, createStore, parseScratchTickets } from '../sidecars/mp_studio/studio_store.mjs';
+import {
+  adaptSkillMarkdown,
+  compileUpstreamDirectory,
+  parseSkillMarkdown,
+  validateFrontmatter,
+} from '../sidecars/mp_studio/upstream_sync.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -204,6 +209,59 @@ Also call the Skill tool with "codebase-design".
   assert.equal(board.tickets.find((x) => x.num === '01')?.state, 'done');
   assert.equal(board.tickets.find((x) => x.num === '02')?.state, 'ready');
   assert.equal(board.tickets.find((x) => x.num === '03')?.state, 'blocked');
+
+  // 5b. Topological waves + 2.34+ run_workflow & swarm plan builder + cycle detection
+  const authFeat = board.features.find((f) => f.slug === 'auth-flow');
+  assert.ok(authFeat);
+  assert.equal(authFeat.waves.length, 2);
+  assert.deepEqual(authFeat.waves[0], { wave: 1, tickets: ['02'] });
+  assert.deepEqual(authFeat.waves[1], { wave: 2, tickets: ['03'] });
+  assert.equal(authFeat.cycles.length, 0);
+
+  writeFileSync(join(wsDir, '.scratch', 'auth-flow', 'spec.md'), '# Auth Spec\n');
+  const orchPlan = buildOrchestrationPlan({ workspacePath: wsDir, feature: 'auth-flow' });
+  assert.equal(orchPlan.ok, true);
+  assert.equal(orchPlan.feature, 'auth-flow');
+  assert.equal(orchPlan.waves.length, 2);
+  assert.ok(orchPlan.workflowScript.includes('phase(f"Wave {w_num}: Parallel Ticket Implementation")'));
+  assert.ok(orchPlan.workflowScript.includes('workspace="share"'));
+  assert.ok(orchPlan.workflowScript.includes('mp-standards-reviewer'));
+  assert.ok(orchPlan.workflowScript.includes('mp-spec-reviewer'));
+  assert.ok(orchPlan.swarmPlanJson.goal.title.includes('auth-flow'));
+  assert.equal(orchPlan.swarmPlanJson.threads.length, 2);
+  assert.equal(orchPlan.ticketPrompts.length, 2);
+
+  // Cycle detection in parseScratchTickets
+  const cyclicDir = join(wsDir, '.scratch', 'cyclic-feat', 'issues');
+  mkdirSync(cyclicDir, { recursive: true });
+  writeFileSync(join(cyclicDir, '01-a.md'), '# 01: A\n\n**Blocked by:** 02\n\n**Status:** ready-for-agent\n');
+  writeFileSync(join(cyclicDir, '02-b.md'), '# 02: B\n\n**Blocked by:** 01\n\n**Status:** ready-for-agent\n');
+  const cycBoard = parseScratchTickets(wsDir);
+  const cycFeat = cycBoard.features.find((f) => f.slug === 'cyclic-feat');
+  assert.equal(cycFeat.waves.length, 0);
+  assert.equal(cycFeat.cycles.length, 2);
+
+  // 5c. Upstream YAML frontmatter validation (PR #1453 / #1455) & 2.34+ orchestration notes
+  const quotedFm = '---\nname: software-factory\ndescription: "Run a factory: triage, build, verify."\n---\nBody\n';
+  assert.equal(validateFrontmatter(quotedFm).valid, true);
+  assert.equal(validateFrontmatter('---\nname: bad\ndescription: Unquoted: colon breaks yaml\n---\n').valid, false);
+
+  const implPreview = store.getSkillPreview({ name: 'implement-spec' });
+  assert.ok(implPreview.adaptedSkillMd.includes('run_workflow'));
+  assert.ok(implPreview.adaptedSkillMd.includes('swarm_pane'));
+  assert.ok(implPreview.adaptedSkillMd.includes('workspace="share"'));
+
+  const loopPreview = store.getSkillPreview({ name: 'loop-me' });
+  assert.ok(loopPreview.adaptedSkillMd.includes('run_workflow'));
+  assert.ok(loopPreview.adaptedSkillMd.includes('implementer = agent'));
+
+  const recipePlan = buildOrchestrationPlan({ recipeId: 'code-review-dual-axis' });
+  assert.equal(recipePlan.mode, 'recipe');
+  assert.ok(recipePlan.workflowScript.includes('mp-standards-reviewer'));
+
+  // Verify st.orchestrationRecipes exists in getStudioState
+  st = store.getState([wsDir]);
+  assert.ok(Array.isArray(st.orchestrationRecipes) && st.orchestrationRecipes.length >= 6);
 
   // 6. Uninstall cleanup
   const unRes = uninstallPlugin({ target: pluginTarget });

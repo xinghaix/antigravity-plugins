@@ -986,3 +986,79 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .toast.ok { border-color: color-mix(in srgb, var(--success) 45%, transparent); }
 .toast.warn { border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
 .toast.err { border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+
+/* 2.34+ Orchestration Waves, Recipes & File Links */
+.modal-card.modal-lg { max-width: 700px; }
+.code-viewer.tall { max-height: 410px; }
+.btn-row-compact {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.file-link-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.file-link-btn:hover { filter: brightness(1.15); }
+.wave-feature-box {
+  background: var(--elevated-bg);
+  border: 1px solid var(--border-col);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wave-feature-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wave-lanes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.wave-lane-pill {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-col);
+}
+.badge-engine {
+  color: #7c3aed;
+  background: color-mix(in srgb, #8b5cf6 13%, transparent);
+  border-color: color-mix(in srgb, #8b5cf6 28%, transparent);
+}
+:root[data-theme="dark"] .badge-engine { color: #c4b5fd; }
+.recipe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 10px;
+}
+.recipe-card {
+  background: var(--elevated-bg);
+  border: 1px solid var(--border-col);
+  border-radius: var(--r-md);
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.recipe-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}

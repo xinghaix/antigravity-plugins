@@ -102,6 +102,30 @@
     </div>
   </div>
 
+  <!-- 2.34+ Orchestration Modal -->
+  <div id="modal-orchestrate" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="orch-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="orch-title">Antigravity 2.34+ 多智能体编排预览</h2>
+          <p id="orch-sub" class="modal-sub">基于 .scratch 依赖波次生成 runnable run_workflow / Swarm 执行方案</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="modal-orchestrate" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div id="orch-mode-tabs" class="preview-file-tabs"></div>
+        <div id="orch-preview-area"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-orch-copy" type="button" class="btn btn-secondary" data-i18n="copyPromptBtn">复制调用指令</button>
+        <button id="btn-orch-send" type="button" class="btn btn-secondary" data-i18n="sendChatBtn">发送到对话</button>
+        <button id="btn-orch-new-conv" type="button" class="btn btn-primary" data-i18n="newSessionBtn">新会话执行</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>

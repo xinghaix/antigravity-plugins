@@ -98,4 +98,4 @@ Off the main flow entirely.
 ## Antigravity Native Runtime Notes
 
 - **Context reset mapping**: Where this guide refers to `/clear`, start a **New Conversation** in Antigravity (`/compact` works natively).
-- **Visual workflow navigator**: Users can browse the full flow visually in `[Mattpocock Skills](sidecar://mattpocock-skills/mp_studio/)`.
+- **Visual workflow navigator & 2.34+ orchestration recipes**: Users can browse the full flow visually and launch `run_workflow` / `swarm` blueprints in `[Mattpocock Skills](sidecar://mattpocock-skills/mp_studio/)`.

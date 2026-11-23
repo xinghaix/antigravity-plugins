@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultPluginTarget, defaultStateDir, installPlugin } from '../../scripts/cli.mjs';
+import { ORCHESTRATION_RECIPES } from '../../overrides/metadata.mjs';
 import { fetchAndCompileUpstream, materializeSkillDir, parseSkillMarkdown } from './upstream_sync.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -174,29 +175,248 @@ export function parseScratchTickets(workspacePath) {
     }
 
     const doneSet = new Set(featureTickets.filter((t) => t.isDone).map((t) => t.num));
+    const hasNumIn = (set, b) => set.has(b) || set.has(b.replace(/^0+/, '')) || set.has(String(b).padStart(2, '0'));
     for (const t of featureTickets) {
       if (t.isDone) {
         t.state = 'done';
         t.unresolvedBlockers = [];
+        t.wave = 0;
       } else {
-        t.unresolvedBlockers = t.blockers.filter((b) => !doneSet.has(b) && !doneSet.has(b.replace(/^0+/, '')));
+        t.unresolvedBlockers = t.blockers.filter((b) => !hasNumIn(doneSet, b));
         t.state = t.unresolvedBlockers.length === 0 ? 'ready' : 'blocked';
+        t.wave = null;
       }
-      allTickets.push(t);
     }
+
+    // Topological wave computation across unfinished tickets
+    const waves = [];
+    const satisfied = new Set(doneSet);
+    let remaining = featureTickets.filter((t) => !t.isDone);
+    let waveIdx = 1;
+    while (remaining.length > 0) {
+      const readyWave = remaining.filter((t) => t.blockers.every((b) => hasNumIn(satisfied, b)));
+      if (readyWave.length === 0) break;
+      for (const t of readyWave) {
+        t.wave = waveIdx;
+        satisfied.add(t.num);
+      }
+      waves.push({
+        wave: waveIdx,
+        tickets: readyWave.map((t) => t.num),
+      });
+      const readySet = new Set(readyWave.map((t) => t.num));
+      remaining = remaining.filter((t) => !readySet.has(t.num));
+      waveIdx += 1;
+    }
+
+    const cycles = remaining.map((t) => ({ num: t.num, title: t.title, unresolved: t.blockers.filter((b) => !hasNumIn(satisfied, b)) }));
+    for (const t of featureTickets) allTickets.push(t);
 
     features.push({
       slug: fDir.name,
       hasSpec: specExists,
       hasMap: mapExists,
+      specRelPath: specExists ? `.scratch/${fDir.name}/spec.md` : null,
+      mapRelPath: mapExists ? `.scratch/${fDir.name}/map.md` : null,
       total: featureTickets.length,
       ready: featureTickets.filter((t) => t.state === 'ready').length,
       blocked: featureTickets.filter((t) => t.state === 'blocked').length,
       done: featureTickets.filter((t) => t.state === 'done').length,
+      waves,
+      cycles,
     });
   }
 
   return { features, tickets: allTickets };
+}
+
+export function buildOrchestrationPlan({
+  workspacePath,
+  feature = '',
+  recipeId = '',
+  baseBranch = 'main',
+} = {}) {
+  if (recipeId && !feature) {
+    const recipe = ORCHESTRATION_RECIPES.find((r) => r.id === recipeId);
+    if (!recipe) throw new Error(`Unknown orchestration recipe: ${recipeId}`);
+    return {
+      ok: true,
+      mode: 'recipe',
+      recipe,
+      workflowScript: recipe.workflowTemplate,
+      workflowDispatchPrompt: workspacePath
+        ? `Workspace: ${workspacePath} (base branch: ${baseBranch})\n\n${recipe.dispatchPrompt}`
+        : recipe.dispatchPrompt,
+    };
+  }
+
+  if (!workspacePath) {
+    throw new Error('缺少 workspacePath 参数');
+  }
+  const absWs = expandHome(workspacePath, homedir());
+  const board = parseScratchTickets(absWs);
+  if (board.features.length === 0) {
+    throw new Error('未在当前工作区检测到 .scratch/<feature>/ 票据目录');
+  }
+
+  const featObj = (feature
+    ? board.features.find((f) => f.slug === feature)
+    : board.features.find((f) => f.waves.length > 0)) || board.features[0];
+  if (!featObj) {
+    throw new Error(`未找到特性目录: ${feature}`);
+  }
+
+  const featTickets = board.tickets.filter((t) => t.feature === featObj.slug);
+  const byNum = new Map(featTickets.map((t) => [t.num, t]));
+  const wavesDetail = featObj.waves.map((w) => ({
+    wave: w.wave,
+    items: w.tickets.map((num) => {
+      const tk = byNum.get(num);
+      return {
+        id: tk.num,
+        title: tk.title,
+        path: tk.relPath,
+        spec_path: featObj.specRelPath || '',
+      };
+    }),
+  }));
+
+  const ticketPrompts = [];
+  for (const w of wavesDetail) {
+    for (const item of w.items) {
+      const ptrs = [
+        item.spec_path ? `spec: \`${item.spec_path}\`` : '',
+        'Check `GLOSSARY.md` / `docs/agents/issue-tracker.md` if present.',
+      ].filter(Boolean).join(' ');
+      ticketPrompts.push({
+        num: item.id,
+        title: item.title,
+        relPath: item.path,
+        wave: w.wave,
+        prompt: `/implement — Implement ticket \`${item.path}\`. ${ptrs} Follow red-green TDD and update ticket status to done when verified.`,
+      });
+    }
+  }
+
+  const serializedWaves = JSON.stringify(JSON.stringify(wavesDetail));
+  const serializedBranch = JSON.stringify(baseBranch || 'main');
+  const workflowScript = [
+    `# Auto-generated Antigravity 2.34+ run_workflow script for feature: ${featObj.slug}`,
+    'import json',
+    '',
+    `BASE_BRANCH = ${serializedBranch}`,
+    `WAVES = json.loads(${serializedWaves})`,
+    '',
+    'ticket_schema = {',
+    '    "type": "object",',
+    '    "properties": {',
+    '        "ticket_id": {"type": "string"},',
+    '        "branch_or_summary": {"type": "string"},',
+    '        "tests_passed": {"type": "boolean"},',
+    '    },',
+    '    "required": ["ticket_id", "branch_or_summary", "tests_passed"],',
+    '}',
+    '',
+    'for wave_info in WAVES:',
+    '    w_num = wave_info["wave"]',
+    '    phase(f"Wave {w_num}: Parallel Ticket Implementation")',
+    '    results = await parallel(',
+    '        wave_info["items"],',
+    '        lambda item: agent(',
+    '            (',
+    '                f"Read and follow `implement` & `tdd` skills.\\n"',
+    '                f"Implement ticket {item[\'path\']} (spec: {item[\'spec_path\'] or \'none\'}).\\n"',
+    '                "Consult GLOSSARY.md and docs/agents/ if present. Finish only after tests pass."',
+    '            ),',
+    '            schema=ticket_schema,',
+    '            role=f"Ticket #{item[\'id\']}: {item[\'title\'][:28]}",',
+    '            workspace="share",',
+    '        ),',
+    '    )',
+    '    for r in results:',
+    '        log(f"Ticket {r[\'ticket_id\']} passed={r[\'tests_passed\']}: {r[\'branch_or_summary\']}")',
+    '',
+    '    phase(f"Wave {w_num}: Merge & Regression Check")',
+    '    merge_summary = await agent(',
+    '        f"Verify and integrate Wave {w_num} ticket outputs ({results}) in the workspace, ensure tests pass, and mark completed tickets as done.",',
+    '        schema={"type": "string"},',
+    '        role=f"Wave {w_num} Merger",',
+    '        workspace="inherit",',
+    '    )',
+    '    log(f"Wave {w_num} merge: {merge_summary}")',
+    '',
+    'phase("Final Two-Axis Code Review")',
+    'review_schema = {',
+    '    "type": "object",',
+    '    "properties": {"verdict": {"type": "string"}, "findings": {"type": "array", "items": {"type": "string"}}},',
+    '    "required": ["verdict", "findings"],',
+    '}',
+    'std_review, spec_review = await parallel(',
+    '    ["standards", "spec"],',
+    '    lambda axis: agent(',
+    '        f"Review current changes against {BASE_BRANCH} thoroughly.",',
+    '        schema=review_schema,',
+    '        type_name="mp-standards-reviewer" if axis == "standards" else "mp-spec-reviewer",',
+    '        role="Standards Review" if axis == "standards" else "Spec Review",',
+    '        workspace="inherit",',
+    '    ),',
+    ')',
+    'log("Standards verdict:", std_review)',
+    'log("Spec verdict:", spec_review)',
+  ].join('\n');
+
+  const wave1Items = wavesDetail[0]?.items || [];
+  const swarmPlanJson = {
+    goal: {
+      title: `Ship ${featObj.slug} feature waves`,
+      line: 'Execute parallel shared-worktree ticket waves then two-axis review.',
+    },
+    tasks: Object.fromEntries(
+      featTickets
+        .filter((t) => !t.isDone)
+        .map((t) => [`ticket-${t.num}`, `${t.title}`.slice(0, 60)]),
+    ),
+    threads: wavesDetail.map((w) => ({
+      id: `wave-${w.wave}`,
+      title: `Wave ${w.wave} Frontier`,
+      goal: `Deliver ${w.items.map((i) => `#${i.id}`).join(', ')} with passing tests`,
+      tasks: w.items.map((i) => `ticket-${i.id}`),
+    })),
+  };
+
+  const workflowDispatchPrompt = [
+    `Read and follow the \`run-workflow\` and \`implement-spec\` skills for workspace \`${absWs}\` (feature \`${featObj.slug}\`).`,
+    `Execute the ${wavesDetail.length}-wave topological ticket plan below via \`run_workflow\`:`,
+    '',
+    '```python',
+    workflowScript,
+    '```',
+  ].join('\n');
+
+  const swarmDispatchPrompt = [
+    `Read and follow \`implement-spec\` and \`swarm_pane\` skills for feature \`${featObj.slug}\` in \`${absWs}\`.`,
+    wave1Items.length
+      ? `Spawn Wave 1 parallel workers via \`swarm(action="add", workspace="share")\` for: ${wave1Items.map((i) => `\`${i.path}\``).join(', ')}.`
+      : 'Check current `.scratch/` ticket states on the swarm board.',
+    'Write `<appData>/brain/<conversationId>/.system_generated/swarm/plan.json` using:',
+    '',
+    '```json',
+    JSON.stringify(swarmPlanJson, null, 2),
+    '```',
+  ].join('\n');
+
+  return {
+    ok: true,
+    mode: 'feature',
+    feature: featObj.slug,
+    waves: wavesDetail,
+    cycles: featObj.cycles || [],
+    workflowScript,
+    workflowDispatchPrompt,
+    swarmPlanJson,
+    swarmDispatchPrompt,
+    ticketPrompts,
+  };
 }
 
 function upsertAgentSkillsSection(existingContent, newSection) {
@@ -383,6 +603,14 @@ export function createStore({
           .map((n) => ({ file: n, path: `.scratch/reports/${n}` }))
       : [];
 
+    const workflowsDir = join(abs, 'workflows');
+    const workflowFiles = existsSync(workflowsDir)
+      ? readdirSync(workflowsDir)
+          .filter((n) => n.endsWith('.md'))
+          .sort()
+          .map((n) => ({ file: n, path: `workflows/${n}` }))
+      : [];
+
     const board = parseScratchTickets(abs);
 
     return {
@@ -414,6 +642,7 @@ export function createStore({
       },
       adrs,
       reports,
+      workflowFiles,
       board,
     };
   }
@@ -464,6 +693,7 @@ export function createStore({
       scenarios: catalog.scenarios,
       presets: catalog.presets,
       workflow: catalog.workflow,
+      orchestrationRecipes: catalog.orchestrationRecipes || ORCHESTRATION_RECIPES,
       skills,
       workspaces,
       activeWorkspace: targetWs ? inspectWorkspace(targetWs) : null,
@@ -1024,5 +1254,6 @@ export function createStore({
     listBackups,
     restoreBackup,
     syncUpstream,
+    buildOrchestrationPlan: (params) => buildOrchestrationPlan(params),
   };
 }

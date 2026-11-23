@@ -42,4 +42,8 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 ## Antigravity Native Runtime Notes
 
-- **Native parallel worktrees**: Launch each ready frontier ticket via `invoke_subagent` with `TypeName: "self"` and `Workspace: "share"` (Antigravity's built-in shared repository worktree). Do not poll; Antigravity wakes you reactively as each subagent finishes. For `codebase` exploration before kicking off tickets, prefer `mp-explorer`.
+- **Antigravity 2.34+ Orchestration Modes** (pick the lightest fit for the DAG):
+  - **Mode A · Topological Wave Runner (`run_workflow`, recommended for 3+ tickets)**: Read the `run-workflow` skill and execute topological waves deterministically in Python: `phase("Wave N")`, `await parallel(wave_tickets, lambda t: agent(..., workspace="share", schema=...))`, run a wave-merger/test turn, then close with `parallel` `mp-standards-reviewer` + `mp-spec-reviewer`. Pass sparse file-path pointers (`spec.md`, ticket `.md`, `GLOSSARY.md`) in every agent prompt because workflow agents do not share conversation history.
+  - **Mode B · Collaborative Board (`swarm`, for cross-worker contract coordination)**: Read `swarm_pane`, spawn workers via `swarm(action="add", workspace="share", name=...)`, and publish `<appData>/brain/<conversationId>/.system_generated/swarm/plan.json` (`goal`, `tasks`, `threads`) so Antigravity's Swarm Overview UI tracks wave progress live.
+  - **Mode C · Lightweight Subagents (`invoke_subagent`)**: For 1–2 tickets, launch `invoke_subagent` with `TypeName: "self"` and `Workspace: "share"` (no polling needed; reactive wakeup notifies on completion). Use `mp-explorer` before dispatching to inspect hotspots read-only.
+- **Visual DAG Waves**: Users can inspect computed topological ticket waves and generate ready-to-run `run_workflow` / `swarm` scripts in `[Mattpocock Skills](sidecar://mattpocock-skills/mp_studio/)`.

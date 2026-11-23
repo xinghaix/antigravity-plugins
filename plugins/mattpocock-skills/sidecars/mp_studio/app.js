@@ -47,10 +47,17 @@
       previewAgents: '叶子子代理',
       previewAdaptations: '原生适配',
       copyPromptBtn: '复制调用指令',
+      sendChatBtn: '发送到对话',
+      newSessionBtn: '新会话执行',
       slashHideBtn: '隐藏 / 菜单',
       slashShowBtn: '显示在 / 菜单',
       deliverOneBtn: '投递到当前项目',
       copiedToast: '已复制：{text}',
+      sentToChatToast: '已发送到当前对话',
+      newConvStartedToast: '已开启全新会话执行任务',
+      sidecarAgentFallback: '当前视图外无法直接派发会话，已复制提示词，请粘贴使用',
+      openedFileToast: '已在侧栏打开 {file}',
+      filePaneFallback: '路径：{path}（已复制到剪贴板）',
       toggledOnToast: '已启用 {name}',
       toggledOffToast: '已停用 {name}',
       autoEnabledToast: '已自动联动启用依赖：{deps}',
@@ -80,8 +87,19 @@
       wfOnRampsTitle: '三大快捷入口（On-Ramps）',
       wfOnRampsSub: '非标准新需求场景直接从对应入口切入，再合流回主干',
       wfPhaseTitle: '上下文阶段边界速查（Phase Boundaries）',
-      wfPhaseSub: '决定什么时候继续、压缩、新开会话或派发叶子子代理',
+      wfPhaseSub: '决定什么时候继续、压缩、新开会话、使用 run_workflow 或多智能体 Swarm',
       wfPhaseAdvice: '阶段边界建议',
+      wfRecipesTitle: 'Antigravity 2.34 原生多智能体编排蓝图',
+      wfRecipesSub: '基于 run_workflow Python DAG、Native Swarm 共享看板与 schedule 定时任务',
+      previewRecipeBtn: '查看脚本',
+      orchestrateBtn: '⚡ 2.34 编排执行',
+      orchModalTitleFeature: '2.34+ 拓扑波次编排 · {name}',
+      orchModalTitleRecipe: '2.34+ 编排蓝图 · {name}',
+      orchModalSubFeature: '基于 .scratch Blocked-by 依赖自动生成 run_workflow / Swarm 执行方案',
+      orchCycleWarn: '检测到循环依赖或未知前置阻塞：{items}',
+      waveLabel: '波次 {n} ({mode})',
+      waveParallel: '可并发 {k}',
+      waveSingle: '单票据',
       // Workspace tab
       wsLabel: '当前工作区:',
       wsNone: '尚未关联工作区',
@@ -161,10 +179,17 @@
       previewAgents: 'Leaf Subagents',
       previewAdaptations: 'Adaptations',
       copyPromptBtn: 'Copy Prompt',
+      sendChatBtn: 'Send to Chat',
+      newSessionBtn: 'New Session',
       slashHideBtn: 'Hide from / menu',
       slashShowBtn: 'Show in / menu',
       deliverOneBtn: 'Deliver to Active Repo',
       copiedToast: 'Copied: {text}',
+      sentToChatToast: 'Dispatched prompt to active conversation',
+      newConvStartedToast: 'Started fresh conversation for task',
+      sidecarAgentFallback: 'Host agent bridge unavailable; prompt copied to clipboard',
+      openedFileToast: 'Opened {file} in Aux Pane',
+      filePaneFallback: 'Path copied: {path}',
       toggledOnToast: 'Enabled {name}',
       toggledOffToast: 'Disabled {name}',
       autoEnabledToast: 'Auto-enabled dependencies: {deps}',
@@ -193,8 +218,19 @@
       wfOnRampsTitle: 'Entry On-Ramps',
       wfOnRampsSub: 'Enter from incoming issues, bugs, or oversized foggy projects',
       wfPhaseTitle: 'Phase Boundaries Cheat-Sheet',
-      wfPhaseSub: 'When to continue, compact, start a new conversation, handoff, or spawn a subagent',
+      wfPhaseSub: 'When to continue, compact, start a new conversation, run_workflow, or launch a native Swarm',
       wfPhaseAdvice: 'Phase Boundary Advice',
+      wfRecipesTitle: 'Antigravity 2.34+ Multi-Agent Orchestration Blueprints',
+      wfRecipesSub: 'Ready-to-run run_workflow Python DAGs, Native Swarm boards, and scheduled crons',
+      previewRecipeBtn: 'Inspect Script',
+      orchestrateBtn: '⚡ 2.34 Orchestrate',
+      orchModalTitleFeature: '2.34+ Wave Orchestration · {name}',
+      orchModalTitleRecipe: '2.34+ Blueprint · {name}',
+      orchModalSubFeature: 'Generated runnable run_workflow / Swarm execution plan from .scratch dependency edges',
+      orchCycleWarn: 'Dependency cycle or missing external blocker detected: {items}',
+      waveLabel: 'Wave {n} ({mode})',
+      waveParallel: '{k} parallel',
+      waveSingle: 'single',
       wsLabel: 'Workspace:',
       wsNone: 'No workspace linked',
       wsPathPlaceholder: 'Enter project path, e.g. ~/Projects/my-app',
@@ -300,6 +336,60 @@
     }
   }
 
+  async function sendToChat(prompt) {
+    if (!prompt) return;
+    if (window.sidecar?.agent?.sendMessage) {
+      try {
+        await window.sidecar.agent.sendMessage(prompt);
+        toast(t('sentToChatToast'), 'ok');
+        return;
+      } catch { /* fallback below */ }
+    }
+    try {
+      await navigator.clipboard.writeText(prompt);
+    } catch { /* ignore */ }
+    toast(t('sidecarAgentFallback'), 'warn');
+  }
+
+  async function runInNewSession(prompt, title = '') {
+    if (!prompt) return;
+    if (window.sidecar?.agent?.startConversation) {
+      try {
+        const conv = await window.sidecar.agent.startConversation(prompt, title || undefined);
+        if (conv?.id && window.sidecar?.ui?.toggleConversation) {
+          try { await window.sidecar.ui.toggleConversation(conv.id); } catch { /* ignore */ }
+        }
+        toast(t('newConvStartedToast'), 'ok');
+        return;
+      } catch { /* fallback below */ }
+    }
+    try {
+      await navigator.clipboard.writeText(prompt);
+    } catch { /* ignore */ }
+    toast(t('sidecarAgentFallback'), 'warn');
+  }
+
+  async function openFileInPane(relOrAbsPath) {
+    if (!relOrAbsPath) return;
+    const baseWs = state.selectedWorkspace || state.data?.activeWorkspace?.path || '';
+    const isAbs = relOrAbsPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(relOrAbsPath) || relOrAbsPath.startsWith('file://');
+    const absPath = isAbs
+      ? relOrAbsPath
+      : (baseWs ? `${baseWs.replace(/\/$/, '')}/${relOrAbsPath.replace(/^\.\//, '')}` : relOrAbsPath);
+    if (window.sidecar?.ui?.toggleAuxPane) {
+      try {
+        const uri = absPath.startsWith('file://') ? absPath : `file://${encodeURI(absPath)}`;
+        await window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri });
+        toast(t('openedFileToast', { file: relOrAbsPath.split('/').pop() }), 'ok');
+        return;
+      } catch { /* fallback below */ }
+    }
+    try {
+      await navigator.clipboard.writeText(absPath);
+    } catch { /* ignore */ }
+    toast(t('filePaneFallback', { path: absPath }), 'warn');
+  }
+
   const state = {
     data: null,
     activeTab: 'skills',      // skills | workflow | workspace | settings
@@ -313,14 +403,19 @@
     previewTab: 'adapted',    // adapted | upstream | <companion>
     selectedWorkflowId: 'grill',
     selectedWorkspace: '',
+    hostWorkspaceUris: [],    // 2.34+ dynamic workspace URIs
+    orchestrate: null,        // { plan, activeView }
     backups: [],
     syncing: false,
   };
 
   async function refresh() {
     try {
-      const payload = state.selectedWorkspace
-        ? await api('/api/state/query', { workspace: state.selectedWorkspace })
+      const payload = (state.selectedWorkspace || state.hostWorkspaceUris.length)
+        ? await api('/api/state/query', {
+            workspace: state.selectedWorkspace,
+            workspaceUris: state.hostWorkspaceUris,
+          })
         : await api('/api/state');
       state.data = payload;
       if (payload.activeWorkspace?.path) {
@@ -533,6 +628,9 @@
     const collisionBadge = s.collisionNote
       ? `<span class="badge badge-warn" title="${esc(s.collisionNote)}">${esc(t('badgeCollision'))}</span>`
       : '';
+    const orchBadge = s.orchestration?.engineLabel
+      ? `<span class="badge badge-engine">${esc(s.orchestration.engineLabel)}</span>`
+      : '';
 
     return `
       <div class="skill-item ${s.enabled ? '' : 'skill-disabled'} ${isExpanded ? 'expanded' : ''}" data-skill="${esc(s.name)}">
@@ -542,6 +640,7 @@
             <span class="skill-badges">
               <span class="badge ${s.invocation === 'user' ? 'badge-user' : 'badge-model'}">${esc(invLabel)}</span>
               <span class="badge">${esc(getScenarioLabel(s.scenario))}</span>
+              ${orchBadge}
               ${bucketBadge}
               ${collisionBadge}
             </span>
@@ -594,6 +693,8 @@
           </div>
           <div class="preview-actions">
             <button type="button" class="btn btn-secondary btn-xs" data-copy-prompt="${esc(s.samplePrompt)}">${esc(t('copyPromptBtn'))}</button>
+            <button type="button" class="btn btn-secondary btn-xs" data-send-chat="${esc(s.samplePrompt)}">${esc(t('sendChatBtn'))}</button>
+            <button type="button" class="btn btn-secondary btn-xs" data-new-session="${esc(s.samplePrompt)}" data-session-title="${esc(s.name)}">${esc(t('newSessionBtn'))}</button>
             <button type="button" class="btn btn-secondary btn-xs" data-toggle-slash="${esc(s.name)}">${esc(s.disableSlashCommand ? t('slashShowBtn') : t('slashHideBtn'))}</button>
             <button type="button" class="btn btn-primary btn-xs" data-deliver-single="${esc(s.name)}">${esc(t('deliverOneBtn'))}</button>
           </div>
@@ -635,7 +736,11 @@
               <strong>${esc(lang === 'en' ? selected.titleEn : selected.titleZh)} · <code>/${esc(selected.skill)}</code></strong>
               <span class="section-sub"><strong>${esc(t('wfPhaseAdvice'))}：</strong>${esc(lang === 'en' ? selected.phaseTipEn : selected.phaseTipZh)}</span>
             </div>
-            <button type="button" class="btn btn-primary btn-xs" data-copy-prompt="${esc(selectedMeta?.samplePrompt || `/${selected.skill}`)}">${esc(t('copyPromptBtn'))}</button>
+            <div class="btn-row-compact">
+              <button type="button" class="btn btn-secondary btn-xs" data-copy-prompt="${esc(selectedMeta?.samplePrompt || `/${selected.skill}`)}">${esc(t('copyPromptBtn'))}</button>
+              <button type="button" class="btn btn-secondary btn-xs" data-send-chat="${esc(selectedMeta?.samplePrompt || `/${selected.skill}`)}">${esc(t('sendChatBtn'))}</button>
+              <button type="button" class="btn btn-primary btn-xs" data-new-session="${esc(selectedMeta?.samplePrompt || `/${selected.skill}`)}" data-session-title="${esc(selected.skill)}">${esc(t('newSessionBtn'))}</button>
+            </div>
           </div>
         ` : ''}
       </section>
@@ -650,17 +755,45 @@
         <div class="spine-grid">
           ${(wf.onRamps || []).map((r) => {
             const meta = (state.data.skills || []).find((s) => s.name === r.skill);
+            const promptVal = meta?.samplePrompt || r.skill;
             return `
               <div class="spine-node">
                 <span class="spine-node-title">${esc(lang === 'en' ? r.titleEn : r.titleZh)}</span>
                 <span class="spine-node-skill">${meta?.invocation === 'user' ? `/${r.skill}` : r.skill}</span>
                 <span class="spine-node-desc">${esc(lang === 'en' ? r.descEn : r.descZh)}</span>
-                <div style="margin-top:6px;">
-                  <button type="button" class="btn btn-secondary btn-xs" data-copy-prompt="${esc(meta?.samplePrompt || r.skill)}">${esc(t('copyPromptBtn'))}</button>
+                <div class="btn-row-compact" style="margin-top:6px;">
+                  <button type="button" class="btn btn-secondary btn-xs" data-copy-prompt="${esc(promptVal)}">${esc(t('copyPromptBtn'))}</button>
+                  <button type="button" class="btn btn-secondary btn-xs" data-send-chat="${esc(promptVal)}">${esc(t('sendChatBtn'))}</button>
+                  <button type="button" class="btn btn-primary btn-xs" data-new-session="${esc(promptVal)}" data-session-title="${esc(r.skill)}">${esc(t('newSessionBtn'))}</button>
                 </div>
               </div>
             `;
           }).join('')}
+        </div>
+      </section>
+
+      <section class="panel-card">
+        <div class="panel-card-head">
+          <div>
+            <h3>${esc(t('wfRecipesTitle'))}</h3>
+            <p>${esc(t('wfRecipesSub'))}</p>
+          </div>
+        </div>
+        <div class="recipe-grid">
+          ${(state.data.orchestrationRecipes || []).map((rc) => `
+            <div class="recipe-card">
+              <div class="recipe-card-head">
+                <strong style="font-size:12.5px;">${esc(lang === 'en' ? rc.titleEn : rc.title)}</strong>
+                <span class="badge badge-engine">${esc(rc.engine)}</span>
+              </div>
+              <div class="section-sub">${esc(lang === 'en' ? rc.summaryEn : rc.summary)}</div>
+              <div class="btn-row-compact" style="margin-top:auto;">
+                <button type="button" class="btn btn-secondary btn-xs" data-open-recipe="${esc(rc.id)}">${esc(t('previewRecipeBtn'))}</button>
+                <button type="button" class="btn btn-secondary btn-xs" data-send-chat="${esc(rc.dispatchPrompt)}">${esc(t('sendChatBtn'))}</button>
+                <button type="button" class="btn btn-primary btn-xs" data-new-session="${esc(rc.dispatchPrompt)}" data-session-title="${esc(rc.titleEn || rc.title)}">${esc(t('newSessionBtn'))}</button>
+              </div>
+            </div>
+          `).join('')}
         </div>
       </section>
 
@@ -714,21 +847,57 @@
     }
 
     const setup = active.setup;
-    const board = active.board || { tickets: [] };
+    const board = active.board || { features: [], tickets: [] };
     const readyTickets = board.tickets.filter((tk) => tk.state === 'ready');
     const blockedTickets = board.tickets.filter((tk) => tk.state === 'blocked');
     const doneTickets = board.tickets.filter((tk) => tk.state === 'done');
 
-    const renderTicketCard = (tk) => `
-      <div class="ticket-card">
-        <div class="ticket-title">${esc(tk.title)}</div>
-        <div class="ticket-meta">
-          <span class="mono">${esc(tk.relPath)}</span>
-          ${tk.unresolvedBlockers?.length ? `<span class="badge badge-warn">Blocked by: ${esc(tk.unresolvedBlockers.join(','))}</span>` : ''}
+    const renderTicketCard = (tk) => {
+      const implPrompt = `/implement — Implement ticket \`${tk.relPath}\`. Check \`GLOSSARY.md\` and \`docs/agents/\` if present.`;
+      return `
+        <div class="ticket-card">
+          <div class="ticket-title">${esc(tk.title)}</div>
+          <div class="ticket-meta">
+            <button type="button" class="file-link-btn" data-open-file="${esc(tk.relPath)}" title="Open in Aux Pane">${esc(tk.relPath)}</button>
+            ${tk.wave ? `<span class="badge">W${esc(tk.wave)}</span>` : ''}
+            ${tk.unresolvedBlockers?.length ? `<span class="badge badge-warn">Blocked by: ${esc(tk.unresolvedBlockers.join(','))}</span>` : ''}
+          </div>
+          ${tk.state === 'ready' ? `
+            <div class="btn-row-compact">
+              <button type="button" class="btn btn-primary btn-xs" data-new-session="${esc(implPrompt)}" data-session-title="Ticket #${esc(tk.num)}">${esc(t('newSessionBtn'))}</button>
+              <button type="button" class="btn btn-secondary btn-xs" data-send-chat="${esc(implPrompt)}">${esc(t('sendChatBtn'))}</button>
+              <button type="button" class="btn btn-ghost btn-xs" data-copy-prompt="/implement ${esc(tk.relPath)}">/implement</button>
+            </div>
+          ` : ''}
         </div>
-        ${tk.state === 'ready' ? `<button type="button" class="btn btn-primary btn-xs" data-copy-prompt="/implement ${esc(tk.relPath)}">/implement</button>` : ''}
-      </div>
-    `;
+      `;
+    };
+
+    const featureWavesHtml = (board.features || []).map((feat) => {
+      const lanes = (feat.waves || []).map((w) => {
+        const modeTxt = w.tickets.length > 1
+          ? t('waveParallel', { k: w.tickets.length })
+          : t('waveSingle');
+        return `<span class="wave-lane-pill"><strong>${esc(t('waveLabel', { n: w.wave, mode: modeTxt }))}:</strong> ${esc(w.tickets.map((id) => `#${id}`).join(', '))}</span>`;
+      }).join(' → ');
+      const cyclesHtml = (feat.cycles || []).length > 0
+        ? `<div class="alert-banner"><span>${esc(t('orchCycleWarn', { items: feat.cycles.map((c) => `#${c.num}`).join(', ') }))}</span></div>`
+        : '';
+      return `
+        <div class="wave-feature-box">
+          <div class="wave-feature-head">
+            <div class="btn-row-compact">
+              <strong class="mono">${esc(feat.slug)}</strong>
+              ${feat.specRelPath ? `<button type="button" class="file-link-btn" data-open-file="${esc(feat.specRelPath)}">spec.md</button>` : ''}
+              ${feat.mapRelPath ? `<button type="button" class="file-link-btn" data-open-file="${esc(feat.mapRelPath)}">map.md</button>` : ''}
+            </div>
+            ${feat.waves?.length ? `<button type="button" class="btn btn-primary btn-xs" data-orchestrate-feature="${esc(feat.slug)}">${esc(t('orchestrateBtn'))}</button>` : ''}
+          </div>
+          ${lanes ? `<div class="wave-lanes">${lanes}</div>` : ''}
+          ${cyclesHtml}
+        </div>
+      `;
+    }).join('');
 
     return `
       ${wsSelectorHtml}
@@ -826,7 +995,9 @@
         </div>
         ${board.tickets.length === 0
           ? `<span class="section-sub">${esc(t('wsBoardEmpty'))}</span>`
-          : `<div class="kanban-grid">
+          : `
+            ${featureWavesHtml}
+            <div class="kanban-grid">
               <div class="kanban-col">
                 <div class="kanban-col-head"><span>🟢 ${esc(t('wsColReady'))}</span><span class="badge badge-ok">${readyTickets.length}</span></div>
                 ${readyTickets.map(renderTicketCard).join('') || '<span class="section-sub">-</span>'}
@@ -847,14 +1018,18 @@
         <div class="panel-card-head">
           <div>
             <h3>${esc(t('wsGlossaryTitle'))}</h3>
-            <p>ADRs: ${active.adrs.length} · HTML Reports: ${active.reports.length}</p>
+            <p>ADRs: ${active.adrs.length} · HTML Reports: ${active.reports.length}${active.workflowFiles?.length ? ` · Workflows: ${active.workflowFiles.length}` : ''}</p>
           </div>
-          <button type="button" id="btn-save-glossary" class="btn btn-secondary btn-sm">${esc(t('wsGlossarySaveBtn'))}</button>
+          <div class="btn-row-compact">
+            ${active.glossary.exists ? '<button type="button" class="btn btn-ghost btn-xs" data-open-file="GLOSSARY.md">Aux Pane 打开</button>' : ''}
+            <button type="button" id="btn-save-glossary" class="btn btn-secondary btn-sm">${esc(t('wsGlossarySaveBtn'))}</button>
+          </div>
         </div>
         <textarea id="ws-glossary-editor" class="textarea mono" placeholder="# Glossary\n\nDefine ubiquitous domain terms here...">${esc(active.glossary.content)}</textarea>
-        ${active.adrs.length ? `
+        ${(active.adrs.length || active.workflowFiles?.length) ? `
           <div style="display:flex; flex-wrap:wrap; gap:6px;">
-            ${active.adrs.map((a) => `<span class="badge mono" title="${esc(a.path)}">${esc(a.title)}</span>`).join('')}
+            ${active.adrs.map((a) => `<button type="button" class="badge file-link-btn" data-open-file="${esc(a.path)}" title="${esc(a.path)}">${esc(a.title)}</button>`).join('')}
+            ${(active.workflowFiles || []).map((w) => `<button type="button" class="badge file-link-btn" data-open-file="${esc(w.path)}" title="${esc(w.path)}">${esc(w.file)}</button>`).join('')}
           </div>
         ` : ''}
       </section>
@@ -1085,6 +1260,10 @@
         renderMain();
       });
     });
+    document.querySelectorAll('[data-open-recipe]').forEach((btn) => {
+      btn.addEventListener('click', () => openOrchestrateModal({ recipeId: btn.dataset.openRecipe }));
+    });
+
     bindCopyPromptButtons();
   }
 
@@ -1172,6 +1351,10 @@
       }
     });
 
+    document.querySelectorAll('[data-orchestrate-feature]').forEach((btn) => {
+      btn.addEventListener('click', () => openOrchestrateModal({ feature: btn.dataset.orchestrateFeature }));
+    });
+
     bindCopyPromptButtons();
   }
 
@@ -1219,6 +1402,119 @@
     document.querySelectorAll('[data-copy-prompt]').forEach((btn) => {
       btn.addEventListener('click', () => copyText(btn.dataset.copyPrompt));
     });
+    document.querySelectorAll('[data-send-chat]').forEach((btn) => {
+      btn.addEventListener('click', () => sendToChat(btn.dataset.sendChat));
+    });
+    document.querySelectorAll('[data-new-session]').forEach((btn) => {
+      btn.addEventListener('click', () => runInNewSession(btn.dataset.newSession, btn.dataset.sessionTitle || ''));
+    });
+    document.querySelectorAll('[data-open-file]').forEach((btn) => {
+      btn.addEventListener('click', () => openFileInPane(btn.dataset.openFile));
+    });
+  }
+
+  function currentOrchestratePayload() {
+    const o = state.orchestrate;
+    if (!o?.plan) return { text: '', title: '' };
+    const p = o.plan;
+    if (p.mode === 'recipe') {
+      return {
+        text: p.workflowDispatchPrompt || p.workflowScript || '',
+        title: p.recipe?.titleEn || p.recipe?.title || 'Workflow',
+      };
+    }
+    if (o.activeView === 'swarm') {
+      return { text: p.swarmDispatchPrompt || '', title: `Swarm: ${p.feature}` };
+    }
+    if (o.activeView === 'tickets') {
+      return {
+        text: (p.ticketPrompts || []).map((tp) => `Wave ${tp.wave} · #${tp.num}: ${tp.prompt}`).join('\n'),
+        title: `Tickets: ${p.feature}`,
+      };
+    }
+    return { text: p.workflowDispatchPrompt || '', title: `run_workflow: ${p.feature}` };
+  }
+
+  function renderOrchestrateModal() {
+    const o = state.orchestrate;
+    if (!o?.plan) return;
+    const p = o.plan;
+    const tabsEl = $('orch-mode-tabs');
+    const areaEl = $('orch-preview-area');
+
+    if (p.mode === 'recipe') {
+      const title = lang === 'en' ? (p.recipe?.titleEn || p.recipe?.title) : p.recipe?.title;
+      $('orch-title').textContent = t('orchModalTitleRecipe', { name: title || p.recipe?.id || '' });
+      $('orch-sub').textContent = lang === 'en' ? (p.recipe?.summaryEn || '') : (p.recipe?.summary || '');
+      tabsEl.innerHTML = '';
+      areaEl.innerHTML = `<pre class="code-viewer tall">${esc(p.workflowScript || p.workflowDispatchPrompt || '')}</pre>`;
+      return;
+    }
+
+    $('orch-title').textContent = t('orchModalTitleFeature', { name: p.feature });
+    $('orch-sub').textContent = t('orchModalSubFeature');
+    const tabs = [
+      { id: 'workflow', label: 'run_workflow Python DAG' },
+      { id: 'swarm', label: 'Native Swarm + plan.json' },
+      { id: 'tickets', label: `Per-Ticket (${p.ticketPrompts?.length || 0})` },
+    ];
+    tabsEl.innerHTML = tabs.map((tb) => `
+      <button type="button" class="file-tab ${o.activeView === tb.id ? 'active' : ''}" data-orch-view="${esc(tb.id)}">${esc(tb.label)}</button>
+    `).join('');
+    tabsEl.querySelectorAll('[data-orch-view]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.orchestrate.activeView = btn.dataset.orchView;
+        renderOrchestrateModal();
+      });
+    });
+
+    if (o.activeView === 'swarm') {
+      areaEl.innerHTML = `<pre class="code-viewer tall">${esc(p.swarmDispatchPrompt || JSON.stringify(p.swarmPlanJson, null, 2))}</pre>`;
+    } else if (o.activeView === 'tickets') {
+      areaEl.innerHTML = `
+        <div class="skills-list-card" style="max-height:390px;overflow:auto;">
+          ${(p.ticketPrompts || []).map((tp) => `
+            <div class="skill-item">
+              <div class="skill-row">
+                <div class="skill-main">
+                  <span class="badge">W${esc(tp.wave)} · #${esc(tp.num)}</span>
+                  <strong style="font-size:12px;">${esc(tp.title)}</strong>
+                </div>
+                <div class="btn-row-compact">
+                  <button type="button" class="btn btn-ghost btn-xs" data-orch-tk-copy="${esc(tp.num)}">${esc(t('copyPromptBtn'))}</button>
+                  <button type="button" class="btn btn-primary btn-xs" data-orch-tk-new="${esc(tp.num)}">${esc(t('newSessionBtn'))}</button>
+                </div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+      areaEl.querySelectorAll('[data-orch-tk-copy]').forEach((btn) => {
+        const tp = (p.ticketPrompts || []).find((x) => x.num === btn.dataset.orchTkCopy);
+        if (tp) btn.addEventListener('click', () => copyText(tp.prompt));
+      });
+      areaEl.querySelectorAll('[data-orch-tk-new]').forEach((btn) => {
+        const tp = (p.ticketPrompts || []).find((x) => x.num === btn.dataset.orchTkNew);
+        if (tp) btn.addEventListener('click', () => runInNewSession(tp.prompt, `Ticket #${tp.num}`));
+      });
+    } else {
+      areaEl.innerHTML = `<pre class="code-viewer tall">${esc(p.workflowScript || '')}</pre>`;
+    }
+  }
+
+  async function openOrchestrateModal({ feature = '', recipeId = '' } = {}) {
+    try {
+      const plan = await api('/api/orchestrate/plan', {
+        workspacePath: state.selectedWorkspace || '',
+        feature,
+        recipeId,
+      });
+      state.orchestrate = { plan, activeView: 'workflow' };
+      renderOrchestrateModal();
+      $('modal-orchestrate')?.classList.remove('hidden');
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   }
 
   function openDeliverModal(singleSkill = '') {
@@ -1337,9 +1633,37 @@
       }
     } else if (e.key === 'Escape') {
       $('modal-deliver').classList.add('hidden');
+      $('modal-orchestrate')?.classList.add('hidden');
     }
   });
 
+  $('btn-orch-copy')?.addEventListener('click', () => {
+    const { text } = currentOrchestratePayload();
+    if (text) copyText(text);
+  });
+  $('btn-orch-send')?.addEventListener('click', () => {
+    const { text } = currentOrchestratePayload();
+    if (text) sendToChat(text);
+  });
+  $('btn-orch-new-conv')?.addEventListener('click', () => {
+    const { text, title } = currentOrchestratePayload();
+    if (text) runInNewSession(text, title);
+  });
+
   applyStaticI18n();
-  refresh();
+  (async () => {
+    try {
+      if (window.sidecar?.getWorkspaceUris) {
+        const uris = await window.sidecar.getWorkspaceUris();
+        if (Array.isArray(uris)) state.hostWorkspaceUris = uris;
+      }
+      if (window.sidecar?.onWorkspaceChange) {
+        window.sidecar.onWorkspaceChange((uris) => {
+          state.hostWorkspaceUris = Array.isArray(uris) ? uris : [];
+          refresh();
+        });
+      }
+    } catch { /* ignore */ }
+    refresh();
+  })();
 })();

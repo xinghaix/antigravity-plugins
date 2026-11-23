@@ -3,8 +3,8 @@
   "upstream": {
     "repo": "mattpocock/skills",
     "version": "1.3.2",
-    "commit": "5863806dd4e15c63174bee4e7515a4256792ecfa",
-    "syncedAt": "2026-11-13T05:03:27.447Z"
+    "commit": "abeeaf95660ba9e8b7c753eb38f441ca707a8823",
+    "syncedAt": "2026-11-23T03:19:33.502Z"
   },
   "buckets": [
     {
@@ -268,9 +268,134 @@
         "action": "派发叶子子代理 (Subagent)",
         "whenZh": "需要独立隔离大块读盘/调研/审查（mp-researcher / mp-explorer / 双轴审查）。",
         "whenEn": "Isolate heavy reading, web research, or parallel code review."
+      },
+      {
+        "action": "动态编排脚本 (run_workflow)",
+        "whenZh": "需要按 DAG 波次并发执行多个 Ticket、做 Generator↔Verifier 循环或 Schema 严格校验聚合。",
+        "whenEn": "Deterministic Python parallel/pipeline waves, stateful verifier loops, or schema-checked fan-out."
+      },
+      {
+        "action": "多智能体蜂群 (Native Swarm)",
+        "whenZh": "多个并行 Worker 需要跨成员共享消息板、认领任务或同步可视化 .system_generated/swarm/plan.json。",
+        "whenEn": "Parallel implementers need a live shared message board, worker roster, and Swarm Overview UI."
       }
     ]
   },
+  "orchestrationRecipes": [
+    {
+      "id": "implement-spec-waves",
+      "title": "Spec 拓扑波次流水线",
+      "titleEn": "Spec Topological Wave Pipeline",
+      "engine": "run_workflow",
+      "skills": [
+        "implement-spec",
+        "tdd",
+        "code-review"
+      ],
+      "when": "当 .scratch/<feature>/issues/ 中存在多个已拆好依赖边的垂直切片票据，追求确定性波次推进与自动合入。",
+      "whenEn": "Multiple .scratch tickets with blocking edges ready for deterministic parallel wave execution.",
+      "summary": "按 Wave 依赖逐波调用 parallel(..., workspace=\"share\") 实施 + 合入当前工作区 + 收尾双轴并行 Code Review。",
+      "summaryEn": "Executes Wave 1..N via parallel(..., workspace=\"share\"), merges wave diffs, and finishes with 2-axis review.",
+      "dispatchPrompt": "Read and follow `implement-spec` and `run-workflow` skills. Inspect `.scratch/` tickets, organize them into topological waves, and execute them wave-by-wave using `run_workflow` (`parallel(..., workspace=\"share\")`), merging each wave and closing with two-axis `code-review`.",
+      "workflowTemplate": "phase(\"Implement Wave\")\nresults = await parallel(wave_tickets, lambda t: agent(\n    f\"Implement ticket {t['id']}: read {t['path']} and spec {t['spec_path']}. Follow TDD.\",\n    schema={\"type\": \"object\", \"properties\": {\"ticket_id\": {\"type\": \"string\"}, \"branch_or_patch\": {\"type\": \"string\"}, \"tests_passed\": {\"type\": \"boolean\"}}, \"required\": [\"ticket_id\", \"tests_passed\"]},\n    role=f\"Implement {t['id']}\",\n    workspace=\"share\",\n))\nphase(\"Two-Axis Final Review\")\nstandards, spec = await parallel([\"standards\", \"spec\"], lambda ax: agent(\n    \"Review current branch diff against main.\",\n    schema={\"type\": \"string\"},\n    type_name=\"mp-standards-reviewer\" if ax == \"standards\" else \"mp-spec-reviewer\",\n    role=f\"{ax} review\",\n))"
+    },
+    {
+      "id": "implement-spec-swarm",
+      "title": "Native Swarm 协作实施看板",
+      "titleEn": "Native Swarm Spec Board",
+      "engine": "swarm",
+      "skills": [
+        "implement-spec",
+        "tdd"
+      ],
+      "when": "多个并行开发智能体之间需要在实施过程中动态协调接口契约、接口命名或故障转移。",
+      "whenEn": "Concurrent implementers need live cross-worker coordination on a shared message board.",
+      "summary": "调用 Antigravity 2.34 原生 swarm(action=\"add\", workspace=\"share\") 派发 Worker，并写入 .system_generated/swarm/plan.json 在 Swarm UI 实时看板跟踪。",
+      "summaryEn": "Spawns shared-workspace swarm workers per ticket and writes .system_generated/swarm/plan.json for the Swarm UI.",
+      "dispatchPrompt": "Read and follow `implement-spec` and `swarm_pane` skills. Call `swarm(action=\"add\", workspace=\"share\")` for each ready frontier ticket, write `.system_generated/swarm/plan.json` (goal, tasks, threads), and coordinate wave merges on the swarm board.",
+      "workflowTemplate": "# 1. Spawn ready workers via swarm(action=\"add\", workspace=\"share\", name=\"t-01\", brief=\"...\")\n# 2. Write <appData>/brain/<conversationId>/.system_generated/swarm/plan.json:\n{\n  \"goal\": {\"title\": \"Execute Spec Frontier Waves\", \"line\": \"Parallel shared-worktree TDD slices then merge.\"},\n  \"tasks\": {\"t-01\": \"Implement first vertical slice\"},\n  \"threads\": [{\"id\": \"wave-1\", \"title\": \"Ready Frontier\", \"goal\": \"Unblocked tickets pass tests\", \"tasks\": [\"t-01\"]}]\n}"
+    },
+    {
+      "id": "code-review-dual-axis",
+      "title": "双轴结构化 Code Review",
+      "titleEn": "Dual-Axis Structured Code Review",
+      "engine": "run_workflow",
+      "skills": [
+        "code-review",
+        "pr"
+      ],
+      "when": "需要对分支或工作区变更同时从「代码规范/坏味道」和「Spec 规格符合度」做严格 Schema 汇总。",
+      "whenEn": "Run Standards and Spec reviews in parallel with structured JSON verdicts.",
+      "summary": "parallel() 并发调起 mp-standards-reviewer 与 mp-spec-reviewer，按统一 Verdict Schema 输出两份独立报告。",
+      "summaryEn": "Runs mp-standards-reviewer and mp-spec-reviewer concurrently via run_workflow and prints side-by-side verdicts.",
+      "dispatchPrompt": "Read and follow `code-review` and `run-workflow` skills. Launch a `run_workflow` script running `mp-standards-reviewer` and `mp-spec-reviewer` in `parallel()` against `main` with structured JSON verdict schemas.",
+      "workflowTemplate": "verdict_schema = {\n    \"type\": \"object\",\n    \"properties\": {\"verdict\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}},\n    \"required\": [\"verdict\", \"findings\"],\n}\nphase(\"Dual-Axis Review\")\nstd_res, spec_res = await parallel([\"standards\", \"spec\"], lambda axis: agent(\n    \"Review git diff vs base branch thoroughly.\",\n    schema=verdict_schema,\n    type_name=\"mp-standards-reviewer\" if axis == \"standards\" else \"mp-spec-reviewer\",\n    role=\"Standards Reviewer\" if axis == \"standards\" else \"Spec Reviewer\",\n))"
+    },
+    {
+      "id": "wayfinder-research-fanout",
+      "title": "Wayfinder 并行一手资料调研",
+      "titleEn": "Wayfinder Parallel Research Fan-Out",
+      "engine": "run_workflow",
+      "skills": [
+        "wayfinder",
+        "research"
+      ],
+      "when": "大型方案存在 3 个以上相互独立的技术未知项（协议规范、SDK 能力、竞品/源码实现），需要快速并发查明。",
+      "whenEn": "Charting a large foggy initiative with 3+ independent primary-source unknowns.",
+      "summary": "利用 run_workflow parallel() 并发派发多个 mp-researcher 调研子代理，再汇总写入决策票据矩阵。",
+      "summaryEn": "Fans out parallel mp-researcher agents per unknown and aggregates findings into decision tickets.",
+      "dispatchPrompt": "Read and follow `wayfinder` and `run-workflow` skills. Fan out the top open decision unknowns concurrently using `parallel()` with `type_name=\"mp-researcher\"` and synthesize citations back into the decision map.",
+      "workflowTemplate": "phase(\"Primary-Source Research Fan-Out\")\nfindings = await parallel(questions, lambda q: agent(\n    f\"Research official primary sources for: {q}. Return key facts and URLs.\",\n    schema={\"type\": \"object\", \"properties\": {\"answer\": {\"type\": \"string\"}, \"sources\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"answer\", \"sources\"]},\n    type_name=\"mp-researcher\",\n    role=f\"Research: {q[:28]}\",\n))"
+    },
+    {
+      "id": "design-it-twice",
+      "title": "Design-It-Twice 并发架构探索",
+      "titleEn": "Design-It-Twice Parallel Architecture",
+      "engine": "run_workflow",
+      "skills": [
+        "codebase-design",
+        "domain-modeling"
+      ],
+      "when": "核心模块边界存在多种截然不同的抽象方案，先生成两份深模块对比提案再敲定 ADR。",
+      "whenEn": "Explore two contrasting deep-module boundaries concurrently before committing an ADR.",
+      "summary": "并发派发 A/B 两位架构探索者输出接口签名、复杂度隐藏评估与权衡对比，交由主智能体或用户拍板。",
+      "summaryEn": "Launches two parallel design agents with contrasting architectural constraints and compares interfaces side-by-side.",
+      "dispatchPrompt": "Read and follow `codebase-design` and `run-workflow` skills. Run two parallel design agents exploring radically different module seams, then present the side-by-side comparison.",
+      "workflowTemplate": "phase(\"Explore Two Contrasting Designs\")\napproaches = [\n    (\"functional-core\", \"Maximize pure state transitions; push I/O strictly to thin boundary adapter.\"),\n    (\"capability-service\", \"Encapsulate state + persistence behind a single coarse command interface.\"),\n]\nproposals = await parallel(approaches, lambda item: agent(\n    f\"Explore architecture approach '{item[0]}': {item[1]}\",\n    schema={\"type\": \"string\"},\n    role=f\"Design: {item[0]}\",\n))"
+    },
+    {
+      "id": "loop-me-verifier",
+      "title": "双轨 Generator↔Verifier 有状态闭环",
+      "titleEn": "Stateful Generator-Verifier Loop",
+      "engine": "run_workflow",
+      "skills": [
+        "loop-me",
+        "tdd"
+      ],
+      "when": "针对测试修复、构建修复或严格验收清单，希望实施者与独立验收者在有限轮次内自动迭代至通过。",
+      "whenEn": "Autonomous bounded-retry loop pairing a stateful implementer agent against an independent verifier agent.",
+      "summary": "使用 run_workflow 有状态 agent()（a = agent(...); await a(...)）维持跨轮上下文，按 max_iterations 安全刹车。",
+      "summaryEn": "Uses stateful multi-turn agent() instances inside run_workflow until verifier passes or max_iterations is reached.",
+      "dispatchPrompt": "Read and follow `run-workflow` skill and the `loop-me` methodology. Create stateful `implementer = agent(..., workspace=\"share\")` and `verifier = agent(...)` inside a bounded `for round in range(5)` loop.",
+      "workflowTemplate": "implementer = agent(\"You fix failing checks using red-green TDD.\", role=\"Implementer\", workspace=\"share\")\nverifier = agent(\"You independently verify all test commands and edge cases.\", role=\"Verifier\")\nfeedback = \"Run initial baseline check.\"\nfor i in range(4):\n    phase(f\"Iteration {i + 1}\")\n    patch_note = await implementer(f\"Address: {feedback}\", {\"type\": \"string\"})\n    verdict = await verifier(f\"Verify patch ({patch_note}). Pass iff 0 failures.\", {\"type\": \"object\", \"properties\": {\"passed\": {\"type\": \"boolean\"}, \"feedback\": {\"type\": \"string\"}}, \"required\": [\"passed\", \"feedback\"]})\n    if verdict[\"passed\"]: break\n    feedback = verdict[\"feedback\"]"
+    },
+    {
+      "id": "chief-of-staff-cron",
+      "title": "常驻定时幕僚长 (Schedule + Swarm)",
+      "titleEn": "Standing Chief-of-Staff Cron",
+      "engine": "schedule",
+      "skills": [
+        "chief-of-staff",
+        "triage"
+      ],
+      "when": "需要按固定节奏（如每日晨间）自动聚合跨仓库待办、分诊新 Issue 并生成简洁简报。",
+      "whenEn": "Periodic standing triage & cross-repo status synthesis using Antigravity schedule crons.",
+      "summary": "使用 Antigravity 2.34 原生 schedule(CronExpression=..., IsDaemon=True) 定时唤醒，再由 run_workflow / swarm 并发巡检。",
+      "summaryEn": "Uses Antigravity schedule(CronExpression=..., IsDaemon=True) combined with run_workflow triage fan-out.",
+      "dispatchPrompt": "Read and follow `triage` and `run-workflow` skills (and `schedule` tool). Help me design or run a recurring standing briefing & triage workflow using `schedule` + `run_workflow`.",
+      "workflowTemplate": "# 1. Configure standing daemon via schedule tool:\n# schedule(CronExpression=\"0 9 * * 1-5\", IsDaemon=True, Prompt=\"Run morning triage & repo status scan.\")\n# 2. Inside each triggered run, fan out checks via run_workflow parallel(...)"
+    }
+  ],
   "skills": [
     {
       "name": "ask-matt",
@@ -285,6 +410,7 @@
       "enSummary": "Route your current task to the right skill flow and phase-boundary choice.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/ask-matt 我想给当前项目加一个新模块，不确定先走哪一步",
       "companionFiles": [
@@ -304,13 +430,17 @@
       "argumentHint": "",
       "scenario": "review-guardrails",
       "workflowStage": "review",
-      "zhSummary": "双子代理并发审查：沿「编码规范与 Fowler 坏味道」与「规格符合度」双轴独立出报告",
-      "enSummary": "Two-axis parallel diff review (Standards + Fowler smells vs Spec compliance).",
+      "zhSummary": "双子代理并发审查：沿「编码规范与 Fowler 坏味道」与「规格符合度」双轴独立出报告（支持 run_workflow 结构化汇总结论）",
+      "enSummary": "Two-axis parallel diff review (Standards + Fowler smells vs Spec compliance, invoke_subagent or run_workflow).",
       "dependsOnSkills": [],
       "usesAgents": [
         "mp-standards-reviewer",
         "mp-spec-reviewer"
       ],
+      "orchestration": {
+        "mode": "workflow-parallel",
+        "engineLabel": "invoke_subagent / run_workflow"
+      },
       "collisionNote": "",
       "samplePrompt": "Run code-review against main",
       "companionFiles": [],
@@ -327,10 +457,14 @@
       "argumentHint": "",
       "scenario": "arch-prototype",
       "workflowStage": "vocab",
-      "zhSummary": "深模块架构设计词汇表：基于 module、interface、seam、leverage 设计简洁边界",
-      "enSummary": "Deep-module architecture vocabulary and design-it-twice parallel exploration pattern.",
+      "zhSummary": "深模块架构设计词汇表：基于 module、interface、seam、leverage 设计简洁边界（支持 Design-It-Twice 并发对比）",
+      "enSummary": "Deep-module architecture vocabulary and design-it-twice parallel exploration via run_workflow.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": {
+        "mode": "workflow-parallel",
+        "engineLabel": "run_workflow / invoke_subagent"
+      },
       "collisionNote": "",
       "samplePrompt": "Apply codebase-design principles to deepen this module interface",
       "companionFiles": [
@@ -354,12 +488,18 @@
       "enSummary": "Disciplined bug loop: build a red reproducer first, minimize, instrument, fix, test.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": {
+        "mode": "workflow-loop",
+        "engineLabel": "interactive / run_workflow"
+      },
       "collisionNote": "",
       "samplePrompt": "Use diagnosing-bugs to investigate this intermittent failure",
       "companionFiles": [
         "scripts/hitl-loop.template.sh"
       ],
-      "adaptations": []
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
     },
     {
       "name": "domain-modeling",
@@ -374,6 +514,7 @@
       "enSummary": "Sharpen ubiquitous language in GLOSSARY.md and record hard-to-reverse decisions as ADRs.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use domain-modeling to audit overloaded terms in our GLOSSARY.md",
       "companionFiles": [
@@ -400,6 +541,7 @@
       "usesAgents": [
         "mp-explorer"
       ],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/grill-with-docs 我们准备重构订单结算状态机",
       "companionFiles": [],
@@ -427,6 +569,7 @@
         "mp-standards-reviewer",
         "mp-spec-reviewer"
       ],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/implement",
       "companionFiles": [],
@@ -443,8 +586,8 @@
       "argumentHint": "",
       "scenario": "tdd-implement",
       "workflowStage": "implement",
-      "zhSummary": "任务图并发编排：基于就绪前沿并行派发子代理在独立工作区完成整套 Spec 并合入主干",
-      "enSummary": "Orchestrate a whole spec DAG across concurrent subagents in shared workspaces.",
+      "zhSummary": "任务图并发编排：基于 Antigravity 2.34+ run_workflow 拓扑波次或 Native Swarm + Workspace=\"share\" 并发执行 Spec 票据并合入主干",
+      "enSummary": "Orchestrate a whole spec DAG across 2.34+ run_workflow waves or native Swarm in shared workspaces.",
       "dependsOnSkills": [
         "tdd",
         "code-review"
@@ -454,6 +597,10 @@
         "mp-standards-reviewer",
         "mp-spec-reviewer"
       ],
+      "orchestration": {
+        "mode": "workflow-dag",
+        "engineLabel": "run_workflow / swarm"
+      },
       "collisionNote": "",
       "samplePrompt": "/implement-spec",
       "companionFiles": [],
@@ -481,6 +628,7 @@
       "usesAgents": [
         "mp-explorer"
       ],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/improve-codebase-architecture",
       "companionFiles": [
@@ -504,6 +652,7 @@
       "enSummary": "Craft concise PR descriptions with visuals, verification proof, and merge-danger call.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Draft a PR description for this branch following pr skill",
       "companionFiles": [
@@ -524,6 +673,7 @@
       "enSummary": "Build throwaway HTML state demos or multi-variation UI routes to settle design questions.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Build a throwaway logic prototype to verify this state machine",
       "companionFiles": [
@@ -549,6 +699,7 @@
       "usesAgents": [
         "mp-researcher"
       ],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Research the official specification for ... using mp-researcher",
       "companionFiles": [],
@@ -569,6 +720,7 @@
       "enSummary": "Post-session retrospective improving agent navigation, automated checks, and steering docs.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/retro",
       "companionFiles": [],
@@ -589,6 +741,7 @@
       "enSummary": "Configure repo issue tracker, triage labels, and domain doc layout (GLOSSARY/ADR).",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/setup-matt-pocock-skills",
       "companionFiles": [
@@ -615,6 +768,7 @@
       "enSummary": "Strict red-green-refactor loop building vertical slices through public interfaces.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use tdd to implement this behavior one red-green slice at a time",
       "companionFiles": [
@@ -638,6 +792,7 @@
       "enSummary": "Synthesize the aligned discussion into a formal spec and publish to the issue tracker.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/to-spec",
       "companionFiles": [],
@@ -658,6 +813,7 @@
       "enSummary": "Break a spec into vertical tracer-bullet tickets with explicit blocking edges.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/to-tickets",
       "companionFiles": [],
@@ -674,13 +830,17 @@
       "argumentHint": "",
       "scenario": "spec-wayfinding",
       "workflowStage": "onramp",
-      "zhSummary": "Issue/PR 分诊状态机：查重、验证复现、追问并将成熟诉求转为 Agent-Ready 简报",
-      "enSummary": "Evaluate incoming issues/PRs through triage roles and produce agent-ready briefs.",
+      "zhSummary": "Issue/PR 分诊状态机：查重、验证复现、追问并将成熟诉求转为 Agent-Ready 简报（批量可走 run_workflow 并发分诊）",
+      "enSummary": "Evaluate incoming issues/PRs through triage roles and produce agent-ready briefs (batchable via run_workflow).",
       "dependsOnSkills": [
         "grilling",
         "domain-modeling"
       ],
       "usesAgents": [],
+      "orchestration": {
+        "mode": "workflow-parallel",
+        "engineLabel": "run_workflow / interactive"
+      },
       "collisionNote": "",
       "samplePrompt": "/triage Show me anything that needs my attention",
       "companionFiles": [
@@ -701,8 +861,8 @@
       "argumentHint": "",
       "scenario": "spec-wayfinding",
       "workflowStage": "onramp",
-      "zhSummary": "大型模糊项目领航图：在 Tracker 上构建决策票据 DAG，逐个消除迷雾后再转入 Spec",
-      "enSummary": "Chart a multi-session decision map on your tracker to clear fog before building.",
+      "zhSummary": "大型模糊项目领航图：在 Tracker 上构建决策票据 DAG，并支持用 run_workflow 并发调研多条前置假设",
+      "enSummary": "Chart a multi-session decision map on your tracker with parallel mp-researcher exploration.",
       "dependsOnSkills": [
         "grilling",
         "domain-modeling",
@@ -712,6 +872,10 @@
       "usesAgents": [
         "mp-researcher"
       ],
+      "orchestration": {
+        "mode": "workflow-parallel",
+        "engineLabel": "run_workflow + mp-researcher"
+      },
       "collisionNote": "",
       "samplePrompt": "/wayfinder",
       "companionFiles": [],
@@ -733,6 +897,7 @@
       "enSummary": "Generate an interactive bash wizard for human-only setup steps and credential capture.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Create a setup wizard script for provisioning these CI secrets",
       "companionFiles": [
@@ -755,6 +920,7 @@
         "grilling"
       ],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "Antigravity 内置已有同名 /grill-me；代码库中建议优先用 /grill-with-docs，或点名 mattpocock-skills:grill-me。",
       "samplePrompt": "Use mattpocock-skills:grill-me to stress-test this plan",
       "companionFiles": [],
@@ -778,6 +944,7 @@
       "usesAgents": [
         "mp-explorer"
       ],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Interview me using grilling one frontier round at a time",
       "companionFiles": [],
@@ -798,6 +965,7 @@
       "enSummary": "Compact current context into a portable OS-temp handoff doc for a fresh session.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/handoff Continue implementing ticket 03 in a fresh session",
       "companionFiles": [],
@@ -820,6 +988,7 @@
       "enSummary": "Multi-session interactive tutor turning the workspace into a stateful learning studio.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/teach Teach me Effect-TS error modeling step by step",
       "companionFiles": [
@@ -845,6 +1014,7 @@
       "enSummary": "Grill you on the recipient and missing gaps, then emit a crisp async questionnaire.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/to-questionnaire Draft questions for the backend team about webhook retries",
       "companionFiles": [],
@@ -863,6 +1033,7 @@
       "enSummary": "Re-pitch a confusing reply in plain English with missing context and GLOSSARY terms.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/wait-what",
       "companionFiles": [],
@@ -881,6 +1052,7 @@
       "enSummary": "Best practices for authoring SKILL.md, AGENTS.md, and agent-consumed pointer docs.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Review this SKILL.md using writing-for-agents principles",
       "companionFiles": [
@@ -897,14 +1069,20 @@
       "argumentHint": "",
       "scenario": "handoff-automation",
       "workflowStage": "beta",
-      "zhSummary": "个人/团队多线幕僚长：跨 GitHub、日程与个人 Wiki 统筹优先级、草拟回复与跟进事项",
-      "enSummary": "Multi-stream chief-of-staff orchestrating priorities across repos, wikis, and comms.",
+      "zhSummary": "个人/团队多线幕僚长：借助 Antigravity 2.34 schedule 定时任务 + swarm/run_workflow 统筹优先级与跟进",
+      "enSummary": "Multi-stream chief-of-staff orchestrating priorities via 2.34+ schedule crons & run_workflow/swarm.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": {
+        "mode": "schedule",
+        "engineLabel": "schedule + swarm"
+      },
       "collisionNote": "",
       "samplePrompt": "/chief-of-staff",
       "companionFiles": [],
-      "adaptations": []
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
     },
     {
       "name": "claude-handoff",
@@ -919,6 +1097,7 @@
       "enSummary": "Experimental session handoff variant with structured handover anchors.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/claude-handoff",
       "companionFiles": [],
@@ -936,15 +1115,20 @@
       "argumentHint": "A workflow to design, or nothing to go find one",
       "scenario": "tdd-implement",
       "workflowStage": "beta",
-      "zhSummary": "双轨循环对撞：围绕同一目标持续在「改进尝试 ↔ 严格验收」之间自动循环迭代直至过关",
-      "enSummary": "Iterative self-looping driver between execution attempts and strict verification.",
+      "zhSummary": "双轨循环对撞：使用 2.34 run_workflow 有状态多轮 agent() 持续在「实施尝试 ↔ 严格验收」之间闭环直至过关",
+      "enSummary": "Stateful run_workflow Generator <-> Verifier loop iterating with bounded retries until verified.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": {
+        "mode": "workflow-loop",
+        "engineLabel": "run_workflow stateful agent()"
+      },
       "collisionNote": "",
       "samplePrompt": "/loop-me Fix all failing integration tests until green",
       "companionFiles": [],
       "adaptations": [
-        "preserved-argument-hint"
+        "preserved-argument-hint",
+        "added-native-runtime-notes"
       ]
     },
     {
@@ -960,6 +1144,7 @@
       "enSummary": "Configure dependency-cruiser rules in TS repos to enforce deep module boundaries.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/setup-ts-deep-modules",
       "companionFiles": [
@@ -978,10 +1163,14 @@
       "argumentHint": "",
       "scenario": "handoff-automation",
       "workflowStage": "beta",
-      "zhSummary": "无人值守软件工厂：串联可观测平台、Git 宿主、工单系统与自动化 Runner 闭环交付",
-      "enSummary": "End-to-end autonomous software factory wiring observability, trackers, and runners.",
+      "zhSummary": "无人值守软件工厂：映射为 Antigravity run_workflow、workspace=\"branch\"|\"share\"、schedule 与 hooks.json",
+      "enSummary": "Autonomous software factory mapped locally to run_workflow, branch/share workspaces, schedule, and hooks.json.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": {
+        "mode": "workflow-dag",
+        "engineLabel": "run_workflow + schedule + hooks"
+      },
       "collisionNote": "",
       "samplePrompt": "Consult software-factory to design an autonomous bugfix pipeline",
       "companionFiles": [
@@ -991,7 +1180,9 @@
         "RUNNERS.md",
         "TICKET-TRACKERS.md"
       ],
-      "adaptations": []
+      "adaptations": [
+        "added-native-runtime-notes"
+      ]
     },
     {
       "name": "writing-beats",
@@ -1006,6 +1197,7 @@
       "enSummary": "Long-form writing stage 1: organize raw ideas into clear narrative beats.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use writing-beats to structure the narrative flow for this article",
       "companionFiles": [],
@@ -1024,6 +1216,7 @@
       "enSummary": "Long-form writing stage 2: gather concrete examples and code fragments per beat.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use writing-fragments to draft raw examples for each beat",
       "companionFiles": [],
@@ -1042,6 +1235,7 @@
       "enSummary": "Long-form writing stage 3: shape beats and fragments into tight final prose.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use writing-shape to polish these beats and fragments into a draft",
       "companionFiles": [],
@@ -1060,6 +1254,7 @@
       "enSummary": "Provides block-dangerous-git.sh guardrail script blocking destructive git commands.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Inspect git-guardrails-claude-code scripts to adapt git safety checks",
       "companionFiles": [
@@ -1080,6 +1275,7 @@
       "enSummary": "Migrate verbose TypeScript test mocks to @total-typescript/shoehorn helpers.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use migrate-to-shoehorn on our test helpers",
       "companionFiles": [],
@@ -1098,6 +1294,7 @@
       "enSummary": "Scaffold problem/solution coding exercises from reference implementations.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "/scaffold-exercises",
       "companionFiles": [],
@@ -1116,6 +1313,7 @@
       "enSummary": "Set up Husky pre-commit hooks for typechecking, linting, and fast tests.",
       "dependsOnSkills": [],
       "usesAgents": [],
+      "orchestration": null,
       "collisionNote": "",
       "samplePrompt": "Use setup-pre-commit to add typecheck & test hooks to this repo",
       "companionFiles": [],

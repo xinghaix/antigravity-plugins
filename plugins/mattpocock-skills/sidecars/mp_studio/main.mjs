@@ -26,24 +26,42 @@ function handle(fn) {
   };
 }
 
+function pushWorkspaceEntry(list, raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return;
+  const val = raw.trim();
+  if (val.startsWith('file://')) {
+    try {
+      list.push(fileURLToPath(val));
+    } catch {
+      // ignore
+    }
+  } else if (isAbsolute(val)) {
+    list.push(val);
+  }
+}
+
 function detectHostWorkspaces(data) {
   const list = [];
-  if (typeof data?.workspace === 'string' && data.workspace) list.push(data.workspace);
-  const uris = app.config?.workspaceUris || app.config?.workspaces || [];
-  if (Array.isArray(uris)) {
-    for (const u of uris) {
-      if (typeof u === 'string' && u.startsWith('file://')) {
-        try {
-          list.push(fileURLToPath(u));
-        } catch {
-          // ignore
-        }
-      } else if (typeof u === 'string' && isAbsolute(u)) {
-        list.push(u);
-      }
+  pushWorkspaceEntry(list, data?.workspace);
+
+  let dataUris = data?.workspaceUris;
+  if (typeof dataUris === 'string' && dataUris.trim()) {
+    try {
+      const parsed = JSON.parse(dataUris);
+      dataUris = Array.isArray(parsed) ? parsed : dataUris.split(',');
+    } catch {
+      dataUris = dataUris.split(',');
     }
   }
-  return list;
+  if (Array.isArray(dataUris)) {
+    for (const u of dataUris) pushWorkspaceEntry(list, u);
+  }
+
+  const uris = app.config?.workspaceUris || app.config?.workspaces || [];
+  if (Array.isArray(uris)) {
+    for (const u of uris) pushWorkspaceEntry(list, u);
+  }
+  return [...new Set(list)];
 }
 
 app.page('/', () => readFileSync(join(__dirname, 'index.html'), 'utf-8'));
@@ -88,5 +106,7 @@ app.api('/api/backups', handle(() => ({ ok: true, backups: store.listBackups() }
 app.api('/api/backups/restore', handle((data) => store.restoreBackup(data)));
 
 app.api('/api/upstream/sync', handle(() => store.syncUpstream()));
+
+app.api('/api/orchestrate/plan', handle((data) => store.buildOrchestrationPlan(data)));
 
 app.run();

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-11-23
+
+### Added & Changed
+- **Synced Upstream `mattpocock/skills` (`v1.3.2` @ `abeeaf95`)**: Pulled upstream PR #1453/#1455 frontmatter hardening (`software-factory` quoted description) and added `validateFrontmatter` in `sidecars/mp_studio/upstream_sync.mjs`.
+- **Antigravity 2.34.0 Multi-Agent Orchestration (`run_workflow` + `swarm` + `schedule`)**:
+  - Added 7 `ORCHESTRATION_RECIPES` in `overrides/metadata.mjs` and upgraded compiler runtime notes for `implement-spec`, `code-review`, `wayfinder`, `codebase-design`, `triage`, `diagnosing-bugs`, `loop-me`, `chief-of-staff`, and `software-factory`.
+  - Upgraded `parseScratchTickets` in `sidecars/mp_studio/studio_store.mjs` with topological `waves` calculation and dependency `cycles` detection, plus `workflows/*.md` inspection.
+  - Added `buildOrchestrationPlan()` & `POST /api/orchestrate/plan` generating runnable `run_workflow` Python wave scripts, `swarm` `.system_generated/swarm/plan.json` prompts, and sparse-pointer per-ticket prompts.
+- **MP Studio Live Host Integration**:
+  - Subscribed to Antigravity 2.34+ `window.sidecar.getWorkspaceUris()` and `onWorkspaceChange` (`POST /api/state/query`).
+  - Added one-click **Send to Chat** (`sidecar.agent.sendMessage`), **New Session** (`sidecar.agent.startConversation` + `sidecar.ui.toggleConversation`), **Aux Pane File Viewer** (`sidecar.ui.toggleAuxPane`) for tickets/specs/maps/GLOSSARY/ADRs, topological Wave lanes, an Orchestration Preview modal, and a Workflow **Orchestration Blueprints** grid.
+
 ## [1.0.0] - 2026-11-13
 
 ### Added

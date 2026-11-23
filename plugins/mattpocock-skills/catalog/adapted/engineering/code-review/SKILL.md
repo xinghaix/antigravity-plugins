@@ -91,3 +91,4 @@ Reporting them separately stops one axis from masking the other.
 ## Antigravity Native Runtime Notes
 
 - **Subagent execution**: Dispatch `mp-standards-reviewer` and `mp-spec-reviewer` in parallel using `invoke_subagent` (`Workspace: "inherit"`). Both are read-only leaf subagents without subagent-spawning permissions, preventing recursive `/code-review` loops. Stop calling tools after dispatching and wait for Antigravity reactive wakeup.
+- **Structured `run_workflow` option (Antigravity 2.34+)**: When reviewing large branches or automating verdicts in a pipeline, you can run `parallel(["standards", "spec"], ...)` via `run_workflow` with `type_name="mp-standards-reviewer"` and `type_name="mp-spec-reviewer"` and strict JSON verdict `schema` outputs.
