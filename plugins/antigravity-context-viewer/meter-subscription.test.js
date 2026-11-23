@@ -455,10 +455,21 @@ test('独立配置目录持久化、多账号隔离与重启后显示与落盘�
 // 验收测试 5: Google AI Ultra (g1-ultra-lite-tier) 预设模式绝不套用 Pro $19.99 / Official price
 // ============================================================================
 test('Google AI Ultra 套餐预设模式与多语言下不误套 Pro $19.99 与 Official price', async () => {
-  const ultraLive = core.parseUserPlanStatus({
+  const ultraLite = core.parseUserPlanStatus({
     userStatus: {
       email: 'ultra.lite@example.com',
       userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' }
+    }
+  });
+  assert.equal(ultraLite.tierKey, 'ultra');
+  assert.equal(ultraLite.tierName, 'Google AI Ultra (5x)');
+  assert.equal(ultraLite.officialPriceMonthly, 99.99);
+  assert.notEqual(ultraLite.officialPriceMonthly, 19.99);
+
+  const ultraLive = core.parseUserPlanStatus({
+    userStatus: {
+      email: 'ultra.unknown@example.com',
+      userTier: { id: 'g1-ultra-unknown-tier', name: 'Google AI Ultra' }
     }
   });
   assert.equal(ultraLive.tierKey, 'ultra');

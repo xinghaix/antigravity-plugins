@@ -474,20 +474,42 @@ test('parseUserPlanStatus treats empty status as unidentified and handles Ultra 
   assert.equal(ultraRes.officialPriceMonthly, null);
   assert.ok(ultraRes.priceRangeNote);
 
-  const ultra5x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra (5x)' } } });
-  assert.equal(ultra5x.status, 'identified');
-  assert.equal(ultra5x.tierName, 'Google AI Ultra (5x)');
-  assert.equal(ultra5x.officialPriceMonthly, 99.99);
+  const ultra5xExplicit = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra (5x)' } } });
+  assert.equal(ultra5xExplicit.status, 'identified');
+  assert.equal(ultra5xExplicit.tierName, 'Google AI Ultra (5x)');
+  assert.equal(ultra5xExplicit.multiplier, 5);
+  assert.equal(ultra5xExplicit.officialPriceMonthly, 99.99);
 
-  const ultra20x = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra (20x)' } } });
-  assert.equal(ultra20x.status, 'identified');
-  assert.equal(ultra20x.tierName, 'Google AI Ultra (20x)');
-  assert.equal(ultra20x.officialPriceMonthly, 199.99);
+  const ultra5xById = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' } } });
+  assert.equal(ultra5xById.status, 'identified');
+  assert.equal(ultra5xById.tierName, 'Google AI Ultra (5x)');
+  assert.equal(ultra5xById.multiplier, 5);
+  assert.equal(ultra5xById.officialPriceMonthly, 99.99);
 
-  const ultraLiteUnknown = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' } } });
-  assert.equal(ultraLiteUnknown.status, 'identified');
-  assert.equal(ultraLiteUnknown.tierName, 'Google AI Ultra（子档未知）');
-  assert.equal(ultraLiteUnknown.officialPriceMonthly, null);
+  const ultra20xExplicit = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra (20x)' } } });
+  assert.equal(ultra20xExplicit.status, 'identified');
+  assert.equal(ultra20xExplicit.tierName, 'Google AI Ultra (20x)');
+  assert.equal(ultra20xExplicit.multiplier, 20);
+  assert.equal(ultra20xExplicit.officialPriceMonthly, 199.99);
+
+  const ultra20xById = parseUserPlanStatus({ userStatus: { userTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } } });
+  assert.equal(ultra20xById.status, 'identified');
+  assert.equal(ultra20xById.tierName, 'Google AI Ultra (20x)');
+  assert.equal(ultra20xById.multiplier, 20);
+  assert.equal(ultra20xById.officialPriceMonthly, 199.99);
+
+  const upgradedFromCache = resolveEffectivePlanStatus(null, null, {
+    cachedLivePlan: {
+      status: 'identified',
+      tierKey: 'ultra',
+      tierName: 'Google AI Ultra（子档未知）',
+      tierId: 'g1-ultra-lite-tier',
+      officialPriceMonthly: null
+    }
+  });
+  assert.equal(upgradedFromCache.tierName, 'Google AI Ultra (5x)');
+  assert.equal(upgradedFromCache.multiplier, 5);
+  assert.equal(upgradedFromCache.officialPriceMonthly, 99.99);
 });
 
 test('recordModelCalls calibrates from partial streaming usage to final usage and preserves original date', () => {

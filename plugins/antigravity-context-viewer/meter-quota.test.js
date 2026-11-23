@@ -2561,7 +2561,7 @@ test('Google AI Ultra 套餐 allowedTiers 与 New 装饰标签端到端判定不
   };
   const parsedPlan = core.parseUserPlanStatus(userStatusRes);
   assert.equal(parsedPlan.tierKey, 'ultra');
-  assert.equal(parsedPlan.tierName, 'Google AI Ultra（子档未知）');
+  assert.equal(parsedPlan.tierName, 'Google AI Ultra (5x)');
   assert.equal(parsedPlan.teamsTier, 'TEAMS_TIER_PRO');
 
   const quotaSummaryRes = {

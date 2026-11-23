@@ -3824,6 +3824,12 @@
         if (!multiplier) multiplier = parseInt(detectedMultiplierStr, 10);
       } else if (multiplier) {
         detectedMultiplierStr = `${multiplier}x`;
+      } else if (/ultra[-_\s]*lite/i.test(combinedMeta)) {
+        detectedMultiplierStr = '5x';
+        multiplier = 5;
+      } else if (/^g1-ultra-tier$/i.test(rawTierId) || /ultra[-_\s]*(?:max|full)/i.test(combinedMeta)) {
+        detectedMultiplierStr = '20x';
+        multiplier = 20;
       }
 
       const subTierMatch = rawTierName.match(/ultra[\s\-_:：(（]+([0-9a-zA-Z\-_]+)[\s)）]*/i);
@@ -4325,6 +4331,19 @@
     let planName = '未知';
     let tierSource = 'unknown';
     let multiplier = rawLive?.multiplier || cachedLive?.multiplier || null;
+    let upgradedOfficialPrice = null;
+
+    const upgradeUltraSubTierFromId = (tKey, tName, tId, offPrice, mult) => {
+      if (tKey === 'ultra' && typeof tName === 'string' && tName.includes('子档未知') && typeof tId === 'string' && tId.trim()) {
+        if (/ultra[-_\s]*lite/i.test(tId)) {
+          return { tierName: 'Google AI Ultra (5x)', officialPriceMonthly: offPrice ?? 99.99, multiplier: mult || 5 };
+        }
+        if (/^g1-ultra-tier$/i.test(tId.trim())) {
+          return { tierName: 'Google AI Ultra (20x)', officialPriceMonthly: offPrice ?? 199.99, multiplier: mult || 20 };
+        }
+      }
+      return { tierName: tName, officialPriceMonthly: offPrice, multiplier: mult || null };
+    };
 
     const rawTierOverride = effectiveCustom?.planTierOverride || effectiveCustom?.tierOverride || effectiveCustom?.planTier || null;
     const normTierOverride = (typeof rawTierOverride === 'string' && rawTierOverride.trim() && rawTierOverride.trim().toLowerCase() !== 'auto')
@@ -4385,14 +4404,16 @@
         planName = tierName;
       }
     } else if (rawLive && rawLive.status === 'identified' && rawLive.tierKey !== 'unknown') {
+      const up = upgradeUltraSubTierFromId(rawLive.tierKey, rawLive.tierName, rawLive.tierId, rawLive.officialPriceMonthly, rawLive.multiplier || multiplier);
       status = 'identified';
       tierKey = rawLive.tierKey;
-      tierName = rawLive.tierName;
+      tierName = up.tierName;
       tierId = rawLive.tierId;
       teamsTier = rawLive.teamsTier || null;
-      planName = rawLive.planName || rawLive.tierName;
+      planName = (rawLive.planName && rawLive.planName !== rawLive.tierName) ? rawLive.planName : up.tierName;
+      upgradedOfficialPrice = up.officialPriceMonthly;
       tierSource = 'live';
-      multiplier = rawLive.multiplier || multiplier;
+      multiplier = up.multiplier;
     } else if (effectiveCustom && effectiveCustom.tierName) {
       status = 'custom';
       tierKey = effectiveCustom.tierKey || 'custom';
@@ -4402,14 +4423,16 @@
       planName = effectiveCustom.tierName;
       tierSource = 'custom';
     } else if (cachedLive && cachedLive.status === 'identified' && cachedLive.tierKey !== 'unknown') {
+      const up = upgradeUltraSubTierFromId(cachedLive.tierKey, cachedLive.tierName, cachedLive.tierId, cachedLive.officialPriceMonthly, cachedLive.multiplier || multiplier);
       status = 'identified';
       tierKey = cachedLive.tierKey;
-      tierName = cachedLive.tierName;
+      tierName = up.tierName;
       tierId = cachedLive.tierId;
       teamsTier = cachedLive.teamsTier || null;
-      planName = cachedLive.planName || cachedLive.tierName;
+      planName = (cachedLive.planName && cachedLive.planName !== cachedLive.tierName) ? cachedLive.planName : up.tierName;
+      upgradedOfficialPrice = up.officialPriceMonthly;
       tierSource = 'cached_live';
-      multiplier = cachedLive.multiplier || multiplier;
+      multiplier = up.multiplier;
     }
 
     // 2A. 账号所在地区 (accountRegion / country) 独立取值：仅表示本地记录，不影响订阅国家与币种
@@ -4485,7 +4508,7 @@
     }
 
     let actualPricePaid = null;
-    let officialPriceMonthly = rawLive?.officialPriceMonthly ?? cachedLive?.officialPriceMonthly ?? null;
+    let officialPriceMonthly = upgradedOfficialPrice ?? rawLive?.officialPriceMonthly ?? cachedLive?.officialPriceMonthly ?? null;
     const matchedRegionPreset = findRegionPreset(region);
     let rawCur = (effectiveCustom?.subscriptionCurrency || effectiveCustom?.currency) ? String(effectiveCustom.subscriptionCurrency || effectiveCustom.currency).trim().toUpperCase() : '';
     if (rawCur === 'NTD') rawCur = 'TWD';
