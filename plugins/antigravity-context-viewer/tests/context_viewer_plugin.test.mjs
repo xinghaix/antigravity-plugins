@@ -53,6 +53,15 @@ const testFiles = [
   'meter-v089-usage.test.js',
   'meter-elv91-speed.test.js',
   'meter-accounts.test.js',
+  'meter-cli-adapter.test.js',
+  'meter-cli-monitor.test.js',
+  'meter-cli-ui.test.js',
+  'meter-rehydrate.test.js',
+  'meter-v234-compat.test.js',
+  'meter-i18n-upstream.test.js',
+  'meter-elv98-99.test.js',
+  'meter-elv103-mixed-session.test.js',
+  'meter-first-install-recovery.test.js',
   'sidecar-live.test.js',
 ];
 
@@ -60,7 +69,7 @@ for (const tf of testFiles) {
   assert.ok(existsSync(join(PLUGIN_ROOT, tf)), `Missing test file: ${tf}`);
 }
 
-execFileSync(process.execPath, ['--test', ...testFiles], {
+execFileSync(process.execPath, ['--test', '--test-concurrency=1', ...testFiles], {
   cwd: PLUGIN_ROOT,
   stdio: 'inherit',
 });

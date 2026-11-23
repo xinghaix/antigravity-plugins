@@ -11,7 +11,8 @@ const {
   getSidecarPluginStatus,
   tickSidecarLive,
   runOnceWithTimeout,
-  startSidecarDaemon
+  startSidecarDaemon,
+  ACTIVE_POLL_MS
 } = require('./sidecar-live');
 
 test('sidecar plugin install, status, log inspection, and clean uninstall in temp dirs', () => {
@@ -717,4 +718,65 @@ test('local-api connect discovers Antigravity 2.33+ Language Server via daemon h
   } finally {
     fs.rmSync(tmpAg, { recursive: true, force: true });
   }
+});
+
+test('startSidecarDaemon backs off to ACTIVE_POLL_MS in steady state without breaking custom idlePollMs', async () => {
+  assert.equal(ACTIVE_POLL_MS, 20000);
+  let ticks = 0;
+  const daemon = startSidecarDaemon({
+    fastPollMs: 10,
+    idlePollMs: 15,
+    activePollMs: 85,
+    logger: () => {},
+    deps: {
+      queryWindow: async () => {
+        ticks++;
+        return { running: true, pageFound: true, active: true, hasIpcBridge: false, origin: 'https://127.0.0.1:50002' };
+      },
+      isBridgeAlive: () => true,
+      ensureBridge: async () => {},
+      hotInject: async () => true,
+      getBundleStamp: () => 's1',
+      readInjectedBundleStamp: () => 's1',
+      isChineseEnabled: () => false
+    }
+  });
+  try {
+    await new Promise(r => setTimeout(r, 55));
+    assert.equal(ticks, 1, 'steady-state noop must wait activePollMs (85ms), not idlePollMs (15ms)');
+    await new Promise(r => setTimeout(r, 55));
+    assert.equal(ticks >= 2, true, 'daemon should fire next poll after activePollMs elapses');
+  } finally {
+    await daemon.stop();
+  }
+});
+
+test('tickSidecarLive preserves healthy bridge when CDP probe hits transient timeout (cdp_eval_timeout)', async () => {
+  let inactiveCalled = 0;
+  let injectCalled = 0;
+  const logs = [];
+  const { logStateChange } = require('./sidecar-live');
+
+  const res = await tickSidecarLive({
+    queryWindow: async () => ({
+      running: true,
+      cdpEnabled: true,
+      cdpPort: 58321,
+      pageFound: false,
+      reason: 'cdp_eval_timeout',
+      origin: 'https://127.0.0.1:51052'
+    }),
+    onInactive: async () => { inactiveCalled++; },
+    hotInject: async () => { injectCalled++; return true; }
+  });
+
+  assert.equal(res.action, 'waiting');
+  assert.equal(res.reason, 'cdp_busy');
+  assert.equal(inactiveCalled, 0, 'transient CDP timeout must NOT tear down healthy live bridge');
+  assert.equal(injectCalled, 0, 'transient CDP timeout must NOT trigger bundle re-injection');
+
+  const lastKeyRef = { current: null };
+  logStateChange(lastKeyRef, res, line => logs.push(line));
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /keeping live bridge active/);
 });

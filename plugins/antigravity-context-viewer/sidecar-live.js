@@ -8,13 +8,14 @@ const DEFAULT_PLUGIN_ID = 'antigravity-context-viewer';
 const DEFAULT_SIDECAR_ID = 'live-loader';
 const FAST_POLL_MS = 1500;
 const IDLE_POLL_MS = 5000;
+const ACTIVE_POLL_MS = 20000;
 
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    return pkg.version || '0.8.8-1';
+    return pkg.version || '0.9.0-1';
   } catch {
-    return '0.8.8-1';
+    return '0.9.0-1';
   }
 }
 
@@ -288,7 +289,11 @@ async function tickSidecarLive(deps = {}) {
     return { action: 'waiting', reason: 'cdp_disabled', live };
   }
   if (!live.pageFound) {
-    return { action: 'waiting', reason: 'window_not_ready', live };
+    return {
+      action: 'waiting',
+      reason: live.reason === 'cdp_eval_timeout' ? 'cdp_busy' : 'window_not_ready',
+      live
+    };
   }
 
   const currentStamp = readBundleStamp();
@@ -369,6 +374,8 @@ function logStateChange(lastKeyRef, result, logger = console.log) {
     logger(`[${ts}] [context-viewer sidecar] Window detected (${result.live?.origin || 'pending'}), waiting to retry CDP injection`);
   } else if (result.action === 'waiting' && result.reason === 'cdp_disabled') {
     logger(`[${ts}] [context-viewer sidecar] Antigravity running without CDP (2.33+ default); Aux Pane UI ready (topbar auto-inject paused)`);
+  } else if (result.action === 'waiting' && result.reason === 'cdp_busy') {
+    logger(`[${ts}] [context-viewer sidecar] Antigravity CDP probe timed out (renderer busy); keeping live bridge active`);
   } else {
     logger(`[${ts}] [context-viewer sidecar] Waiting for Antigravity window (${result.reason})`);
   }
@@ -396,6 +403,9 @@ async function runOnceWithTimeout(options = {}) {
 function startSidecarDaemon(options = {}) {
   const fastMs = Number(options.fastPollMs) > 0 ? Number(options.fastPollMs) : FAST_POLL_MS;
   const idleMs = Number(options.idlePollMs) > 0 ? Number(options.idlePollMs) : IDLE_POLL_MS;
+  const activeMs = Number(options.activePollMs) > 0
+    ? Number(options.activePollMs)
+    : (Number(options.idlePollMs) > 0 ? idleMs : ACTIVE_POLL_MS);
   const lastKey = { current: '' };
   let stopped = false;
   let timer = null;
@@ -428,6 +438,8 @@ function startSidecarDaemon(options = {}) {
       logStateChange(lastKey, res, options.logger);
       if (res.action === 'retry' || (res.action === 'waiting' && res.reason === 'window_not_ready')) {
         nextDelay = fastMs;
+      } else if (res.action === 'noop') {
+        nextDelay = activeMs;
       }
     } catch (err) {
       const ts = new Date().toISOString();
@@ -501,6 +513,7 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_PLUGIN_ID,
   DEFAULT_SIDECAR_ID,
+  ACTIVE_POLL_MS,
   resolveSidecarPaths,
   buildPluginManifest,
   buildSidecarManifest,

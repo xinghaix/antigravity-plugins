@@ -32,9 +32,9 @@ async function loadSidecarSdk() {
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '0.8.8-1';
+    return pkg.version || '0.9.0-1';
   } catch {
-    return '0.8.8-1';
+    return '0.9.0-1';
   }
 }
 

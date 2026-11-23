@@ -1,8 +1,8 @@
 {
   "name": "antigravity-context-viewer",
   "displayName": "Context Viewer",
-  "description": "Modified edition of antigravity-context-viewer: live context window gauge, token speed, quota & cost analytics via Aux Pane Sidecar UI (Antigravity 2.33+ ready) or CDP topbar.",
-  "version": "0.8.8-1",
+  "description": "Modified edition of antigravity-context-viewer (v0.9.0-1): live context window gauge, 4-row Bento session workbench, Gemini 4 Neon & unified quota pool, and cost analytics via Aux Pane Sidecar UI (Antigravity 2.34+ ready) or CDP topbar.",
+  "version": "0.9.0-1",
   "logo": "assets/logo.svg",
   "author": {
     "name": "xinghaix (upstream: elviscjn-cjn)",
@@ -15,7 +15,7 @@
   },
   "suggestedPrompts": [
     "打开 Context Viewer 侧边面板 (sidecar://antigravity-context-viewer/live-loader/)",
-    "检查 Context Viewer 当前运行状态与 Antigravity 2.33+ 兼容情况",
+    "检查 Context Viewer 当前运行状态与 Antigravity 2.34+ 兼容情况",
     "查看 Context Viewer 支持哪些上下文监控与界面增强模块"
   ]
 }

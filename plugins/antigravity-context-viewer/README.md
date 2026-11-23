@@ -1,11 +1,11 @@
-# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.8.8-1`）
+# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.9.0-1`）
 
 **简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.8.8`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.8.8-1`**）：
-> 1. **原生 Aux Pane Sidecar UI + Daemon / CDP 双模适配（兼容 Antigravity `2.33+`）**（`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`）：Antigravity `2.33+` 默认关闭 `DevToolsActivePort`，插件自动通过 `~/.gemini/antigravity/daemon/hub_*.json` 与 `main.log` 免 CDP 直连本地 Language Server，在原生侧边栏 `sidecar://antigravity-context-viewer/live-loader/` 展示实时上下文用量、生成速度、配额、历史 Token 与解锁诊断；同时完整保留 CDP 自动热注入、`node cli.js watch` 守护模式、`node cli.js launch --restart` 优雅重启开启 CDP 与 `node cli.js install` 持久化写入 `app.asar`。
-> 2. **渲染器界面与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：顶栏胶囊紧致上下文长度+比例双显示、默认隐藏 CLI 启动按钮（可在设置中切换）、免改盘中文热注入自愈，以及对 `v0.8.8` 多账号分账对照、按模型每日堆叠统计、全新「累计总量」视图、可折叠轮次时间线与 `elv91-v1` 速度评分的全量同步（提示词与标题改写默认严格关闭）。
-> 3. **多平台上下文加长解锁与 CLI 增强**（`meter-context-unlock.js`、`macos-binary-utils.js`、`cli.js`）：支持 macOS Apple Silicon (`arm64` Mach-O `fixed` / `dynamic` / `default` + `codesign`) / Linux / Windows 上下文窗口调整、`watch` / `stop-watch` 与独立 `sidecar:*` 生命周期管理。
+> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.9.0`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.9.0-1`**）：
+> 1. **原生 Aux Pane Sidecar UI + Daemon / CDP 双模适配（兼容 Antigravity `2.33+` / `2.34+`）**（`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`）：Antigravity `2.33+` / `2.34+` 默认关闭 `DevToolsActivePort`，且 macOS `2.34.0` 启用了 `ElectronAsarIntegrity` 签名完整性校验。插件自动通过 `authBootstrap`、`~/.gemini/antigravity/daemon/hub_*.json` 与 `main.log` 免改盘直连本地 Language Server，在原生侧边栏 `sidecar://antigravity-context-viewer/live-loader/` 展示实时上下文用量、生成速度、配额、历史 Token 与解锁诊断；同时完整保留 CDP 自动热注入、`node cli.js watch` 免改盘守护模式、`node cli.js launch --restart` 与显式 `--force-mac-asar` 支持。
+> 2. **渲染器界面与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：顶栏胶囊紧致上下文长度+比例双显示、克制双圆环风格、默认隐藏 CLI 启动按钮（可在设置中切换）、免改盘中文热注入自愈，以及对 `v0.9.0` 4 行响应式 Bento 当前会话工作台、9 维上下文拆分、耗时环形图、Gemini 4 Neon 统一配额池、`v2.34.0` 宿主汉化与多账号分账对照的全量同步（提示词与标题改写默认严格关闭）。
+> 3. **多平台上下文加长解锁、完整性预检与 CLI 增强**（`meter-context-unlock.js`、`host-recovery.js`、`macos-binary-utils.js`、`cli.js`）：支持 macOS `ElectronAsarIntegrity` 写前预检与 Apple Silicon (`arm64`) Mach-O `fixed` / `dynamic` / `default` + `codesign` 上下文解锁、`watch` / `stop-watch` 与独立 `sidecar:*` 生命周期管理。
 
 在 Google Antigravity 2.x 顶栏查看当前对话用了多少上下文、模型生成有多快、当前模型剩余配额，以及桌面端和 CLI 一共用了多少 Token。
 
@@ -25,34 +25,30 @@ node scripts/cli.mjs install antigravity-context-viewer
 
 安装完成后重启 Antigravity（或在插件中心启用 `antigravity-context-viewer`），`live-loader` Sidecar 会在后台自动完成 CDP 热注入；如需传统 `app.asar` 持久化补丁、代理直连、系统增强或后端上下文解锁，仍可在插件目录内使用 `node cli.js install` / `node cli.js unlock` / `node cli.js enhance`。
 
-## 演示
-
-https://github.com/user-attachments/assets/46e3a6f9-5127-4470-a2ef-01525736ec5b
-
-[下载高清 MP4](https://raw.githubusercontent.com/elviscjn-cjn/antigravity-context-viewer/main/assets/demo.mp4)
-
 ## 功能
 
-- **上下文和速度**. 查看本轮上下文占用、模型预算、首字延迟（TTFT）、输出速度和总耗时。服务端用量与本地估算分别显示。
-- **会话明细**. 展开提示词、回复、思考、工具调用和附件统计。可读取的附件会列出估算和覆盖情况，图片可显示像素尺寸。面板区分上下文溢出、限流和网络等常见问题。
-- **Token 历史**. 汇总本地可读取的桌面端和 CLI 用量，可按来源筛选。查看日历热力图、周柱状图、月日历、年度气泡和累计曲线。
-- **API 参考金额和订阅**. 按支持的模型费率估算输入、缓存和输出金额，并列出未计价的用量。可比较地区参考价、自定义实付和 API 等值金额，支持币种选择及人民币折算。API 等值金额仅供比较，实际账单以服务商为准。
-- **模型设置与上下文调整**：按模型产品管理上下文偏好（恢复官方默认原有行为、固定 512,000 [512K] / 900,000 / 983,040 / 1,000,000 [1M] 或动态跟随模型），明确区分“按模型保存的偏好”与“客户端全部会话共用的当前应用值”，支持桌面端与 agy CLI 联动改写、安全备份恢复与结果框重启触发；完整融合 PR #3 跨平台解锁文档与 CLI 工具（`unlock/`）。
-- **速度对比图表**：基于本地真实历史记录（每准确模型 ID 与推理力度最多 200 条）绘制柱状中位数图与时间折线图，不足 3 条自动标注样本偏少，支持 tokens/s、TTFT 与总耗时单位切换。说明：当前模型选择器仅支持“查看模型配置”，**真实聊天模型切换未实现**。
-- **系统增强中心（PR #4 融合）**：提供 0~4 档系统提示词精简与防幻觉/工具契约约束（逐档明确保留/清空/替换范围）、自动中文会话标题、客户端简体中文/英文切换、三态品牌显示（Antigravity / 隐藏 / 反重力）、免 TUN 代理集成及可选“推荐配置”一键应用与恢复（默认安装不暗中启用任何改动）。
-- **外观**：顶栏随可用空间收起，两个面板独立展开。支持深浅主题、热力图预设和逐档配色。
-- **CLI 和更新**：从顶栏启动已安装的 Antigravity CLI，尽量沿用当前工作区和代理。可在面板内检查更新。安装器提供备份、完整性校验和还原。
+- **当前会话交互式 Bento 工作台与上下文监控**：升级「当前会话」分页为 4 行响应式 Bento 工作台（`wide` / `medium` / `narrow` 三档容器自适应），区分单次上下文已用与累计 Token、9 维上下文构成与估算/残差、TTFT 与并发墙钟耗时环形图、上下文事件/文件/命令/子 Agent 活动以及总量/Δ/按步/按轮趋势联动。
+- **模型额度与列表联动**：顶栏圆环展示剩余额度，展开查看共享额度池（含 Antigravity 2.33+ / 2.34+ 统一 Gemini 配额池与 Gemini 4 Neon）、5 小时及每周额度、重置倒计时与低额度提醒，并在设置上下文时直接查看各模型余量。
+- **Token 历史与 API 参考费用**：汇总本地可读取的桌面端、CLI 与 WSL 用量，提供日历热力图、周/月/年/累计视图、多账号对比及地区参考价/人民币折算（估算仅供参考，不代表实际账单）。
+- **模型设置与上下文调整**：按模型产品管理上下文偏好（官方默认 / 固定档位 / 动态跟随），区分“按模型保存的偏好”与“宿主共用上限”，支持桌面端与 `agy` CLI 联动改写与备份还原（说明：模型选择器仅查看配置，**不代为切换聊天模型**）。
+- **系统增强中心**：提供 0~4 档系统提示词精简、自动中文会话标题、客户端简体中文/英文切换、三态品牌显示及免 TUN 本地代理配置（需可用本地代理），正常安装默认不启用提示词与标题改写。
+- **外观、CLI 与更新**：顶栏随空间自动收敛，支持深浅主题、热力图预设、逐档配色与面板繁/简/英三语言，可按需开启顶栏 CLI 启动按钮，并在面板内检查更新（支持 beta 通道开关）。
+
+### Antigravity `2.34.0` 与 macOS 完整性边界
+
+- **`2.34.0` 窗口加载锚点 (`loadHubWindowUrl`) 与鉴权 (`authBootstrap`)**：已同步适配并集成进无 CDP 直连、Sidecar UI 与安装包升级恢复流程（`host-recovery.js`）。
+- **macOS `ElectronAsarIntegrity` 与免改盘模式**：macOS 签名版 `Antigravity.app` (`2.34.0`) 启用了 `Info.plist` 中的 `ElectronAsarIntegrity` 校验与 Hardened Runtime。直接修改磁盘 `app.asar` 可能导致启动完整性校验失败或破坏原有权限；因此 `node cli.js check` 会先预检完整性，`node cli.js install` 默认拦截受保护的 macOS 包，建议直接使用**原生 Sidecar 面板（`sidecar://antigravity-context-viewer/live-loader/`）**或免改盘 **`node cli.js watch`**（`open -a Antigravity --args --remote-debugging-port=58321`），仅自签场景可通过 `--force-mac-asar` 显式覆盖。
 
 ## 界面语言
 
 - **插件面板三语言**：面板内置 **简体中文**、**繁體中文**、**English** 即时切换与持久保存，覆盖全部页签、图表、价格账单与系统增强页（`src/renderer/i18n.js`）。
-- **客户端语言与授权说明**：桌面端界面语言支持切换 **简体中文**（内置自主整理的 `i18n/zh-CN.json` 与 `i18n/i18n-runtime.js`）或 **英文原版**。因外部繁体词典仓库 `qqxpee/antigravity2-cn` 未声明开源许可证，本版本未内置客户端繁體词典；繁體中文选项仅作用于插件自身面板。
+- **客户端语言与授权说明**：桌面端界面语言支持切换 **简体中文** 或 **英文原版**. Antigravity 界面汉化基于 [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization)（采用本地工具包 Release `v2.34.0`）, 感谢 aabbWei 与 antigravity-cn-community 贡献者. 完整 MIT 许可证与版权声明见随包附带的 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). 因外部繁体词典仓库 `qqxpee/antigravity2-cn` 未声明开源许可证, 本版本未内置客户端繁體词典, 繁體中文选项仅作用于插件自身面板.
 
 ---
 
 ## 🤖 给 AI 智能体的一键安装指令 (For AI Agents)
 
-如果在 Antigravity 插件环境下使用，AI 助手可直接读取本仓库 `skills/context-viewer/SKILL.md` 与 `README.md` 安装调试；若作为独立工具手动部署，只需执行以下命令完成持久化安装，**涉及主进程/预加载/新模块升级（如 `0.8.8-1`）必须完全重启客户端**：
+如果在 Antigravity 插件环境下使用，AI 助手可直接读取本插件 [SKILL.md](skills/context-viewer/SKILL.md) 与 [README.md](README.md)；**注意：macOS `2.34.0` 启用了 `ElectronAsarIntegrity`，切勿直接对官方签名包运行 `node cli.js install` 改盘**（优先使用原生 Sidecar 看板或 `node cli.js watch` / `launch --restart`）。在允许改盘的环境升级主进程/预加载模块（如 `0.9.0-1`）后需完全重启客户端：
 
 ```bash
 # 1. 持久化写入 ASAR 与全部插件模块
@@ -64,7 +60,7 @@ node cli.js install
 node cli.js status
 ```
 
-> [!IMPORTANT] **AI 智能体执行与验证边界规范（见 [`AGENTS.md`](AGENTS.md)）**：
+> [!IMPORTANT] **AI 智能体执行与验证边界规范**：
 > - **零外部依赖**：内置原生 Node.js ASAR 解包/封包引擎（[`asar-engine.js`](asar-engine.js)），无需执行 `npm install`。
 > - **`node cli.js live` 验证范围说明**：CDP 免改盘热注入（以及安装器附带的热挂载）**仅能加载前端渲染层，用来检查 UI 排版与静态/渲染文案**；无法更新运行中进程的主进程钩子 (`meter-main.js`)、预加载桥接接口 (`preload`) 或新后台模块 (`meter-enhance.js`)，切勿把 `live` 热注入当作完整升级验收。
 > - **严禁在对话内强杀宿主进程**：在 Antigravity 会话内执行时，切勿关闭或杀死 `Antigravity.exe`；持久化安装后需由用户手动完全退出并重启客户端后再核查 `status`。
@@ -92,8 +88,13 @@ node cli.js check
 # 2. 一键安装（ASAR 持久化注入 + 当前运行窗口 CDP 即时热生效）
 node cli.js install
 
-# 3. 仅对当前运行窗口进行 CDP 免改盘热挂载
+# 3. 仅对当前运行窗口进行 CDP 免改盘热挂载（客户端未运行时支持自动带调试端口拉起；v2.33.0+ 已裸开时外置终端支持 --relaunch 优雅重开）
 node cli.js live
+node cli.js live --relaunch
+
+# 3b. 免改盘后台守护模式（macOS 推荐，保留官方原始签名；随窗口刷新自动重挂，关闭后自动退出）
+node cli.js watch
+node cli.js stop-watch
 
 # 4. 查看当前安装状态与实时会话上下文用量
 node cli.js status
@@ -126,11 +127,7 @@ npm test
 
 ```text
 antigravity-context-viewer/
-├── assets/                                 # 演示动图、高清录屏与实拍截图
-│   ├── demo-01-context-audit.gif / .mp4    # 演示 1：会话上下文监控与底层技术参数附件审计
-│   ├── demo-02-token-heatmap.gif / .mp4    # 演示 2：Token 历史用量统计与 52 周活跃热力图交互
-│   ├── demo-03-panel-switching.gif / .mp4  # 演示 3：独立双面板平滑切换与侧边栏防遮挡自适应
-│   ├── demo-04-responsive-collapse.gif/.mp4# 演示 4：顶栏胶囊多级响应式折叠与窄屏自适应
+├── assets/                                 # 界面实拍截图
 │   ├── panel-context-main.png              # 实拍 1：会话上下文与生成监控主视图
 │   ├── panel-context-audit-expanded.png    # 实拍 2：会话上下文全展开：外观调色与底层审计
 │   ├── capsule-speed-and-tooltip.png       # 实拍 3：顶栏环形胶囊、实时速度与原生气泡提示
@@ -145,7 +142,7 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.8.8-1)
+├── meter-renderer.js                       # 渲染层构建产物 (0.9.0-1)
 ├── src/renderer/                           # 渲染层源码
 ├── sidecars/live-loader/                   # Aux Pane 原生面板与自动热挂载 Sidecar
 ├── scripts/                                # 构建、发布打包与基准测试
@@ -159,14 +156,16 @@ antigravity-context-viewer/
 
 ## 🛡️ 安全说明与原生窗口辅助程序 (Security & Transparency)
 
-- **用途说明**：Windows 安装包中的可选组件 `scripts/cli-window-helper.exe`（源码 [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)）仅用于在从插件弹窗一键启动 `agy` CLI 时定位新控制台窗口、按当前工作区居中并激活前台焦点，不包含任何联网、持久化或后台驻留逻辑。
-- **工具链与构建命令**：基于 Windows 自带 `.NET Framework 4.0` 编译，可随时自行审计源码并本地重编：
+- **用途说明**：Windows 发布包中的可选组件 `scripts/cli-window-helper.exe`（唯一源码 [scripts/cli-window-helper.cs](scripts/cli-window-helper.cs)）仅用于在从插件弹窗一键启动 `agy` CLI 时定位新控制台窗口、按当前工作区居中并激活前台焦点，不包含任何联网、持久化或后台驻留逻辑。
+- **构建来源可追溯（Git 零预编译二进制）**：源码仓库已将预编译 `scripts/cli-window-helper.exe` 移出 Git 跟踪。发布产物中的二进制仅通过以下两种途径从 `scripts/cli-window-helper.cs` 现场构建并做 SHA-256 校验：
+  1. GitHub Actions（`.github/workflows/release.yml`）在 `windows-latest` 运行器上使用 `.NET Framework 4.0` 现场编译并生成 `.sha256` 校验文件，跨作业校验一致后打入 Windows ZIP 包；
+  2. 本地运行 `node scripts/package-release.js` 或从源码工作树执行 `node cli.js install` 时，直接调用本地 `csc.exe` 将源码编译到系统临时目录（不写入工作树、不使用残留 `.exe`）。
+- **工具链与手动重编命令**：基于 Windows 自带 `.NET Framework 4.0` 编译，可随时自行审计源码并本地重编：
   ```powershell
   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:anycpu /optimize+ /out:scripts\cli-window-helper.exe scripts\cli-window-helper.cs
   ```
-- **当前随附二进制 SHA-256**：`e6a62cbb03163107db889e6accf7c05049ecf949c89f29afaf072c66fe09eac9`（注：.NET Framework `csc.exe` 默认嵌入 PE 时间戳/MVID，自行本地或由 `.github/workflows/release.yml` 在 `windows-latest` 上从同份源码重编会生成有效功能等价但哈希值不同的二进制；CI 现场编译旨在提升构建来源透明度，但**不代表所有杀软引擎一定会停止触发告警**）。
-- **常见安全软件检测说明**：由于该程序是约 15 KB 的未数字签名原生辅助二进制且调用了 `keybd_event`、`AttachThreadInput`、`AllowSetForegroundWindow`、`CreateToolhelp32Snapshot` 与 `Process.Start("cmd.exe")`，部分杀毒引擎可能报启发式可疑告警。
-- **无需关闭杀软的可选降级**：如果您不希望保留任何预编译 `.exe` 或其被安全软件拦截，无需关闭安全软件，也无需购买签名证书，可直接删除 `scripts/cli-window-helper.exe`。`meter-cli-launcher.js` 检测到 helper 缺失或失败时会自动降级为直接启动标准 Windows 控制台 `cmd.exe /d /k`，CLI 启动与对话能力完全正常（仅不再自动居中或强制置顶窗口）。
+- **常见安全软件检测说明**：由于该程序是约 15 KB 的未数字签名原生辅助二进制且调用了 `keybd_event`、`AttachThreadInput`、`AllowSetForegroundWindow`、`CreateToolhelp32Snapshot` 与 `Process.Start("cmd.exe")`，部分杀毒引擎可能报启发式可疑告警（注：CI 现场编译旨在确保构建来源可追溯，但**不代表所有杀软引擎一定会停止触发告警**）。
+- **无需关闭杀软的可选降级**：如果您不希望保留任何 `.exe` 或其被安全软件拦截，无需关闭安全软件，也无需购买签名证书，可直接删除 `cli-window-helper.exe`（位于安装目录 `scripts/cli-window-helper.exe` 或 `%LOCALAPPDATA%\AntigravityContextMeter\cli-window-helper.exe`）。`meter-cli-launcher.js` 检测到 helper 缺失或失败时会自动降级为直接启动标准 Windows 控制台 `cmd.exe /d /k`，CLI 启动与对话能力完全正常（仅不再自动居中或强制置顶窗口）。
 
 ---
 
@@ -184,3 +183,8 @@ antigravity-context-viewer/
 - **Issue #17（`cli-window-helper` VirusTotal 检测溯源、文档透明度与 Windows CI 源码构建建议）**：感谢 **[@riandycandra](https://github.com/riandycandra)**。
 - **PR #21（繁体中文面板译文精细优化）**：感谢 **[@U1tr0n-Lee](https://github.com/U1tr0n-Lee)**。
 - **Issue #22（GitHub API 限流时官方 Atom/Web 更新回退方案）**：感谢 **[@zhao33079-zhao](https://github.com/zhao33079-zhao)**。
+- **客户端界面汉化上游**：Antigravity 界面汉化基于 [Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization)（Release `v2.34.0`）, 感谢 aabbWei 与 antigravity-cn-community 贡献者. 许可与版权声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+## 作者
+
+上游原作者：[ELVISCHEN](https://github.com/elviscjn-cjn).
