@@ -15,8 +15,11 @@
 ## 核心特性
 
 - **多作用域统一视图**：一站式管理全局（`~/.gemini/config/mcp_config.json`）、项目工作区（`<workspace>/.agents/mcp_config.json`）以及已安装/内置插件附带的 MCP 服务，支持跨作用域迁移与同名冲突告警。
-- **宿主运行时状态直连**：自动读取 Antigravity Language Server 的 `GetMcpServerStates`，在卡片上直接展示 `宿主已就绪` 与已加载工具数，点击即可零等待展开工具列表。
-- **实时协议探测（Live Probe）**：支持单个或一键**探测全部**本地 Stdio（含 Windows `.cmd`/`.bat` 与 `PATHEXT`、nvm/Homebrew/Cargo/Bun 等多路径自动解析）和远程 Streamable HTTP 服务，展示握手耗时、服务端版本与完整工具清单。
+- **宿主运行时状态直连与热重载（Antigravity 2.34+）**：自动读取 Language Server 的 `GetMcpServerStates`、`ListMcpResources`、`ListMcpPrompts` 与 `ListPluginAuthProviders`，支持顶栏与卡片一键触发 `RefreshMcpServers` 热重载；配置保存/开关/导入后自动同步通知宿主。
+- **动态工作区感知与原生联动**：通过 `sidecar.getWorkspaceUris()` 与 `onWorkspaceChange` 实时感知工作区切换；支持直接调用 `sidecar.ui.toggleAuxPane` 在辅助面板打开配置文件、`sidecar.auth.requestCredentialRefresh` 刷新鉴权，以及异常时通过 `sidecar.agent.sendMessage` 一键发给 Agent 排查。
+- **实时协议探测与 MCP Apps（`ui://`）体检**：支持 Stdio 与 Streamable HTTP 握手，同时拉取 `tools/list`、`resources/list` 与 `prompts/list`，自动识别 MCP Apps 的 `ui://` 资源、`aux_pane` / `global` 入口及 `visibility: ["app"]` 元数据，并给出规则告警（如无参入口误配必填参数、缺失 `text/html;profile=mcp-app` MIME 类型）。
+- **内置 `tools/call` 沙盒测试器**：直接在探测抽屉内填参调试任意 MCP 工具（默认 `{}` 以验证入口无参调用），实时展示耗时与 `1 MiB` 轨迹载荷上限检查。
+- **插件变量 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 与命名空间兼容**：正确展开插件级变量（不误报路径缺失），并在 Hook、提示词绑定与宿主状态中兼容 `2.34+` `<pluginName>_<serverName>` 服务命名空间；打包独立插件时可选附带 `rules/AGENTS.md`。
 - **可视化工具粒度过滤**：在探测抽屉中直接勾选/取消工具，支持按原有 `enabledTools`（白名单）或 `disabledTools`（黑名单）语义保存过滤配置，减少上下文冗余。
 - **单 MCP 专属提示词与 Hook 自动注入**：支持为任意 MCP（全局 / 工作区 / 插件自带）配置专属系统提示词，独立保存在 `~/.gemini/config/sidecar_data/mcp_manager/prompts.json`，不污染 `mcp_config.json`。通过 Antigravity 原生生命周期 Hook（`hooks.json`）支持三种模式：
   - **按需注入（`on_demand`，默认）**：不用时零 Token 开销；在模型读取 MCP schema 文件、命中可选关键词或调用工具前自动注入一次。

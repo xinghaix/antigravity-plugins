@@ -99,9 +99,62 @@ function normalizeNameSet(configuredNames) {
 }
 
 /**
+ * Scan installed/builtin plugin mcp_config.json files to map Antigravity 2.34+
+ * `<pluginSlug>_<serverName>` host identifiers back to their raw server names.
+ */
+export function buildPluginServerAliasMap({ homeDir = homedir(), configRoot } = {}) {
+  const root = resolveConfigRoot({ homeDir, configRoot });
+  const map = new Map();
+  const pluginRoots = [
+    join(root, 'plugins'),
+    join(homeDir, '.gemini', 'antigravity', 'builtin', 'plugins'),
+  ];
+  for (const pRoot of pluginRoots) {
+    if (!existsSync(pRoot)) continue;
+    let dirs = [];
+    try {
+      dirs = readdirSync(pRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of dirs) {
+      if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
+      const pDir = join(pRoot, ent.name);
+      const mcpObj = readJsonObjSafe(join(pDir, 'mcp_config.json'));
+      if (!mcpObj || !isPlainObject(mcpObj.mcpServers)) continue;
+      const manifest = readJsonObjSafe(join(pDir, 'plugin.json')) || {};
+      const pluginSlug = typeof manifest.name === 'string' && manifest.name.trim()
+        ? manifest.name.trim()
+        : ent.name;
+      for (const rawSrv of Object.keys(mcpObj.mcpServers)) {
+        map.set(`${pluginSlug}_${rawSrv}`, rawSrv);
+        if (ent.name !== pluginSlug) {
+          map.set(`${ent.name}_${rawSrv}`, rawSrv);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+function resolveAliasedServer(candidate, nameSet, aliasMap) {
+  if (!candidate) return '';
+  if (nameSet.has(candidate)) return candidate;
+  if (aliasMap instanceof Map && aliasMap.has(candidate)) {
+    const raw = aliasMap.get(candidate);
+    if (nameSet.has(raw)) return raw;
+  }
+  return '';
+}
+
+/**
  * Extract matching configured MCP server names referenced by a single toolCall object.
  */
-export function extractServersFromToolCall(toolCall, configuredNames, { includeSchemaReads = true } = {}) {
+export function extractServersFromToolCall(
+  toolCall,
+  configuredNames,
+  { includeSchemaReads = true, aliasMap = null } = {},
+) {
   const nameSet = normalizeNameSet(configuredNames);
   if (nameSet.size === 0 || !isPlainObject(toolCall)) return [];
 
@@ -109,8 +162,9 @@ export function extractServersFromToolCall(toolCall, configuredNames, { includeS
   if (!toolName) return [];
   const args = isPlainObject(toolCall.args) ? toolCall.args : {};
   const matched = [];
-  const addMatch = (srv) => {
-    if (srv && nameSet.has(srv) && !matched.includes(srv)) {
+  const addMatch = (candidate) => {
+    const srv = resolveAliasedServer(candidate, nameSet, aliasMap);
+    if (srv && !matched.includes(srv)) {
       matched.push(srv);
     }
   };
@@ -121,13 +175,24 @@ export function extractServersFromToolCall(toolCall, configuredNames, { includeS
   }
 
   if (toolName.startsWith('mcp_')) {
-    let bestMatch = '';
+    let bestPrefixLen = -1;
+    let bestResolved = '';
     for (const srv of nameSet) {
-      if (toolName.startsWith(`mcp_${srv}_`) && srv.length > bestMatch.length) {
-        bestMatch = srv;
+      if (toolName.startsWith(`mcp_${srv}_`) && srv.length > bestPrefixLen) {
+        bestPrefixLen = srv.length;
+        bestResolved = srv;
       }
     }
-    if (bestMatch) addMatch(bestMatch);
+    if (aliasMap instanceof Map) {
+      for (const [namespaced, rawSrv] of aliasMap.entries()) {
+        if (!nameSet.has(rawSrv)) continue;
+        if (toolName.startsWith(`mcp_${namespaced}_`) && namespaced.length > bestPrefixLen) {
+          bestPrefixLen = namespaced.length;
+          bestResolved = rawSrv;
+        }
+      }
+    }
+    if (bestResolved) addMatch(bestResolved);
   }
 
   if (includeSchemaReads && READ_LIST_TOOL_NAMES.has(toolName)) {
@@ -147,7 +212,12 @@ export function extractServersFromToolCall(toolCall, configuredNames, { includeS
 /**
  * Incrementally scan new complete JSONL lines in transcriptPath for PLANNER_RESPONSE tool_calls.
  */
-export function extractServersFromTranscript(transcriptPath, fromOffset = 0, configuredNames = []) {
+export function extractServersFromTranscript(
+  transcriptPath,
+  fromOffset = 0,
+  configuredNames = [],
+  { aliasMap = null } = {},
+) {
   const nameSet = normalizeNameSet(configuredNames);
   const startOffset = typeof fromOffset === 'number' && fromOffset >= 0 ? fromOffset : 0;
   if (!transcriptPath || !existsSync(transcriptPath)) {
@@ -210,7 +280,7 @@ export function extractServersFromTranscript(transcriptPath, fromOffset = 0, con
     }
     if (rec?.type !== 'PLANNER_RESPONSE' || !Array.isArray(rec.tool_calls)) continue;
     for (const tc of rec.tool_calls) {
-      for (const srv of extractServersFromToolCall(tc, nameSet, { includeSchemaReads: true })) {
+      for (const srv of extractServersFromToolCall(tc, nameSet, { includeSchemaReads: true, aliasMap })) {
         if (!servers.includes(srv)) servers.push(srv);
       }
     }
@@ -257,10 +327,24 @@ export function isServerDisabledInConfigs(
   let foundCount = 0;
   let enabledCount = 0;
 
-  const inspectMcpMap = (mcpObj, parentDisabled = false) => {
+  const inspectMcpMap = (mcpObj, parentDisabled = false, pluginPrefixes = []) => {
     if (!mcpObj || !isPlainObject(mcpObj.mcpServers)) return;
-    if (!Object.prototype.hasOwnProperty.call(mcpObj.mcpServers, serverName)) return;
-    const entry = mcpObj.mcpServers[serverName];
+    let candidateKey = Object.prototype.hasOwnProperty.call(mcpObj.mcpServers, serverName)
+      ? serverName
+      : '';
+    if (!candidateKey && pluginPrefixes.length > 0) {
+      for (const prefix of pluginPrefixes) {
+        if (prefix && serverName.startsWith(`${prefix}_`)) {
+          const stripped = serverName.slice(prefix.length + 1);
+          if (Object.prototype.hasOwnProperty.call(mcpObj.mcpServers, stripped)) {
+            candidateKey = stripped;
+            break;
+          }
+        }
+      }
+    }
+    if (!candidateKey) return;
+    const entry = mcpObj.mcpServers[candidateKey];
     if (!isPlainObject(entry)) return;
     foundCount += 1;
     if (!parentDisabled && !entry.disabled) {
@@ -297,10 +381,13 @@ export function isServerDisabledInConfigs(
       const mcpObj = readJsonObjSafe(join(pDir, 'mcp_config.json'));
       if (!mcpObj) continue;
       const manifest = readJsonObjSafe(join(pDir, 'plugin.json')) || {};
+      const pluginSlug = typeof manifest.name === 'string' && manifest.name.trim()
+        ? manifest.name.trim()
+        : ent.name;
       const pluginDisabled = typeof disabledOverride[ent.name] === 'boolean'
         ? disabledOverride[ent.name]
         : Boolean(manifest.disabled);
-      inspectMcpMap(mcpObj, pluginDisabled);
+      inspectMcpMap(mcpObj, pluginDisabled, [pluginSlug, ent.name]);
     }
   }
 
@@ -433,6 +520,7 @@ export function handleHookEvent(payload, opts = {}) {
   }
 
   const activeNames = new Set(activeMap.keys());
+  const aliasMap = buildPluginServerAliasMap({ homeDir, configRoot });
   const convId = payload?.conversationId || 'default';
   const sPath = sessionFilePath(stateDir, convId);
   const sessionState = loadSessionState(sPath, convId);
@@ -472,7 +560,10 @@ export function handleHookEvent(payload, opts = {}) {
   }
 
   if (event === 'PostToolUse') {
-    const matched = extractServersFromToolCall(payload?.toolCall, activeNames, { includeSchemaReads: true });
+    const matched = extractServersFromToolCall(payload?.toolCall, activeNames, {
+      includeSchemaReads: true,
+      aliasMap,
+    });
     for (const srv of matched) {
       const entry = activeMap.get(srv);
       if (!entry || isDelivered(sessionState, srv, entry)) continue;
@@ -512,6 +603,7 @@ export function handleHookEvent(payload, opts = {}) {
         payload.transcriptPath,
         sessionState.transcriptOffset,
         activeNames,
+        { aliasMap },
       );
       if (nextOffset !== sessionState.transcriptOffset) {
         sessionState.transcriptOffset = nextOffset;
@@ -578,7 +670,10 @@ export function handleHookEvent(payload, opts = {}) {
   }
 
   if (event === 'PreToolUse') {
-    const matched = extractServersFromToolCall(payload?.toolCall, activeNames, { includeSchemaReads: false });
+    const matched = extractServersFromToolCall(payload?.toolCall, activeNames, {
+      includeSchemaReads: false,
+      aliasMap,
+    });
     for (const srv of matched) {
       const entry = activeMap.get(srv);
       if (!entry || isDelivered(sessionState, srv, entry)) continue;

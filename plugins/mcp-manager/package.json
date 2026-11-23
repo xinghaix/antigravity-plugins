@@ -1,7 +1,7 @@
 {
   "name": "antigravity-mcp-manager",
-  "version": "1.1.0",
-  "description": "Visual MCP server manager plugin for Google Antigravity (Sidecar Aux Pane UI + Live Tool Probing).",
+  "version": "1.2.0",
+  "description": "Visual MCP server manager plugin for Google Antigravity 2.34+ (Sidecar Aux Pane UI + Live MCP Apps Inspector & Tool Runner).",
   "type": "module",
   "bin": {
     "antigravity-mcp-manager": "./scripts/cli.mjs"

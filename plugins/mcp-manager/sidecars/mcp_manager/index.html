@@ -33,6 +33,9 @@
               <polyline points="21 3 21 9 15 9"/>
             </svg>
           </button>
+          <button id="btn-host-refresh" type="button" class="btn btn-secondary btn-sm" data-i18n-title="hostRefreshTip" title="通知 Antigravity 2.34+ 宿主热重载 MCP 服务">
+            <span data-i18n="hostRefreshBtn">重载宿主</span>
+          </button>
           <button id="btn-probe-all" type="button" class="btn btn-secondary btn-sm">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/>
@@ -58,6 +61,7 @@
             <button type="button" class="scope-tab" role="tab" aria-selected="false" data-scope="plugin"><span data-i18n="scopePlugin">插件</span> <span class="count" id="cnt-plugin">0</span></button>
           </div>
           <div class="scope-tools">
+            <button id="btn-open-config-pane" type="button" class="btn btn-ghost btn-xs" data-i18n="openConfigPaneBtn">打开配置文件</button>
             <button id="btn-import" type="button" class="btn btn-secondary btn-xs" data-i18n="importBtn">导入</button>
             <button id="btn-raw" type="button" class="btn btn-secondary btn-xs" data-i18n="rawBtn">Raw / 备份</button>
           </div>
@@ -76,6 +80,7 @@
             <option value="disabled" data-i18n="statusDisabled">仅已禁用</option>
             <option value="warn" data-i18n="statusWarn">仅告警</option>
             <option value="has-prompt" data-i18n="statusPrompt">仅含提示词</option>
+            <option value="mcp-app" data-i18n="statusMcpApp">仅 MCP Apps (ui://)</option>
           </select>
         </div>
       </div>
@@ -128,6 +133,7 @@
           <button type="button" class="tpl-chip" data-tpl="sqlite">SQLite</button>
           <button type="button" class="tpl-chip" data-tpl="http">Remote HTTP</button>
           <button type="button" class="tpl-chip" data-tpl="sse-bridge">SSE Bridge</button>
+          <button type="button" class="tpl-chip" data-tpl="mcp-app">MCP App (2.34+)</button>
         </div>
 
         <div id="editor-form-pane">
@@ -386,6 +392,10 @@
         <label class="field">
           <span class="field-label" data-i18n="exportDescLabel">简介</span>
           <input id="exp-desc" type="text" placeholder="Standalone MCP plugin">
+        </label>
+        <label class="check-row">
+          <input id="exp-include-prompt" type="checkbox" checked>
+          <span data-i18n="exportIncludePromptLabel">若已配置专属提示词，打包为插件内置 rules/AGENTS.md</span>
         </label>
       </div>
       <div class="modal-footer">

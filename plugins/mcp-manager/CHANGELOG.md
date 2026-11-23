@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-11-23
+
+### Added
+- **Antigravity 2.34.0 Host Integration & Live Reload**:
+  - Added `RefreshMcpServers` LS RPC integration (`POST /api/host/refresh` plus automatic background reload after saving, toggling, deleting, importing, restoring backups, or exporting plugins), and read-only `ListMcpResources` / `ListMcpPrompts` / `ListPluginAuthProviders` host discovery.
+  - Subscribed to `window.sidecar.getWorkspaceUris()` & `onWorkspaceChange` (`POST /api/state/query`) for live workspace synchronization in Antigravity 2.34+ where `app.config.workspaceUris` is no longer populated.
+  - Integrated `window.sidecar.ui.toggleAuxPane`, `window.sidecar.auth.requestCredentialRefresh`, and `window.sidecar.agent.sendMessage` for one-click config file viewing, credential refresh, and diagnostic escalation.
+- **MCP Apps (`ui://`) Inspector & `tools/call` Sandbox Runner**:
+  - Extended `mcp_probe.mjs` to query `resources/list` and `prompts/list` alongside `tools/list`, parse SEP-1865 `_meta.ui` (`ui://` resources, `visibility: ["app"]`) and `com.google.antigravity/ui` (`aux_pane` / `global` entrypoints), run `diagnoseMcpAppTools` compliance checks, and expose an inline `callServerTool` runner (`POST /api/probe/call-tool`) checking the 1 MiB trajectory cap.
+  - Added `MCP App (2.34+)` status filter, badges, warnings against disabling `App-Only` tools, and quick editor template.
+- **Plugin Variable Expansion & Namespacing**:
+  - Added `expandPluginVariables` (`${PLUGIN_ROOT}`, `${PLUGIN_DATA}`) in `mcp_store.mjs` and `mcp_probe.mjs`, warning when used outside plugin `mcp_config.json`.
+  - Resolved `<pluginName>_<serverName>` namespaced servers and `mcp_<plugin>_<server>_<tool>` calls in `getState` and `hooks/mcp_prompt_hook.mjs`, and added `grep_search` to `hooks.json` `PostToolUse` matcher.
+  - Enhanced `exportAsPlugin` with clean server keys, `suggestedPrompts`, and optional `rules/AGENTS.md` bundling for saved server prompts.
+
 ## [1.1.0] - 2026-11-19
 
 ### Added

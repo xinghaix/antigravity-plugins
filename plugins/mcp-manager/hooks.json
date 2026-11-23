@@ -16,7 +16,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "view_file|read_file|list_dir|find_by_name|call_mcp_tool|mcp_.*|list_resources|read_resource",
+        "matcher": "view_file|read_file|list_dir|find_by_name|grep_search|call_mcp_tool|mcp_.*|list_resources|read_resource",
         "hooks": [
           {
             "type": "command",

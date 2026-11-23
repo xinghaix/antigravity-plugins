@@ -1,11 +1,33 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createStore, normalizeSnippetInput, resolveExecutable } from '../sidecars/mcp_manager/mcp_store.mjs';
-import { probeHttpServer, probeStdioServer } from '../sidecars/mcp_manager/mcp_probe.mjs';
+import {
+  analyzeServer,
+  createStore,
+  expandPluginVariables,
+  normalizeSnippetInput,
+  resolveExecutable,
+} from '../sidecars/mcp_manager/mcp_store.mjs';
+import {
+  callServerTool,
+  diagnoseMcpAppTools,
+  extractMcpAppMeta,
+  probeHttpServer,
+  probeStdioServer,
+} from '../sidecars/mcp_manager/mcp_probe.mjs';
 import { getStatus, installPlugin, uninstallPlugin } from '../scripts/cli.mjs';
 import {
   deleteServerPrompt,
@@ -16,6 +38,7 @@ import {
   saveServerPrompt,
 } from '../hooks/prompt_store.mjs';
 import {
+  buildPluginServerAliasMap,
   extractServersFromToolCall,
   extractServersFromTranscript,
   handleHookEvent,
@@ -600,6 +623,248 @@ try {
   assert.match(parsedCliOut.reason, /Never run DROP TABLE\./);
 
   deleteServerPrompt('strict-srv', hookOpts);
+
+  // 20. Antigravity 2.34+ ${PLUGIN_ROOT} & ${PLUGIN_DATA} expansion & scope warning
+  const pRootDir = join(tempRoot, 'plugin-vars-root');
+  const pDataDir = join(tempRoot, 'plugin-vars-data');
+  mkdirSync(join(pRootDir, 'bin'), { recursive: true });
+  mkdirSync(pDataDir, { recursive: true });
+  const fakeBin = join(pRootDir, 'bin', 'mock-bin.sh');
+  writeFileSync(fakeBin, '#!/bin/sh\nexit 0\n');
+  chmodSync(fakeBin, 0o755);
+
+  const expandedCfg = expandPluginVariables(
+    {
+      command: '${PLUGIN_ROOT}/bin/mock-bin.sh',
+      args: ['--data', '${PLUGIN_DATA}'],
+      cwd: '${PLUGIN_DATA}',
+      env: { DATA_DIR: '${PLUGIN_DATA}' },
+    },
+    { pluginRoot: pRootDir, pluginData: pDataDir },
+  );
+  assert.equal(expandedCfg.command, fakeBin);
+  assert.equal(expandedCfg.args[1], pDataDir);
+  assert.equal(expandedCfg.cwd, pDataDir);
+  assert.equal(expandedCfg.env.DATA_DIR, pDataDir);
+
+  const pluginScopedAnalysis = analyzeServer(
+    'var-srv',
+    { command: '${PLUGIN_ROOT}/bin/mock-bin.sh', cwd: '${PLUGIN_DATA}' },
+    homeDir,
+    { pluginRoot: pRootDir, pluginData: pDataDir },
+  );
+  assert.equal(pluginScopedAnalysis.usesPluginVars, true);
+  assert.equal(pluginScopedAnalysis.warnings.some((w) => w.code === 'command_not_found'), false);
+  assert.equal(pluginScopedAnalysis.warnings.some((w) => w.code === 'plugin_vars_outside_plugin'), false);
+
+  const globalVarAnalysis = analyzeServer(
+    'global-var-srv',
+    { command: '${PLUGIN_ROOT}/bin/mock-bin.sh' },
+    homeDir,
+  );
+  assert.ok(globalVarAnalysis.warnings.some((w) => w.code === 'plugin_vars_outside_plugin'));
+
+  // 21. Antigravity 2.34+ <pluginSlug>_<serverName> host matching & hook alias resolution
+  st = store.getState([], {
+    'demo-plugin_shared': {
+      status: 'MCP_SERVER_STATUS_READY',
+      ready: true,
+      tools: [
+        {
+          name: 'open_ui',
+          description: 'MCP App tool',
+          _meta: {
+            ui: { resourceUri: 'ui://demo/view', visibility: ['model', 'app'] },
+            'com.google.antigravity/ui': { entrypoints: [{ type: 'aux_pane', title: 'Demo View' }] },
+          },
+        },
+      ],
+    },
+  });
+  const demoPluginSrv = st.plugins[0].servers[0];
+  assert.equal(demoPluginSrv.namespacedName, 'demo-plugin_shared');
+  assert.equal(demoPluginSrv.hostStatus.ready, true);
+  assert.equal(demoPluginSrv.mcpAppCount, 1);
+
+  const hookNsPlugin = join(hookConfigRoot, 'plugins', 'demo-plugin');
+  mkdirSync(hookNsPlugin, { recursive: true });
+  writeFileSync(join(hookNsPlugin, 'plugin.json'), JSON.stringify({ name: 'demo-plugin', displayName: 'Demo Plugin' }));
+  writeFileSync(join(hookNsPlugin, 'mcp_config.json'), JSON.stringify({
+    mcpServers: {
+      shared: { url: 'https://plugin.example.com/mcp' },
+    },
+  }));
+  const aliasMap = buildPluginServerAliasMap({ homeDir, configRoot: hookConfigRoot });
+  assert.equal(aliasMap.get('demo-plugin_shared'), 'shared');
+  assert.deepEqual(
+    extractServersFromToolCall(
+      { name: 'mcp_demo-plugin_shared_open_ui', args: {} },
+      new Set(['shared']),
+      { aliasMap },
+    ),
+    ['shared'],
+  );
+  assert.deepEqual(
+    extractServersFromToolCall(
+      { name: 'call_mcp_tool', args: { ServerName: 'demo-plugin_shared', ToolName: 'open_ui' } },
+      new Set(['shared']),
+      { aliasMap },
+    ),
+    ['shared'],
+  );
+  assert.equal(isServerDisabledInConfigs('demo-plugin_shared', hookOpts), false);
+
+  saveServerPrompt({ serverName: 'shared', prompt: 'Always check plugin shared quota.', mode: 'strict' }, hookOpts);
+  const nsDeny = handleHookEvent({
+    hookEventName: 'PreToolUse',
+    conversationId: 'conv-ns-plugin',
+    toolCall: { name: 'mcp_demo-plugin_shared_query', args: {} },
+  }, hookOpts);
+  assert.equal(nsDeny.decision, 'deny');
+  assert.match(nsDeny.reason, /Always check plugin shared quota\./);
+
+  // 22. exportAsPlugin bundles clean server key, suggestedPrompts, and rules/AGENTS.md
+  store.savePrompt({ serverName: 'rule-srv', prompt: 'Follow rule-srv guidelines strictly.', mode: 'on_demand' });
+  const expWithRule = store.exportAsPlugin({
+    serverName: 'rule-srv',
+    config: { command: process.execPath, args: ['-v'] },
+    pluginSlug: 'rule-srv-plugin',
+    displayName: 'Rule Server Plugin',
+    description: 'Plugin with bundled rules',
+  });
+  assert.equal(expWithRule.serverName, 'rule-srv');
+  assert.equal(expWithRule.namespacedName, 'rule-srv-plugin_rule-srv');
+  assert.ok(expWithRule.bundledRulePath && existsSync(expWithRule.bundledRulePath));
+  assert.match(readFileSync(expWithRule.bundledRulePath, 'utf-8'), /Follow rule-srv guidelines strictly\./);
+  const expManifest = JSON.parse(readFileSync(join(expWithRule.pluginDir, 'plugin.json'), 'utf-8'));
+  assert.ok(Array.isArray(expManifest.suggestedPrompts) && expManifest.suggestedPrompts.length >= 2);
+
+  // 23. MCP Apps metadata extraction, validation warnings, resources/prompts probing & callServerTool sandbox
+  const badAppDiag = diagnoseMcpAppTools([
+    extractMcpAppMeta({
+      name: 'bad_uri_tool',
+      _meta: { ui: { resourceUri: 'https://not-ui-scheme.test' } },
+    }),
+    extractMcpAppMeta({
+      name: 'bad_entrypoint_tool',
+      inputSchema: { type: 'object', required: ['id'] },
+      _meta: {
+        ui: { resourceUri: 'ui://app/missing' },
+        'com.google.antigravity/ui': { entrypoints: [{ type: 'aux_pane', title: 'Bad' }] },
+      },
+    }),
+  ], [{ uri: 'ui://app/other', mimeType: 'text/plain' }]);
+  assert.ok(badAppDiag.some((w) => w.code === 'invalid_ui_uri'));
+  assert.ok(badAppDiag.some((w) => w.code === 'entrypoint_required_args'));
+  assert.ok(badAppDiag.some((w) => w.code === 'missing_or_bad_ui_resource'));
+
+  const mockAppServer = join(pRootDir, 'mcp-app-server.mjs');
+  writeFileSync(mockAppServer, `
+    import readline from 'node:readline';
+    const rl = readline.createInterface({ input: process.stdin });
+    rl.on('line', (line) => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') {
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            protocolVersion: '2025-03-26',
+            serverInfo: { name: 'mock-mcp-app', version: '2.0.0' },
+            capabilities: { tools: {}, resources: {}, prompts: {} }
+          }
+        }) + '\\n');
+      } else if (msg.method === 'tools/list') {
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            tools: [
+              {
+                name: 'open_board',
+                description: 'Opens board UI',
+                _meta: {
+                  ui: { resourceUri: 'ui://board/index.html', visibility: ['model', 'app'] },
+                  'com.google.antigravity/ui': { entrypoints: [{ type: 'aux_pane', title: 'Board' }] }
+                }
+              },
+              {
+                name: 'save_note',
+                description: 'App-only callback',
+                _meta: { ui: { resourceUri: 'ui://board/index.html', visibility: ['app'] } }
+              }
+            ]
+          }
+        }) + '\\n');
+      } else if (msg.method === 'resources/list') {
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            resources: [
+              {
+                uri: 'ui://board/index.html',
+                name: 'Board UI',
+                mimeType: 'text/html;profile=mcp-app',
+                _meta: { ui: { prefersBorder: false } }
+              }
+            ]
+          }
+        }) + '\\n');
+      } else if (msg.method === 'prompts/list') {
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { prompts: [{ name: 'summarize_board', description: 'Summarize' }] }
+        }) + '\\n');
+      } else if (msg.method === 'tools/call') {
+        if (msg.params?.name === 'big_payload') {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id: msg.id,
+            result: { content: [{ type: 'text', text: 'x'.repeat(1100000) }] }
+          }) + '\\n');
+        } else {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id: msg.id,
+            result: {
+              content: [{ type: 'text', text: 'board ready' }],
+              structuredContent: { ok: true, echo: msg.params?.arguments || {} }
+            }
+          }) + '\\n');
+        }
+      }
+    });
+  `);
+
+  const appProbe = await probeStdioServer(
+    { command: process.execPath, args: ['${PLUGIN_ROOT}/mcp-app-server.mjs'] },
+    4000,
+    { pluginRoot: pRootDir, pluginData: pDataDir },
+  );
+  assert.equal(appProbe.ok, true, appProbe.error);
+  assert.equal(appProbe.mcpAppCount, 2);
+  assert.equal(appProbe.uiResources.length, 1);
+  assert.equal(appProbe.prompts.length, 1);
+  assert.equal(appProbe.tools.find((t) => t.name === 'save_note').isAppOnly, true);
+  assert.equal(appProbe.tools.find((t) => t.name === 'open_board').hasAuxPane, true);
+  assert.equal(appProbe.appWarnings.length, 0);
+
+  const callOk = await callServerTool(
+    { command: process.execPath, args: ['${PLUGIN_ROOT}/mcp-app-server.mjs'] },
+    { toolName: 'open_board', args: { filter: 'todo' }, context: { pluginRoot: pRootDir, pluginData: pDataDir } },
+  );
+  assert.equal(callOk.ok, true, callOk.error);
+  assert.equal(callOk.structuredContent.echo.filter, 'todo');
+  assert.equal(callOk.exceedsTrajectoryCap, false);
+
+  const callTooBig = await callServerTool(
+    { command: process.execPath, args: ['${PLUGIN_ROOT}/mcp-app-server.mjs'] },
+    { toolName: 'big_payload', args: {}, context: { pluginRoot: pRootDir, pluginData: pDataDir } },
+  );
+  assert.equal(callTooBig.ok, true, callTooBig.error);
+  assert.equal(callTooBig.exceedsTrajectoryCap, true);
 
   console.log('ALL MCP MANAGER TESTS PASSED');
 } finally {

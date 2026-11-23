@@ -30,6 +30,53 @@ function isPlainObject(v) {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 }
 
+const PLUGIN_VAR_RE = /\$\{(PLUGIN_ROOT|PLUGIN_DATA)\}/;
+
+export function containsPluginVariables(cfg) {
+  if (!isPlainObject(cfg)) return false;
+  const checkStr = (v) => typeof v === 'string' && PLUGIN_VAR_RE.test(v);
+  if (checkStr(cfg.command) || checkStr(cfg.cwd) || checkStr(cfg.url) || checkStr(cfg.serverUrl)) {
+    return true;
+  }
+  if (Array.isArray(cfg.args) && cfg.args.some(checkStr)) return true;
+  if (isPlainObject(cfg.env) && Object.values(cfg.env).some(checkStr)) return true;
+  if (isPlainObject(cfg.headers) && Object.values(cfg.headers).some(checkStr)) return true;
+  return false;
+}
+
+export function expandPluginVariables(rawConfig, { pluginRoot = '', pluginData = '' } = {}) {
+  if (!isPlainObject(rawConfig)) return rawConfig;
+  const rootVal = typeof pluginRoot === 'string' ? pluginRoot : '';
+  const dataVal = typeof pluginData === 'string' ? pluginData : '';
+  if (!rootVal && !dataVal) return rawConfig;
+
+  const replaceVars = (val) => {
+    if (typeof val !== 'string') return val;
+    let out = val;
+    if (rootVal) out = out.replace(/\$\{PLUGIN_ROOT\}/g, rootVal);
+    if (dataVal) out = out.replace(/\$\{PLUGIN_DATA\}/g, dataVal);
+    return out;
+  };
+
+  const cloned = { ...rawConfig };
+  if (typeof cloned.command === 'string') cloned.command = replaceVars(cloned.command);
+  if (typeof cloned.cwd === 'string') cloned.cwd = replaceVars(cloned.cwd);
+  if (typeof cloned.url === 'string') cloned.url = replaceVars(cloned.url);
+  if (typeof cloned.serverUrl === 'string') cloned.serverUrl = replaceVars(cloned.serverUrl);
+  if (Array.isArray(cloned.args)) cloned.args = cloned.args.map(replaceVars);
+  if (isPlainObject(cloned.env)) {
+    const nextEnv = {};
+    for (const [k, v] of Object.entries(cloned.env)) nextEnv[k] = replaceVars(v);
+    cloned.env = nextEnv;
+  }
+  if (isPlainObject(cloned.headers)) {
+    const nextHeaders = {};
+    for (const [k, v] of Object.entries(cloned.headers)) nextHeaders[k] = replaceVars(v);
+    cloned.headers = nextHeaders;
+  }
+  return cloned;
+}
+
 function readJsonSafe(filePath) {
   if (!existsSync(filePath)) {
     return { exists: false, raw: '{\n  "mcpServers": {}\n}\n', parsed: { mcpServers: {} }, parseError: null };
@@ -128,7 +175,7 @@ export function resolveExecutable(cmd, home = homedir(), platform = process.plat
   return { found: false, resolvedPath: null };
 }
 
-export function analyzeServer(name, cfg, home = homedir()) {
+export function analyzeServer(name, cfg, home = homedir(), context = {}) {
   const warnings = [];
   if (!isPlainObject(cfg)) {
     return {
@@ -140,10 +187,22 @@ export function analyzeServer(name, cfg, home = homedir()) {
     };
   }
 
-  const hasCommand = typeof cfg.command === 'string' && cfg.command.trim().length > 0;
-  const endpointUrl = typeof cfg.url === 'string' && cfg.url.trim()
-    ? cfg.url.trim()
-    : (typeof cfg.serverUrl === 'string' && cfg.serverUrl.trim() ? cfg.serverUrl.trim() : '');
+  const usesPluginVars = containsPluginVariables(cfg);
+  const hasPluginContext = Boolean(context && (context.pluginRoot || context.pluginData));
+  const effectiveCfg = hasPluginContext ? expandPluginVariables(cfg, context) : cfg;
+
+  if (usesPluginVars && !hasPluginContext) {
+    warnings.push({
+      code: 'plugin_vars_outside_plugin',
+      level: 'warn',
+      message: '检测到 ${PLUGIN_ROOT} / ${PLUGIN_DATA}：Antigravity 2.34+ 仅在插件 mcp_config.json 中自动展开这些变量，全局或工作区配置中不会展开',
+    });
+  }
+
+  const hasCommand = typeof effectiveCfg.command === 'string' && effectiveCfg.command.trim().length > 0;
+  const endpointUrl = typeof effectiveCfg.url === 'string' && effectiveCfg.url.trim()
+    ? effectiveCfg.url.trim()
+    : (typeof effectiveCfg.serverUrl === 'string' && effectiveCfg.serverUrl.trim() ? effectiveCfg.serverUrl.trim() : '');
   const hasUrl = endpointUrl.length > 0;
 
   let transport = 'unknown';
@@ -159,19 +218,19 @@ export function analyzeServer(name, cfg, home = homedir()) {
 
   let commandCheck = null;
   if (transport === 'stdio') {
-    commandCheck = resolveExecutable(cfg.command, home);
+    commandCheck = resolveExecutable(effectiveCfg.command, home);
     if (!commandCheck.found) {
       warnings.push({
         code: 'command_not_found',
         level: 'warn',
-        message: `未在 PATH 中找到命令 "${cfg.command}"`,
+        message: `未在 PATH 中找到命令 "${effectiveCfg.command}"`,
       });
     }
-    if (typeof cfg.cwd === 'string' && cfg.cwd.trim() && !existsSync(cfg.cwd.trim())) {
+    if (typeof effectiveCfg.cwd === 'string' && effectiveCfg.cwd.trim() && !existsSync(effectiveCfg.cwd.trim())) {
       warnings.push({
         code: 'cwd_missing',
         level: 'warn',
-        message: `工作目录不存在: ${cfg.cwd}`,
+        message: `工作目录不存在: ${effectiveCfg.cwd}`,
       });
     }
   }
@@ -214,6 +273,7 @@ export function analyzeServer(name, cfg, home = homedir()) {
     disabled: Boolean(cfg.disabled),
     endpointUrl: endpointUrl || null,
     resolvedCommand: commandCheck?.resolvedPath || null,
+    usesPluginVars,
     warnings,
     config: cfg,
   };
@@ -366,14 +426,25 @@ export function createStore(options = {}) {
       }
       const mcpInfo = readJsonSafe(mcpPath);
       const serversObj = isPlainObject(mcpInfo.parsed?.mcpServers) ? mcpInfo.parsed.mcpServers : {};
+      const pluginSlug = typeof manifest.name === 'string' && manifest.name.trim()
+        ? manifest.name.trim()
+        : dirName;
+      const pluginData = isBuiltin
+        ? join(home, '.gemini', 'antigravity', 'sidecar_data', pluginSlug)
+        : join(dirname(rootDir), 'plugin_data', pluginSlug);
       const pluginDisabled = typeof disabledOverrideMap[dirName] === 'boolean'
         ? disabledOverrideMap[dirName]
         : Boolean(manifest.disabled);
 
       const servers = Object.entries(serversObj).map(([sName, sCfg]) => ({
-        ...analyzeServer(sName, sCfg, home),
+        ...analyzeServer(sName, sCfg, home, { pluginRoot: pluginDir, pluginData }),
         scope: 'plugin',
         pluginDir: dirName,
+        pluginSlug,
+        pluginRoot: pluginDir,
+        pluginData,
+        namespacedName: `${pluginSlug}_${sName}`,
+        dirNamespacedName: `${dirName}_${sName}`,
         pluginName: manifest.displayName || manifest.name || dirName,
         pluginDisabled,
         isBuiltin,
@@ -497,38 +568,64 @@ export function createStore(options = {}) {
     return { filePath, root };
   }
 
-  function getState(requestedWorkspaces = [], hostStates = {}) {
+  function enrichHostFields(entry, hostStatus) {
+    const tools = Array.isArray(hostStatus?.tools) ? hostStatus.tools : [];
+    const mcpAppCount = tools.filter((t) => {
+      if (t?.isMcpApp || t?.isUiTool) return true;
+      const uri = t?._meta?.ui?.resourceUri ?? t?._meta?.['ui/resourceUri'];
+      return typeof uri === 'string' && uri.startsWith('ui://');
+    }).length;
+    return {
+      ...entry,
+      hostStatus,
+      mcpAppCount,
+      hasMcpApps: mcpAppCount > 0,
+    };
+  }
+
+  function getState(requestedWorkspaces = [], hostStates = {}, options = {}) {
     const storedWorkspaces = loadWorkspaces();
     const allWorkspaces = [...new Set([...storedWorkspaces, ...requestedWorkspaces.filter(Boolean).map((p) => resolve(p))])];
-    const hostOf = (name) => (isPlainObject(hostStates) && hostStates[name] ? hostStates[name] : null);
+    const hostOf = (name, altNames = []) => {
+      if (!isPlainObject(hostStates)) return null;
+      if (name && hostStates[name]) return hostStates[name];
+      for (const alt of altNames) {
+        if (alt && hostStates[alt]) return hostStates[alt];
+      }
+      return null;
+    };
     const promptsMap = readPromptsStore({ promptsFile }).prompts;
-    const promptOf = (name) => promptsMap[name] || null;
+    const promptOf = (name, altNames = []) => {
+      if (name && promptsMap[name]) return promptsMap[name];
+      for (const alt of altNames) {
+        if (alt && promptsMap[alt]) return promptsMap[alt];
+      }
+      return null;
+    };
 
     const globalInfo = readJsonSafe(globalConfigPath);
     const globalServersObj = isPlainObject(globalInfo.parsed?.mcpServers) ? globalInfo.parsed.mcpServers : {};
-    const globalServers = Object.entries(globalServersObj).map(([name, cfg]) => ({
+    const globalServers = Object.entries(globalServersObj).map(([name, cfg]) => enrichHostFields({
       ...analyzeServer(name, cfg, home),
       scope: 'global',
       filePath: globalConfigPath,
       readOnly: false,
-      hostStatus: hostOf(name),
       promptConfig: promptOf(name),
-    }));
+    }, hostOf(name)));
 
     const workspaces = allWorkspaces.map((wsPath) => {
       const filePath = join(wsPath, '.agents', 'mcp_config.json');
       const info = readJsonSafe(filePath);
       const serversObj = isPlainObject(info.parsed?.mcpServers) ? info.parsed.mcpServers : {};
-      const servers = Object.entries(serversObj).map(([name, cfg]) => ({
+      const servers = Object.entries(serversObj).map(([name, cfg]) => enrichHostFields({
         ...analyzeServer(name, cfg, home),
         scope: 'workspace',
         workspacePath: wsPath,
         workspaceName: basename(wsPath),
         filePath,
         readOnly: false,
-        hostStatus: hostOf(name),
         promptConfig: promptOf(name),
-      }));
+      }, hostOf(name)));
       return {
         path: wsPath,
         name: basename(wsPath),
@@ -547,11 +644,10 @@ export function createStore(options = {}) {
       ...scanPluginsDir(builtinPluginsDir, true, disabledMap),
     ].map((p) => ({
       ...p,
-      servers: p.servers.map((s) => ({
+      servers: p.servers.map((s) => enrichHostFields({
         ...s,
-        hostStatus: hostOf(s.name),
-        promptConfig: promptOf(s.name),
-      })),
+        promptConfig: promptOf(s.name, [s.namespacedName, s.dirNamespacedName]),
+      }, hostOf(s.namespacedName, [s.dirNamespacedName, s.name]))),
     }));
 
     // Collect name collisions across active servers
@@ -581,6 +677,7 @@ export function createStore(options = {}) {
       plugins,
       conflicts,
       prompts: promptsMap,
+      hostSummary: isPlainObject(options?.hostExtra) ? options.hostExtra : null,
       paths: {
         globalConfigPath,
         userPluginsDir,
@@ -728,7 +825,14 @@ export function createStore(options = {}) {
     return { ok: true, imported, skipped, filePath };
   }
 
-  function exportAsPlugin({ serverName, config, pluginSlug, displayName, description }) {
+  function exportAsPlugin({
+    serverName,
+    config,
+    pluginSlug,
+    displayName,
+    description,
+    includePromptRule = true,
+  }) {
     const slug = String(pluginSlug || '').trim().toLowerCase();
     if (!PLUGIN_SLUG_RE.test(slug)) {
       throw new Error('插件目录名必须为小写字母、数字和短横线（如 my-mcp-plugin）');
@@ -741,7 +845,8 @@ export function createStore(options = {}) {
       throw new Error(`插件目录已存在: ${targetDir}`);
     }
 
-    const finalServerName = `${slug}-${String(serverName || 'server').replace(/[^a-zA-Z0-9._-]/g, '-')}`.slice(0, 64);
+    const cleanServerKey = (String(serverName || 'server').trim().replace(/[^a-zA-Z0-9._-]/g, '-') || 'server').slice(0, 64);
+    const namespacedName = `${slug}_${cleanServerKey}`;
     mkdirSync(targetDir, { recursive: true });
 
     const manifest = {
@@ -749,23 +854,45 @@ export function createStore(options = {}) {
       displayName: displayName?.trim() || slug,
       description: description?.trim() || `Packaged MCP plugin for ${serverName}`,
       version: '1.0.0',
+      suggestedPrompts: [
+        `使用 ${displayName?.trim() || slug} 服务提供的工具完成任务`,
+        `检查 ${cleanServerKey} MCP 服务连接状态与可用工具`,
+      ],
     };
     const mcpCfg = {
       mcpServers: {
-        [finalServerName]: config,
+        [cleanServerKey]: config,
       },
     };
-    const readme = `# ${manifest.displayName}\n\n${manifest.description}\n\nBundled MCP Server: \`${finalServerName}\`\n`;
+    const readme = `# ${manifest.displayName}\n\n${manifest.description}\n\nBundled MCP Server: \`${cleanServerKey}\` (Antigravity 2.34+ host ID: \`${namespacedName}\`)\n`;
 
     writeFileSync(join(targetDir, 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
     writeFileSync(join(targetDir, 'mcp_config.json'), JSON.stringify(mcpCfg, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
     writeFileSync(join(targetDir, 'README.md'), readme, 'utf-8');
 
+    let bundledRulePath = null;
+    if (includePromptRule !== false) {
+      const promptsMap = readPromptsStore({ promptsFile }).prompts || {};
+      const savedPrompt = promptsMap[serverName] || promptsMap[cleanServerKey] || promptsMap[namespacedName] || null;
+      if (savedPrompt?.prompt) {
+        const rulesDir = join(targetDir, 'rules');
+        mkdirSync(rulesDir, { recursive: true });
+        bundledRulePath = join(rulesDir, 'AGENTS.md');
+        writeFileSync(
+          bundledRulePath,
+          `# MCP Server Usage Rules (${cleanServerKey})\n\n${savedPrompt.prompt}\n`,
+          'utf-8',
+        );
+      }
+    }
+
     return {
       ok: true,
       pluginDir: targetDir,
       pluginSlug: slug,
-      serverName: finalServerName,
+      serverName: cleanServerKey,
+      namespacedName,
+      bundledRulePath,
       customizationLink: `customization://${slug}`,
     };
   }

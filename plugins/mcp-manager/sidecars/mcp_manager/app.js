@@ -8,6 +8,12 @@
     zh: {
       loading: '加载中…',
       refreshTip: '刷新配置',
+      hostRefreshBtn: '重载宿主',
+      hostRefreshTip: '通知 Antigravity 2.34+ 宿主热重载 MCP 服务',
+      hostRefreshedToast: '已触发 Antigravity 宿主热重载 MCP 状态',
+      hostRefreshLocalToast: '已刷新本地状态（当前未连接 Antigravity 2.34+ LS）',
+      openConfigPaneBtn: '打开配置文件',
+      openedInPaneToast: '已在侧栏打开 {path}',
       probeAll: '探测全部',
       probingProgress: '探测中 {done}/{total}…',
       addMcp: '+ 添加 MCP',
@@ -23,6 +29,7 @@
       statusDisabled: '仅已禁用',
       statusWarn: '仅告警',
       statusPrompt: '仅含提示词',
+      statusMcpApp: '仅 MCP Apps (ui://)',
       wsLabel: '工作区:',
       wsPlaceholder: '添加项目目录路径，如 ~/Projects/app',
       wsAdd: '关联',
@@ -189,10 +196,37 @@
       promptSavedToast: '已保存 {name} 的专属提示词',
       promptClearedToast: '已清空 {name} 的专属提示词',
       promptDeletedToast: '已清除 {name} 的专属提示词',
+      exportIncludePromptLabel: '若已配置专属提示词，打包为插件内置 rules/AGENTS.md',
+      mcpAppBadge: 'MCP App · {n}',
+      hostIdMeta: '2.34 宿主 ID: {id}',
+      pluginVarsMeta: '使用 ${PLUGIN_ROOT}/${PLUGIN_DATA}',
+      cardReloadBtn: '重载',
+      openFileBtn: '打开文件',
+      refreshAuthBtn: '刷新凭据',
+      askAgentBtn: '问 Agent 排查',
+      authRefreshTriggered: '已唤起 Antigravity 凭据刷新流程',
+      noFileUriToast: '当前视图外无法直接打开侧栏文件，路径: {path}',
+      appOnlyDisableWarn: '注意: 工具 "{tool}" 为 App-Only 可见性，禁用后前端 app.callServerTool() 将无法调用它。',
+      resourcesLabel: 'UI 资源 ({n}):',
+      promptsCountMeta: 'Prompts: {n}',
+      testToolBtn: '测试',
+      toolRunnerTitle: '测试调用 tools/call · {tool}',
+      toolArgsLabel: 'JSON 参数（aux_pane/global 入口将传入 {}）',
+      runToolBtn: '执行调用',
+      runningToolBtn: '执行中…',
+      trajectoryCapWarn: '⚠️ 返回体积 {kb} KB 已超过 Antigravity 2.34+ 单步 1 MiB 上限，MCP App 视图可能被截断！',
+      trajectoryOkMeta: '返回 {kb} KB · {ms}ms',
+      askAgentUnavailable: '当前环境不支持直接发送消息，已复制诊断信息到剪贴板',
     },
     en: {
       loading: 'Loading…',
       refreshTip: 'Refresh',
+      hostRefreshBtn: 'Reload Host',
+      hostRefreshTip: 'Trigger Antigravity 2.34+ RefreshMcpServers RPC',
+      hostRefreshedToast: 'Triggered Antigravity host MCP reload',
+      hostRefreshLocalToast: 'Refreshed local view (host LS RPC unavailable here)',
+      openConfigPaneBtn: 'Open Config',
+      openedInPaneToast: 'Opened {path} in Aux Pane',
       probeAll: 'Probe All',
       probingProgress: 'Probing {done}/{total}…',
       addMcp: '+ Add MCP',
@@ -208,6 +242,7 @@
       statusDisabled: 'Disabled Only',
       statusWarn: 'Warnings Only',
       statusPrompt: 'Has Prompt',
+      statusMcpApp: 'MCP Apps (ui://)',
       wsLabel: 'Workspace:',
       wsPlaceholder: 'Add project path, e.g. ~/Projects/app',
       wsAdd: 'Link',
@@ -374,6 +409,27 @@
       promptSavedToast: 'Saved prompt for {name}',
       promptClearedToast: 'Cleared prompt for {name}',
       promptDeletedToast: 'Removed prompt for {name}',
+      exportIncludePromptLabel: 'Bundle saved server prompt into rules/AGENTS.md inside the exported plugin',
+      mcpAppBadge: 'MCP App · {n}',
+      hostIdMeta: '2.34 Host ID: {id}',
+      pluginVarsMeta: 'Uses ${PLUGIN_ROOT}/${PLUGIN_DATA}',
+      cardReloadBtn: 'Reload',
+      openFileBtn: 'Open File',
+      refreshAuthBtn: 'Refresh Auth',
+      askAgentBtn: 'Ask Agent',
+      authRefreshTriggered: 'Triggered Antigravity credential refresh flow',
+      noFileUriToast: 'Host Aux Pane unavailable outside Antigravity; path: {path}',
+      appOnlyDisableWarn: 'Warning: "{tool}" uses visibility ["app"]; disabling it breaks app.callServerTool().',
+      resourcesLabel: 'UI Resources ({n}):',
+      promptsCountMeta: 'Prompts: {n}',
+      testToolBtn: 'Test',
+      toolRunnerTitle: 'Test tools/call · {tool}',
+      toolArgsLabel: 'JSON Arguments (aux_pane/global entrypoints invoke with {})',
+      runToolBtn: 'Run Tool',
+      runningToolBtn: 'Running…',
+      trajectoryCapWarn: '⚠️ Payload {kb} KB exceeds the Antigravity 2.34+ 1 MiB trajectory cap!',
+      trajectoryOkMeta: '{kb} KB · {ms}ms',
+      askAgentUnavailable: 'Direct agent messaging unavailable; diagnostic summary copied to clipboard',
     },
   };
 
@@ -445,6 +501,14 @@
         args: ['-y', 'mcp-remote', 'https://example.com/sse'],
       },
     },
+    'mcp-app': {
+      name: 'my-mcp-app',
+      config: {
+        command: 'node',
+        args: ['/abs/path/to/mcp-app-server/dist/index.js'],
+        env: { PORT: '0' },
+      },
+    },
   };
 
   const SVG_EYE = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -455,11 +519,13 @@
     data: null,
     scope: 'all',          // all | global | workspace | plugin
     selectedWorkspace: '', // active workspace path for workspace tab
+    hostWorkspaceUris: [], // dynamic 2.34+ workspaces from window.sidecar
     search: '',
     statusFilter: 'all',
     probes: new Map(),     // key -> probeResult
     probing: new Set(),    // keys currently probing
     probeFilters: new Map(),
+    toolRunner: null,      // { key, toolName, argsText, running, result }
     batchProbing: false,
     confirmDeleteKey: '',
     editor: {
@@ -557,7 +623,9 @@
 
   async function refresh() {
     try {
-      const data = await api('/api/state');
+      const data = state.hostWorkspaceUris.length
+        ? await api('/api/state/query', { workspaceUris: state.hostWorkspaceUris })
+        : await api('/api/state');
       state.data = data;
       const wsList = data.workspaces || [];
       if (!state.selectedWorkspace || !wsList.some((w) => w.path === state.selectedWorkspace)) {
@@ -567,6 +635,45 @@
     } catch (err) {
       toast(err.message, 'error');
     }
+  }
+
+  async function triggerHostRefresh(serverName = '') {
+    try {
+      const res = await api('/api/host/refresh', { serverName });
+      toast(t(res?.refresh?.refreshed ? 'hostRefreshedToast' : 'hostRefreshLocalToast'), 'success');
+      await refresh();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function openPathInAuxPane(filePath) {
+    if (!filePath) return;
+    if (window.sidecar?.ui?.toggleAuxPane) {
+      try {
+        const uri = filePath.startsWith('file://') ? filePath : `file://${encodeURI(filePath)}`;
+        await window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri });
+        toast(t('openedInPaneToast', { path: filePath }), 'success');
+        return;
+      } catch { /* fallback below */ }
+    }
+    try {
+      await navigator.clipboard.writeText(filePath);
+    } catch { /* ignore */ }
+    toast(t('noFileUriToast', { path: filePath }));
+  }
+
+  async function sendDiagnosticToAgent(text) {
+    if (window.sidecar?.agent?.sendMessage) {
+      try {
+        await window.sidecar.agent.sendMessage(text);
+        return;
+      } catch { /* fallback */ }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch { /* ignore */ }
+    toast(t('askAgentUnavailable'));
   }
 
   function render() {
@@ -647,19 +754,29 @@
     });
   }
 
+  function hasAnyMcpApp(s, key) {
+    if (s.hasMcpApps || (s.mcpAppCount || 0) > 0) return true;
+    const probe = state.probes.get(key);
+    if (probe?.ok && ((probe.mcpAppCount || 0) > 0 || (probe.uiResources || []).length > 0)) return true;
+    return false;
+  }
+
   function filterServers(all) {
     const q = state.search.trim().toLowerCase();
     return all.filter((s) => {
       if (state.scope !== 'all' && s.scope !== state.scope) return false;
       if (state.scope === 'workspace' && state.selectedWorkspace && s.workspacePath !== state.selectedWorkspace) return false;
       const isOff = Boolean(s.disabled || s.pluginDisabled);
+      const key = serverKey(s);
       if (state.statusFilter === 'enabled' && isOff) return false;
       if (state.statusFilter === 'disabled' && !isOff) return false;
       if (state.statusFilter === 'warn' && (!s.warnings || s.warnings.length === 0)) return false;
       if (state.statusFilter === 'has-prompt' && !s.promptConfig?.prompt) return false;
+      if (state.statusFilter === 'mcp-app' && !hasAnyMcpApp(s, key)) return false;
       if (q) {
         const hay = [
           s.name,
+          s.namespacedName,
           s.config?.command,
           ...(s.config?.args || []),
           s.endpointUrl,
@@ -751,6 +868,11 @@
     if (enabledTools.length) metaBits.push(t('allowToolsMeta', { n: enabledTools.length }));
     else if (disabledTools.length) metaBits.push(t('denyToolsMeta', { n: disabledTools.length }));
     if (srv.resolvedCommand) metaBits.push(t('cmdReadyMeta'));
+    if (srv.usesPluginVars) metaBits.push(t('pluginVarsMeta'));
+    if (isPlugin && srv.namespacedName) metaBits.push(t('hostIdMeta', { id: srv.namespacedName }));
+
+    const mcpAppTotal = probe?.ok ? (probe.mcpAppCount || 0) : (srv.mcpAppCount || 0);
+    const hasAuthProblem = Boolean(srv.hostStatus && !srv.hostStatus.ready && /AUTH|TOKEN|CREDENTIAL|UNAUTH/i.test(String(srv.hostStatus.status || '')));
 
     const warningsHtml = (srv.warnings || []).map((w) => `
       <div class="warn-item ${w.level === 'error' ? 'error' : ''}">
@@ -771,6 +893,7 @@
               <span class="server-name">${esc(srv.name)}</span>
               <span class="badge ${srv.scope === 'global' ? 'badge-accent' : ''}">${esc(scopeLabel)}</span>
               <span class="badge">${esc(transportLabel)}</span>
+              ${mcpAppTotal > 0 ? `<span class="badge badge-app">${esc(t('mcpAppBadge', { n: mcpAppTotal }))}</span>` : ''}
               ${renderHostBadge(srv, key)}
               ${renderPromptBadge(srv, key)}
               ${hasConflict ? `<span class="badge badge-warn">${esc(t('conflictBadge'))}</span>` : ''}
@@ -794,10 +917,14 @@
             ${esc(isProbing ? t('probingBtn') : (probe ? t('reprobeBtn') : t('probeBtn')))}
           </button>
           <button type="button" class="btn btn-secondary btn-xs" data-action="prompt" data-key="${esc(key)}">${esc(t('promptBtn'))}</button>
+          ${!isOff && (srv.hostStatus || state.data?.hostSummary?.connected) ? `<button type="button" class="btn btn-ghost btn-xs" data-action="host-refresh" data-key="${esc(key)}">${esc(t('cardReloadBtn'))}</button>` : ''}
+          ${hasAuthProblem || srv.config?.authProviderType || srv.config?.oauth ? `<button type="button" class="btn btn-ghost btn-xs" data-action="refresh-auth" data-key="${esc(key)}">${esc(t('refreshAuthBtn'))}</button>` : ''}
           ${!isPlugin ? `<button type="button" class="btn btn-secondary btn-xs" data-action="edit" data-key="${esc(key)}">${esc(t('editBtn'))}</button>` : ''}
           ${!isPlugin ? `<button type="button" class="btn btn-ghost btn-xs" data-action="clone" data-key="${esc(key)}">${esc(t('cloneBtn'))}</button>` : ''}
+          ${srv.filePath ? `<button type="button" class="btn btn-ghost btn-xs" data-action="open-file" data-key="${esc(key)}">${esc(t('openFileBtn'))}</button>` : ''}
           <button type="button" class="btn btn-ghost btn-xs" data-action="copy" data-key="${esc(key)}">${esc(t('copyBtn'))}</button>
           ${!isPlugin ? `<button type="button" class="btn btn-ghost btn-xs" data-action="export" data-key="${esc(key)}">${esc(t('exportBtn'))}</button>` : ''}
+          ${(hasErr || (probe && !probe.ok)) ? `<button type="button" class="btn btn-ghost btn-xs" data-action="ask-agent" data-key="${esc(key)}">${esc(t('askAgentBtn'))}</button>` : ''}
           <div class="spacer"></div>
           ${!isPlugin ? (confirmDelete
             ? `<button type="button" class="btn btn-danger-ghost btn-xs" data-action="delete-confirm" data-key="${esc(key)}">${esc(t('deleteConfirmBtn'))}</button>
@@ -850,15 +977,57 @@
     }
 
     const tools = probe.tools || [];
+    const uiResources = probe.uiResources || [];
+    const prompts = probe.prompts || [];
+    const appWarnings = probe.appWarnings || [];
     const srvInfo = probe.serverInfo?.name ? `${probe.serverInfo.name}${probe.serverInfo.version ? ' v' + probe.serverInfo.version : ''}` : t('probeSuccess');
     const timingOrHost = probe.fromHost ? t('hostLoadedLabel') : `${probe.latencyMs}ms`;
     const filterQ = (state.probeFilters.get(key) || '').toLowerCase();
+    const runner = state.toolRunner && state.toolRunner.key === key ? state.toolRunner : null;
+
+    const renderToolBadges = (tool) => {
+      const tags = [];
+      if (tool.isMcpApp) tags.push('<span class="badge badge-app badge-mini">UI</span>');
+      if (tool.hasAuxPane) tags.push('<span class="badge badge-app badge-mini">Aux Pane</span>');
+      if (tool.hasGlobal) tags.push('<span class="badge badge-app badge-mini">Global</span>');
+      if (tool.isAppOnly) tags.push('<span class="badge badge-warn badge-mini">App-Only</span>');
+      if (tool.annotations?.readOnlyHint) tags.push('<span class="badge badge-mini">ReadOnly</span>');
+      if (tool.annotations?.destructiveHint) tags.push('<span class="badge badge-danger badge-mini">Destructive</span>');
+      return tags.length ? `<div class="tool-chip-badges">${tags.join('')}</div>` : '';
+    };
+
+    const runnerHtml = runner ? `
+      <div class="tool-runner">
+        <div class="tool-runner-head">
+          <strong>${esc(t('toolRunnerTitle', { tool: runner.toolName }))}</strong>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button type="button" class="btn btn-primary btn-xs" data-action="run-tool-call" data-key="${esc(key)}" ${runner.running ? 'disabled' : ''}>
+              ${esc(runner.running ? t('runningToolBtn') : t('runToolBtn'))}
+            </button>
+            <button type="button" class="link-btn" data-action="close-tool-runner">${esc(t('collapseBtn'))}</button>
+          </div>
+        </div>
+        <div class="field-hint">${esc(t('toolArgsLabel'))}</div>
+        <textarea rows="3" data-tool-args="${esc(key)}" spellcheck="false">${esc(runner.argsText)}</textarea>
+        ${runner.result ? (runner.result.ok
+          ? `
+            <div class="field-hint">
+              ${runner.result.exceedsTrajectoryCap
+                ? `<span style="color:var(--warning)">${esc(t('trajectoryCapWarn', { kb: (runner.result.resultBytes / 1024).toFixed(1) }))}</span>`
+                : `<span style="color:var(--success)">${esc(t('trajectoryOkMeta', { kb: (runner.result.resultBytes / 1024).toFixed(1), ms: runner.result.latencyMs }))}</span>`}
+            </div>
+            <pre class="tool-runner-out">${esc(JSON.stringify(runner.result.structuredContent ?? runner.result.content, null, 2))}</pre>
+          `
+          : `<div style="color:var(--danger);font-size:11px">${esc(runner.result.error || 'Call failed')}</div>`) : ''}
+      </div>
+    ` : '';
 
     return `
       <div class="probe-box">
         <div class="probe-head">
           <span>
             <strong style="color:var(--success)">${esc(t('probeSuccess'))}</strong> · ${esc(srvInfo)} · ${esc(timingOrHost)} · <strong>${esc(t('discoveredTools', { n: tools.length }))}</strong>
+            ${prompts.length ? ` · ${esc(t('promptsCountMeta', { n: prompts.length }))}` : ''}
           </span>
           <div style="display:flex;gap:8px;align-items:center">
             ${!srv.readOnly && tools.length ? `<button type="button" class="btn btn-secondary btn-xs" data-action="apply-tools" data-key="${esc(key)}" disabled>${esc(t('toolsSyncedBtn'))}</button>` : ''}
@@ -866,6 +1035,13 @@
           </div>
         </div>
         ${probe.note ? `<div class="field-hint">${esc(probe.note)}</div>` : ''}
+        ${uiResources.length ? `
+          <div class="probe-resources-row">
+            <span>${esc(t('resourcesLabel', { n: uiResources.length }))}</span>
+            ${uiResources.map((r) => `<code class="badge badge-app badge-mini" title="${esc(r.mimeType || '')}">${esc(r.uri)}</code>`).join('')}
+          </div>
+        ` : ''}
+        ${appWarnings.map((w) => `<div class="warn-item"><span>${esc(w.message)}</span></div>`).join('')}
         ${tools.length && !srv.readOnly ? `
           <div class="probe-toolbar">
             ${tools.length > 6 ? `<input type="search" class="probe-filter-input" data-probe-search="${esc(key)}" value="${esc(state.probeFilters.get(key) || '')}" placeholder="${esc(t('filterToolsPlaceholder'))}">` : '<span class="spacer"></span>'}
@@ -879,12 +1055,16 @@
           <div class="probe-tools-grid" data-probe-grid="${esc(key)}">
             ${tools.map((tool) => {
               const checked = isToolCheckedByConfig(srv, tool.name);
-              const hiddenByFilter = filterQ && !`${tool.name} ${tool.description || ''}`.toLowerCase().includes(filterQ);
+              const hiddenByFilter = filterQ && !`${tool.name} ${tool.title || ''} ${tool.description || ''}`.toLowerCase().includes(filterQ);
               return `
                 <label class="tool-chip ${checked ? '' : 'is-excluded'} ${hiddenByFilter ? 'hidden' : ''}" title="${esc(tool.description || tool.name)}">
-                  <input type="checkbox" value="${esc(tool.name)}" ${checked ? 'checked' : ''} ${srv.readOnly ? 'disabled' : ''}>
-                  <div>
-                    <div class="tool-chip-name">${esc(tool.name)}</div>
+                  <input type="checkbox" value="${esc(tool.name)}" data-app-only="${tool.isAppOnly ? '1' : '0'}" ${checked ? 'checked' : ''} ${srv.readOnly ? 'disabled' : ''}>
+                  <div class="tool-chip-body">
+                    <div class="tool-chip-head">
+                      <div class="tool-chip-name">${esc(tool.name)}</div>
+                      <button type="button" class="tool-test-btn" data-action="open-tool-runner" data-key="${esc(key)}" data-tool="${esc(tool.name)}">${esc(t('testToolBtn'))}</button>
+                    </div>
+                    ${renderToolBadges(tool)}
                     ${tool.description ? `<div class="tool-chip-desc">${esc(tool.description)}</div>` : ''}
                   </div>
                 </label>
@@ -892,6 +1072,7 @@
             }).join('')}
           </div>
         ` : `<div class="field-hint">${esc(t('noToolsReturned'))}</div>`}
+        ${runnerHtml}
       </div>
     `;
   }
@@ -904,7 +1085,20 @@
     $('server-list').querySelectorAll('[data-probe-grid]').forEach((grid) => {
       const key = grid.dataset.probeGrid;
       grid.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-        cb.addEventListener('change', () => updateApplyToolsState(key));
+        cb.addEventListener('change', () => {
+          if (!cb.checked && cb.dataset.appOnly === '1') {
+            toast(t('appOnlyDisableWarn', { tool: cb.value }));
+          }
+          updateApplyToolsState(key);
+        });
+      });
+    });
+
+    $('server-list').querySelectorAll('[data-tool-args]').forEach((ta) => {
+      ta.addEventListener('input', () => {
+        if (state.toolRunner && state.toolRunner.key === ta.dataset.toolArgs) {
+          state.toolRunner.argsText = ta.value;
+        }
       });
     });
 
@@ -996,7 +1190,71 @@
           await probeSingleServer(srv);
         } else if (action === 'probe-close') {
           state.probes.delete(key);
+          if (state.toolRunner?.key === key) state.toolRunner = null;
           render();
+        } else if (action === 'host-refresh' && srv) {
+          await triggerHostRefresh(srv.namespacedName || srv.name);
+        } else if (action === 'open-file' && srv?.filePath) {
+          await openPathInAuxPane(srv.filePath);
+        } else if (action === 'refresh-auth') {
+          if (window.sidecar?.auth?.requestCredentialRefresh) {
+            try {
+              await window.sidecar.auth.requestCredentialRefresh();
+              toast(t('authRefreshTriggered'), 'success');
+            } catch (err) {
+              toast(err?.message || String(err), 'error');
+            }
+          } else {
+            await triggerHostRefresh(srv?.namespacedName || srv?.name || '');
+          }
+        } else if (action === 'ask-agent' && srv) {
+          const probeErr = state.probes.get(key);
+          const warnSummary = (srv.warnings || []).map((w) => `- ${w.message}`).join('\n');
+          const diagPrompt = [
+            `请帮我排查 MCP 服务 \`${srv.name}\` (${srv.scope}${srv.filePath ? ` · ${srv.filePath}` : ''}) 的异常：`,
+            srv.hostStatus && !srv.hostStatus.ready ? `- 宿主状态: ${srv.hostStatus.status}` : '',
+            probeErr && !probeErr.ok ? `- 探测报错: ${probeErr.error}` : '',
+            warnSummary,
+          ].filter(Boolean).join('\n');
+          await sendDiagnosticToAgent(diagPrompt);
+        } else if (action === 'open-tool-runner') {
+          const toolName = el.dataset.tool || '';
+          state.toolRunner = {
+            key,
+            toolName,
+            argsText: '{}',
+            running: false,
+            result: null,
+          };
+          render();
+        } else if (action === 'close-tool-runner') {
+          state.toolRunner = null;
+          render();
+        } else if (action === 'run-tool-call' && srv && state.toolRunner?.key === key) {
+          let parsedArgs = {};
+          try {
+            parsedArgs = state.toolRunner.argsText.trim() ? JSON.parse(state.toolRunner.argsText) : {};
+          } catch (err) {
+            toast(t('jsonErr', { err: err.message }), 'error');
+            return;
+          }
+          state.toolRunner.running = true;
+          render();
+          try {
+            const res = await api('/api/probe/call-tool', {
+              config: srv.config,
+              toolName: state.toolRunner.toolName,
+              args: parsedArgs,
+              pluginRoot: srv.pluginRoot || '',
+              pluginData: srv.pluginData || '',
+            });
+            state.toolRunner.result = res.call;
+          } catch (err) {
+            state.toolRunner.result = { ok: false, error: err.message };
+          } finally {
+            if (state.toolRunner) state.toolRunner.running = false;
+            render();
+          }
         } else if ((action === 'tools-all' || action === 'tools-none')) {
           const grid = document.querySelector(`[data-probe-grid="${CSS.escape(key)}"]`);
           if (!grid) return;
@@ -1072,7 +1330,11 @@
     state.probing.add(key);
     if (!skipRender) render();
     try {
-      const res = await api('/api/probe', { config: srv.config });
+      const res = await api('/api/probe', {
+        config: srv.config,
+        pluginRoot: srv.pluginRoot || '',
+        pluginData: srv.pluginData || '',
+      });
       state.probes.set(key, res.probe);
     } catch (err) {
       state.probes.set(key, { ok: false, latencyMs: 0, error: err.message, tools: [] });
@@ -1492,6 +1754,14 @@
     render();
   });
   $('btn-refresh').addEventListener('click', refresh);
+  $('btn-host-refresh')?.addEventListener('click', () => triggerHostRefresh(''));
+  $('btn-open-config-pane')?.addEventListener('click', () => {
+    const activeWs = state.scope === 'workspace' && state.selectedWorkspace
+      ? (state.data?.workspaces || []).find((w) => w.path === state.selectedWorkspace)
+      : null;
+    const targetFile = activeWs?.filePath || state.data?.global?.filePath || '';
+    if (targetFile) openPathInAuxPane(targetFile);
+  });
   $('btn-probe-all').addEventListener('click', probeAllVisible);
   $('btn-add').addEventListener('click', () => openEditorModal());
   $('btn-import').addEventListener('click', () => {
@@ -1720,6 +1990,7 @@
         pluginSlug: $('exp-slug').value,
         displayName: $('exp-display').value,
         description: $('exp-desc').value,
+        includePromptRule: $('exp-include-prompt') ? $('exp-include-prompt').checked : true,
       });
       $('modal-export').classList.add('hidden');
       toast(t('exportDoneToast', { slug: res.pluginSlug }), 'success');
@@ -1737,5 +2008,19 @@
   $('btn-prompt-delete').addEventListener('click', deletePromptModal);
 
   applyStaticI18n();
-  refresh();
+  (async () => {
+    try {
+      if (window.sidecar?.getWorkspaceUris) {
+        const uris = await window.sidecar.getWorkspaceUris();
+        if (Array.isArray(uris)) state.hostWorkspaceUris = uris;
+      }
+      if (window.sidecar?.onWorkspaceChange) {
+        window.sidecar.onWorkspaceChange((uris) => {
+          state.hostWorkspaceUris = Array.isArray(uris) ? uris : [];
+          refresh();
+        });
+      }
+    } catch { /* ignore */ }
+    refresh();
+  })();
 })();
