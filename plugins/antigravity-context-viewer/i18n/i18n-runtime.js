@@ -918,48 +918,65 @@
     return false;
   }
 
+  function hasProtectedCoreSelf(cur, allowSelfInput) {
+    if (!cur || cur.nodeType !== 1) return false;
+    var tag = cur.tagName ? String(cur.tagName).toUpperCase() : '';
+    if (tag === 'CODE' || tag === 'PRE' || tag === 'SVG' || tag === 'MATH' || tag === 'MJX-CONTAINER' || tag === 'SCRIPT' || tag === 'STYLE') {
+      return true;
+    }
+    // INPUT / TEXTAREA 的后代文本节点永远跳过，仅允许最外层控件自身翻译 placeholder/aria-label 属性
+    if (!allowSelfInput && (tag === 'INPUT' || tag === 'TEXTAREA')) {
+      return true;
+    }
+    if (cur.id && PROTECTED_ID_SET[cur.id]) return true;
+    if (cur.getAttribute && (
+      cur.getAttribute('data-testid') === 'user-message-content' ||
+      cur.getAttribute('contenteditable') === 'true' ||
+      cur.getAttribute('role') === 'textbox' ||
+      cur.getAttribute('data-lexical-editor') === 'true' ||
+      cur.getAttribute('data-language') ||
+      cur.getAttribute('data-code')
+    )) {
+      return true;
+    }
+    var cls = typeof cur.className === 'string' ? cur.className : '';
+    if (cls && (
+      cls.indexOf('monaco-editor') !== -1 ||
+      cls.indexOf('xterm') !== -1 ||
+      cls.indexOf('hljs') !== -1 ||
+      cls.indexOf('markdown-body') !== -1 ||
+      cls.indexOf('tool-output') !== -1 ||
+      cls.indexOf('command-output') !== -1 ||
+      cls.indexOf('terminal-output') !== -1 ||
+      cls.indexOf('thought-content') !== -1 ||
+      cls.indexOf('thinking-content') !== -1
+    )) {
+      return true;
+    }
+    return false;
+  }
+
   function hasProtectedCoreAncestor(el) {
     var cur = el;
     var depth = 0;
     while (cur && depth < 64) {
-      if (cur.nodeType === 1) {
-        var tag = cur.tagName ? String(cur.tagName).toUpperCase() : '';
-        if (tag === 'CODE' || tag === 'PRE' || tag === 'SVG' || tag === 'MATH' || tag === 'MJX-CONTAINER' || tag === 'SCRIPT' || tag === 'STYLE') {
-          return true;
-        }
-        // INPUT / TEXTAREA 的后代文本节点永远跳过，仅允许最外层控件自身翻译 placeholder/aria-label 属性
-        if (cur !== el && (tag === 'INPUT' || tag === 'TEXTAREA')) {
-          return true;
-        }
-        if (cur.id && PROTECTED_ID_SET[cur.id]) return true;
-        if (cur.getAttribute && (
-          cur.getAttribute('data-testid') === 'user-message-content' ||
-          cur.getAttribute('contenteditable') === 'true' ||
-          cur.getAttribute('role') === 'textbox' ||
-          cur.getAttribute('data-lexical-editor') === 'true' ||
-          cur.getAttribute('data-language') ||
-          cur.getAttribute('data-code')
-        )) {
-          return true;
-        }
-        var cls = typeof cur.className === 'string' ? cur.className : '';
-        if (cls && (
-          cls.indexOf('monaco-editor') !== -1 ||
-          cls.indexOf('xterm') !== -1 ||
-          cls.indexOf('hljs') !== -1 ||
-          cls.indexOf('markdown-body') !== -1 ||
-          cls.indexOf('tool-output') !== -1 ||
-          cls.indexOf('command-output') !== -1 ||
-          cls.indexOf('terminal-output') !== -1 ||
-          cls.indexOf('thought-content') !== -1 ||
-          cls.indexOf('thinking-content') !== -1
-        )) {
-          return true;
-        }
+      if (cur.nodeType === 1 && hasProtectedCoreSelf(cur, cur === el)) {
+        return true;
       }
       cur = cur.parentElement || cur.parentNode;
       if (doc && cur === doc.body) break;
       depth++;
+    }
+    return false;
+  }
+
+  function isWhitelistSelf(el) {
+    if (!el || el.nodeType !== 1 || !el.getAttribute) return false;
+    var dtid = el.getAttribute('data-testid');
+    if (dtid === 'queued-decorators' || dtid === 'user-message-actions') return true;
+    if (dtid === 'thinking-collapsible-trigger') {
+      var tag = el.tagName ? String(el.tagName).toUpperCase() : '';
+      return tag === 'BUTTON';
     }
     return false;
   }
@@ -993,6 +1010,19 @@
     // 4. 全祖先链物理隔离检查
     if (isChatOrMarkdownContent(el)) return true;
 
+    return false;
+  }
+
+  // O(1) 后代节点隔离检查：仅在父节点已通过 shouldIgnoreElement 校验时使用，避免递归重复向上遍历祖先链
+  function shouldIgnoreDescendant(el, inWhitelist) {
+    if (!el || el.nodeType !== 1) return false;
+    if (hasProtectedCoreSelf(el, true)) return true;
+    if (el.getAttribute && el.getAttribute('data-testid') === 'menu-option-label') {
+      var optTxt = (el.innerText || el.textContent || '').trim();
+      return !Object.prototype.hasOwnProperty.call(MENTION_CATEGORIES, optTxt);
+    }
+    if (inWhitelist || isWhitelistSelf(el)) return false;
+    if (hasProtectedNodeOwnMarkers(el)) return true;
     return false;
   }
 
@@ -1080,10 +1110,10 @@
     }
   }
 
-  function translateTextNode(node) {
+  function translateTextNode(node, skipParentCheck) {
     if (!node || node.nodeType !== 3) return;
     var parent = node.parentElement || node.parentNode;
-    if (parent && (shouldIgnoreElement(parent) || parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA' || hasProtectedCoreAncestor(parent))) return;
+    if (!skipParentCheck && parent && (shouldIgnoreElement(parent) || parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA' || hasProtectedCoreAncestor(parent))) return;
 
     var original = node.nodeValue;
     if ((!original || !original.trim()) && node._agyHiddenOrigBrand) {
@@ -1185,11 +1215,18 @@
     return null;
   }
 
-  function translateElement(el, scanId) {
-    if (!el || el.nodeType !== 1) return;
-    if (shouldIgnoreElement(el)) return;
+  function isElementWhitelisted(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.closest) {
+      try {
+        return Boolean(el.closest('button[data-testid="thinking-collapsible-trigger"], [data-testid="queued-decorators"], [data-testid="user-message-actions"]'));
+      } catch (e) {}
+    }
+    return isWhitelistSelf(el);
+  }
 
-    if (scanId && el._agyScanId === scanId) return;
+  function processElementSelf(el, scanId) {
+    if (scanId && el._agyScanId === scanId) return false;
     if (scanId) el._agyScanId = scanId;
 
     if (i18nEnabled && el.getAttribute && el.getAttribute('data-testid') === 'plan-command-fyi-alert') {
@@ -1231,7 +1268,7 @@
     // 表单输入控件只翻译上述属性，绝不遍历其内部文本或子节点
     var elTagUpper = el.tagName ? String(el.tagName).toUpperCase() : '';
     if (elTagUpper === 'INPUT' || elTagUpper === 'TEXTAREA') {
-      return;
+      return false;
     }
 
     // 空状态多节点混合残片收敛 (如 "No 自动化 yet" -> "暂无自动化")
@@ -1266,7 +1303,7 @@
             leafTexts[cClr].nodeValue = '';
             leafTexts[cClr]._agyOriginal = '';
           }
-          return;
+          return false;
         }
       }
     }
@@ -1295,7 +1332,7 @@
               other._agyOriginal = '';
               other = other.nextSibling;
             }
-            return;
+            return false;
           }
         }
       } else {
@@ -1339,14 +1376,63 @@
       }
     }
 
+    return true;
+  }
+
+  function walkElementSync(el, scanId, inWhitelist) {
+    if (!processElementSelf(el, scanId)) return;
+    var nextWhitelist = inWhitelist || isWhitelistSelf(el);
     var child = el.firstChild;
     while (child) {
       if (child.nodeType === 3) {
-        translateTextNode(child);
-      } else if (child.nodeType === 1) {
-        translateElement(child, scanId);
+        translateTextNode(child, true);
+      } else if (child.nodeType === 1 && !shouldIgnoreDescendant(child, nextWhitelist)) {
+        walkElementSync(child, scanId, nextWhitelist);
       }
       child = child.nextSibling;
+    }
+  }
+
+  function translateElement(el, scanId) {
+    if (!el || el.nodeType !== 1) return;
+    if (shouldIgnoreElement(el)) return;
+    walkElementSync(el, scanId, isElementWhitelisted(el));
+  }
+
+  // 带时间预算的 DFS 翻译：切会话大树挂载时分帧让出主线程，避免同步遍历卡顿
+  function translateElementBudgeted(rootEl, deadlineMs, getNow, deferred) {
+    if (!rootEl || rootEl.nodeType !== 1 || rootEl.isConnected === false) return;
+    if (shouldIgnoreElement(rootEl)) return;
+    var stack = [{ el: rootEl, checked: true, inWhitelist: isElementWhitelisted(rootEl) }];
+    var visited = 0;
+    while (stack.length > 0) {
+      var item = stack.pop();
+      var curEl = item.el;
+      if (!curEl || curEl.nodeType !== 1 || curEl.isConnected === false) continue;
+      if (!item.checked && shouldIgnoreDescendant(curEl, item.inWhitelist)) continue;
+      visited++;
+      if (processElementSelf(curEl, 0)) {
+        var nextWhitelist = item.inWhitelist || isWhitelistSelf(curEl);
+        var childEls = [];
+        var c = curEl.firstChild;
+        while (c) {
+          if (c.nodeType === 3) {
+            translateTextNode(c, true);
+          } else if (c.nodeType === 1) {
+            childEls.push(c);
+          }
+          c = c.nextSibling;
+        }
+        for (var ci = childEls.length - 1; ci >= 0; ci--) {
+          stack.push({ el: childEls[ci], checked: false, inWhitelist: nextWhitelist });
+        }
+      }
+      if ((visited & 3) === 0 && stack.length > 0 && getNow() >= deadlineMs) {
+        for (var si = stack.length - 1; si >= 0; si--) {
+          deferred.push(stack[si].el);
+        }
+        break;
+      }
     }
   }
 
@@ -1405,24 +1491,45 @@
       ? function () { return performance.now(); }
       : Date.now;
     var startMs = getNow();
+    var deadlineMs = startMs + 6;
     var limit = Math.min(pendingNodes.length, 200);
     var processed = 0;
+    var deferred = [];
     disconnectObserver();
     try {
       for (var i = 0; i < limit; i++) {
         var node = pendingNodes[i];
         if (pendingNodeSet) pendingNodeSet.delete(node);
-        if (node) {
-          if (node.nodeType === 1) translateElement(node);
-          else if (node.nodeType === 3) translateTextNode(node);
+        if (node && node.isConnected !== false) {
+          if (node.nodeType === 1) {
+            translateElementBudgeted(node, deadlineMs, getNow, deferred);
+          } else if (node.nodeType === 3) {
+            translateTextNode(node, false);
+          }
         }
         processed++;
-        if (processed >= 1 && i + 1 < limit && (getNow() - startMs) >= 6) {
+        if (deferred.length > 0 || (processed >= 1 && i + 1 < limit && getNow() >= deadlineMs)) {
           break;
         }
       }
     } catch (e) {} finally {
       if (processed > 0) pendingNodes.splice(0, processed);
+      if (deferred.length > 0) {
+        var nextQueue = [];
+        for (var d = 0; d < deferred.length; d++) {
+          var defEl = deferred[d];
+          if (!defEl || defEl.isConnected === false) continue;
+          if (pendingNodeSet) {
+            if (pendingNodeSet.has(defEl)) continue;
+            pendingNodeSet.add(defEl);
+          }
+          nextQueue.push(defEl);
+          if (nextQueue.length + pendingNodes.length >= 2000) break;
+        }
+        if (nextQueue.length > 0) {
+          pendingNodes = nextQueue.concat(pendingNodes);
+        }
+      }
       reconnectObserver();
     }
     if (pendingNodes.length > 0) scheduleFlush();
@@ -1456,19 +1563,52 @@
     var MutationObserverClass = root.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
     if (MutationObserverClass) {
       observer = new MutationObserverClass(function (mutations) {
+        if (!i18nEnabled && getBrandTitleMode() === 'english') return;
+        var coreIgnoredTargets = typeof Map !== 'undefined' ? new Map() : null;
+        var ignoredTargets = typeof Map !== 'undefined' ? new Map() : null;
+        var isCoreIgnoredTarget = function (t) {
+          if (!t || t.nodeType !== 1) return false;
+          if (coreIgnoredTargets && coreIgnoredTargets.has(t)) return coreIgnoredTargets.get(t);
+          var res = hasProtectedCoreAncestor(t);
+          if (coreIgnoredTargets) coreIgnoredTargets.set(t, res);
+          return res;
+        };
+        var isIgnoredTarget = function (t) {
+          if (!t || t.nodeType !== 1) return false;
+          if (ignoredTargets && ignoredTargets.has(t)) return ignoredTargets.get(t);
+          var res = shouldIgnoreElement(t);
+          if (ignoredTargets) ignoredTargets.set(t, res);
+          return res;
+        };
         for (var i = 0; i < mutations.length; i++) {
+          if (pendingNodes.length >= 500) break;
           var mutation = mutations[i];
           if (mutation.type === 'childList') {
             var added = mutation.addedNodes;
+            if (!added || added.length === 0) continue;
+            var target = mutation.target;
+            if (target && target.nodeType === 1) {
+              if (isCoreIgnoredTarget(target)) continue;
+              if (pendingNodeSet && pendingNodeSet.has(target)) continue;
+            }
             for (var j = 0; j < added.length; j++) {
-              if (!shouldSkipObservedNode(added[j])) {
-                enqueueNode(added[j]);
+              if (pendingNodes.length >= 500) break;
+              var addedNode = added[j];
+              if (!addedNode || addedNode.isConnected === false) continue;
+              if (addedNode.nodeType === 1) {
+                if (!shouldIgnoreElement(addedNode)) enqueueNode(addedNode);
+              } else if (addedNode.nodeType === 3) {
+                var tp = addedNode.parentElement || addedNode.parentNode || target;
+                if (!(tp && tp.nodeType === 1 && isIgnoredTarget(tp))) enqueueNode(addedNode);
               }
             }
           } else if (mutation.type === 'characterData') {
-            if (mutation.target && !shouldSkipObservedNode(mutation.target)) {
-              mutation.target._agyOriginal = undefined;
-              enqueueNode(mutation.target);
+            var cTarget = mutation.target;
+            if (!cTarget || cTarget.isConnected === false) continue;
+            var cp = cTarget.parentElement || cTarget.parentNode;
+            if (!(cp && cp.nodeType === 1 && isIgnoredTarget(cp))) {
+              cTarget._agyOriginal = undefined;
+              enqueueNode(cTarget);
             }
           }
         }

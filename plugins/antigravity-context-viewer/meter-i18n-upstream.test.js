@@ -420,3 +420,107 @@ test('i18n-runtime 性能优化防回归：非品牌文本零重排、忽略节�
   assert.equal(rafCount, beforeRaf, '被隔离的正文/Markdown 子树增量不得触发 requestAnimationFrame');
   assert.ok(intervals.some(ms => ms >= 60000), `兜底巡检间隔应 >= 60000ms，实得 ${intervals.join(',')}`);
 });
+
+test('i18n-runtime 切会话大树分帧让出与 protected-core MutationObserver 容器短路', () => {
+  const srcRt = fs.readFileSync(path.join(ROOT_DIR, 'src', 'i18n', 'i18n-runtime.js'), 'utf8');
+  const dom = makeMockDom();
+  let capturedObserverCb = null;
+  let rafQueue = [];
+  let nowMs = 0;
+
+  const sb = {
+    window: null,
+    performance: { now: () => nowMs },
+    MutationObserver: class {
+      constructor(cb) { capturedObserverCb = cb; }
+      observe() {}
+      disconnect() {}
+    },
+    requestAnimationFrame: (cb) => { rafQueue.push(cb); return rafQueue.length; },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    Date
+  };
+  sb.window = sb;
+  sb.globalThis = sb;
+  sb.__AGY_I18N_CONFIG__ = { enabled: true, language: 'zh-CN', brandTitle: 'english' };
+  sb.__AGY_I18N_DATA__ = { exact: { Settings: '设置', Planning: '规划' }, patterns: [] };
+  sb.document = {
+    documentElement: dom.body,
+    body: dom.body,
+    readyState: 'complete',
+    title: '',
+    hidden: false,
+    addEventListener: () => {}
+  };
+  vm.runInNewContext(srcRt, sb);
+
+  // 1. MutationObserver 对 protected-core (markdown-body) 容器内的 addedNodes 直接短路，不触发 rAF
+  const mdParent = dom.el('div', { className: 'markdown-body' });
+  const mdChild = dom.el('button');
+  const mdChildText = dom.text('Settings');
+  mdChild.appendChild(mdChildText);
+  mdParent.appendChild(mdChild);
+  const rafBeforeMd = rafQueue.length;
+  capturedObserverCb([{ type: 'childList', target: mdParent, addedNodes: [mdChild] }]);
+  assert.equal(rafQueue.length, rafBeforeMd, 'markdown-body 容器内增量不得排入 rAF 队列');
+
+  // 2. 大批量切会话 UI 子树挂载（含 16 个 UI 按钮 + 2 个隔离区）应在超出 6ms 预算后分帧让出，并完整保持隔离语义
+  const panelRoot = dom.el('div');
+  const btnTexts = [];
+  for (let i = 0; i < 16; i++) {
+    const b = dom.el('button');
+    const tn = dom.text('Settings');
+    b.appendChild(tn);
+    panelRoot.appendChild(b);
+    btnTexts.push(tn);
+  }
+  const isoMd = dom.el('div', { className: 'markdown-body' });
+  const isoMdSpan = dom.el('span');
+  const isoMdText = dom.text('Planning');
+  isoMdSpan.appendChild(isoMdText);
+  isoMd.appendChild(isoMdSpan);
+  panelRoot.appendChild(isoMd);
+
+  const isoAssistant = dom.el('div', { attrs: { 'data-testid': 'assistant-message' } });
+  const isoAssText = dom.text('Settings');
+  isoAssistant.appendChild(isoAssText);
+  panelRoot.appendChild(isoAssistant);
+
+  const isoMeter = dom.el('div', { id: 'composer-status-bar' });
+  const isoMeterText = dom.text('Settings');
+  isoMeter.appendChild(isoMeterText);
+  panelRoot.appendChild(isoMeter);
+
+  const pillBtn = dom.el('button', { attrs: { 'data-testid': 'thinking-collapsible-trigger' } });
+  const pillSpan = dom.el('span');
+  const pillText = dom.text('Planning');
+  pillSpan.appendChild(pillText);
+  pillBtn.appendChild(pillSpan);
+  panelRoot.appendChild(pillBtn);
+
+  // 每次调用 performance.now() 递增 3ms，促使第 1 帧在第 4~8 个节点后超过 6ms 预算让出
+  sb.performance.now = () => { nowMs += 3; return nowMs; };
+  capturedObserverCb([{ type: 'childList', target: dom.body, addedNodes: [panelRoot] }]);
+  assert.equal(rafQueue.length, 1, '第 1 帧 rAF 应被调度');
+
+  rafQueue.shift()();
+  const translatedAfterFrame1 = btnTexts.filter(t => t.nodeValue === '设置').length;
+  assert.ok(translatedAfterFrame1 > 0 && translatedAfterFrame1 < 16, `第 1 帧应只翻译部分节点并让出主线程，实得 ${translatedAfterFrame1}/16`);
+  assert.equal(rafQueue.length, 1, '剩余子树节点应延续排入下一帧 rAF');
+
+  // 放宽后续帧预算，耗尽剩余帧
+  sb.performance.now = () => 1000;
+  let guard = 0;
+  while (rafQueue.length > 0 && guard < 20) {
+    guard++;
+    rafQueue.shift()();
+  }
+  assert.equal(btnTexts.filter(t => t.nodeValue === '设置').length, 16, '分帧结束后所有 UI 按钮必须全部翻译完成');
+  assert.equal(pillText.nodeValue, '规划', '白名单思考药丸子文本必须保留 O(1) 白名单放行');
+  assert.equal(isoMdText.nodeValue, 'Planning', 'markdown-body 正文必须严格保留原文');
+  assert.equal(isoAssText.nodeValue, 'Settings', 'assistant-message 正文必须严格保留原文');
+  assert.equal(isoMeterText.nodeValue, 'Settings', '#composer-status-bar 自身文本必须严格保留原文');
+});
