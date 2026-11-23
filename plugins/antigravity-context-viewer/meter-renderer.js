@@ -1,9 +1,15 @@
 (function () {
-  const METER_VERSION = '0.9.0-1';
-  const METER_DISPLAY_VERSION = 'v0.9.0-1';
+  const METER_VERSION = '0.9.0-2';
+  const METER_DISPLAY_VERSION = 'v0.9.0-2';
 
   'use strict';
-  if ((location.protocol !== 'https:' && location.protocol !== 'http:') || location.hostname !== '127.0.0.1') return;
+  const isSidecarEmbedBoot = Boolean(typeof globalThis !== 'undefined' && globalThis.__AGContextMeterSidecarEmbed);
+  const isAllowedHostOrigin = (location.protocol === 'https:' || location.protocol === 'http:') && location.hostname === '127.0.0.1';
+  const isAllowedSidecarOrigin = isSidecarEmbedBoot && (
+    location.protocol === 'plugin:' ||
+    ((location.protocol === 'https:' || location.protocol === 'http:') && (location.hostname === '127.0.0.1' || location.hostname === 'localhost'))
+  );
+  if (!isAllowedHostOrigin && !isAllowedSidecarOrigin) return;
 
   // 在替换或重载旧实例之前捕获当前打开面板、滚动位置与未保存设置草稿（同时兼容无 captureHotReloadState 的旧版本）
   let inheritedHotReloadState = null;
@@ -11951,6 +11957,56 @@
       animation: none !important;
       will-change: auto !important;
     }
+
+    /* Native Sidecar Aux Pane full-feature embed mode */
+    :host([data-dock="sidecar"]) {
+      position: static !important;
+      display: block !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      height: auto !important;
+      min-height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+      z-index: 1 !important;
+    }
+
+    :host([data-dock="sidecar"]) .ag-unit,
+    :host([data-dock="sidecar"]) #overflow-menu,
+    :host([data-dock="sidecar"]) #context-tooltip,
+    :host([data-dock="sidecar"]) #token-five-line-card,
+    :host([data-dock="sidecar"]) #dock-aux-context-bar,
+    :host([data-dock="sidecar"]) #close,
+    :host([data-dock="sidecar"]) #close-tokens,
+    :host([data-dock="sidecar"]) #close-quota {
+      display: none !important;
+    }
+
+    :host([data-dock="sidecar"]) .ag-panel[data-panel-docked="true"] {
+      position: static !important;
+      top: auto !important;
+      left: auto !important;
+      right: auto !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      max-height: none !important;
+      margin: 0 !important;
+      border: none !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      overflow: visible !important;
+      background: transparent !important;
+      container-type: inline-size;
+      container-name: ctx-panel;
+    }
+
+    :host([data-dock="sidecar"]) .ag-panel[data-panel-docked="true"][hidden] {
+      display: none !important;
+    }
   </style>
 
   <!-- 顶部基本单元 0: 模型额度圆环入口（工具组最左侧） -->
@@ -12094,7 +12150,7 @@
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">v0.9.0-1</span>
+        data-i18n-title="header.versionBtn.title">v0.9.0-2</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -13590,7 +13646,7 @@
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
       <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">v0.9.0-1</span>
+        data-i18n-title="header.versionBtn.title">v0.9.0-2</span>
     </div>
     <div class="panel-header-actions">
       <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
@@ -14722,7 +14778,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.9.0-1</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.9.0-2</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -19894,11 +19950,44 @@ function formatPeriodCalendarLabel(currentPeriod) {
     return null;
   }
 
+  const IS_SIDECAR_EMBED = Boolean(typeof globalThis !== 'undefined' && globalThis.__AGContextMeterSidecarEmbed);
+
   // 解析同屏会话拓扑：支持 Split 多窗格 (/c/<id1>+<id2>?focused=<id>) 与右侧 Side Chat (?tab= 及 DOM [data-tab-id])
   function parseConversationLayout(
     loc = (typeof location !== 'undefined' ? location : null),
     doc = (typeof document !== 'undefined' ? document : null)
   ) {
+    if (IS_SIDECAR_EMBED) {
+      const sidecarRoute = typeof globalThis !== 'undefined' && typeof globalThis.__AGContextMeterSidecarRoute === 'string'
+        ? globalThis.__AGContextMeterSidecarRoute.trim()
+        : '';
+      if (UUID_STRICT_RE.test(sidecarRoute)) {
+        return {
+          panes: [sidecarRoute],
+          focusedPaneId: sidecarRoute,
+          focusedIsBlankPane: false,
+          hasBlankSplitPane: false,
+          sideChat: null,
+          sideChats: [],
+          activeSideChatId: null,
+          targets: [{ id: sidecarRoute, role: 'pane', kind: 'pane', index: 0, isFocused: true }],
+          isMultiSession: false,
+          layoutKey: `sidecar:${sidecarRoute}`
+        };
+      }
+      return {
+        panes: [],
+        focusedPaneId: null,
+        focusedIsBlankPane: false,
+        hasBlankSplitPane: false,
+        sideChat: null,
+        sideChats: [],
+        activeSideChatId: null,
+        targets: [],
+        isMultiSession: false,
+        layoutKey: 'sidecar:none'
+      };
+    }
     const pathname = String(loc?.pathname || '');
     const search = String(loc?.search || '');
     const segMatch = pathname.match(/^\/c\/([^/?#]+)(?:\/|$)/i) || search.match(/[?&]cascadeId=([^&#]*)/i);
@@ -20154,12 +20243,12 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let showCliButton = false;
   let cachedLatestRelease = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-1';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-2';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
     const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
       ? String(METER_DISPLAY_VERSION).trim()
-      : 'v0.9.0-1';
+      : 'v0.9.0-2';
     if (!clean) return buildDisplay;
     const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
     if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;
@@ -20190,6 +20279,9 @@ function formatPeriodCalendarLabel(currentPeriod) {
   };
 
   function hasLiveHttpBridge() {
+    if (typeof globalThis !== 'undefined' && typeof globalThis.__AGContextMeterSidecarLiveFetch === 'function') {
+      return true;
+    }
     return typeof window !== 'undefined' && Boolean(window.__AGContextMeterLive?.port && window.__AGContextMeterLive?.token);
   }
 
@@ -20254,6 +20346,9 @@ function formatPeriodCalendarLabel(currentPeriod) {
   }
 
   async function postLiveHttpEndpoint(routePath, body = {}, opts = {}) {
+    if (typeof globalThis !== 'undefined' && typeof globalThis.__AGContextMeterSidecarLiveFetch === 'function') {
+      return await globalThis.__AGContextMeterSidecarLiveFetch(routePath, body || {}, opts || {});
+    }
     const live = typeof window !== 'undefined' ? window.__AGContextMeterLive : null;
     if (!live?.port || !live?.token) {
       throw new Error('LIVE_BRIDGE_UNAVAILABLE');
@@ -21742,6 +21837,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   }
 
   function isHostMarketplaceActive() {
+    if (IS_SIDECAR_EMBED) return false;
     try {
       const locPath = String(typeof location !== 'undefined' ? (location.pathname || '') : '');
       const locHash = String(typeof location !== 'undefined' ? (location.hash || '') : '');
@@ -22052,7 +22148,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   }
 
   function syncDockedPanelsAttribute() {
-    const docked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
+    const docked = IS_SIDECAR_EMBED || ((dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason);
     for (const id of ['panel', 'panel-tokens', 'panel-quota']) {
       const p = el(id);
       if (!p) continue;
@@ -22668,6 +22764,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   }
 
   function ensureComposerStatusBarMounted(knownMarketplaceActive) {
+    if (IS_SIDECAR_EMBED) return;
     try {
       const csbBar = el('composer-status-bar');
       if (!csbBar) return;
@@ -22702,6 +22799,27 @@ function formatPeriodCalendarLabel(currentPeriod) {
       return;
     }
     dockFallbackReason = '';
+
+    if (IS_SIDECAR_EMBED) {
+      const embedBox = typeof document !== 'undefined' && typeof document.getElementById === 'function'
+        ? document.getElementById('ag-sidecar-aux-host')
+        : null;
+      const targetParent = embedBox || document.body || document.documentElement;
+      if (targetParent && host.parentElement !== targetParent) {
+        targetParent.appendChild(host);
+      }
+      host.setAttribute('data-dock', 'sidecar');
+      host.style.position = 'static';
+      host.style.top = '';
+      host.style.right = '';
+      host.style.bottom = '';
+      host.style.left = '';
+      host.style.zIndex = '';
+      host.style.pointerEvents = '';
+      syncDockedPanelsAttribute();
+      updateResponsiveLayout(true);
+      return;
+    }
 
     const marketActive = enforceMarketplaceAvoidance();
     if (marketActive) {
@@ -23244,6 +23362,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   }
 
   function positionFloatingPanels() {
+    if (IS_SIDECAR_EMBED) return;
     if (!host.getBoundingClientRect) return;
     try {
       const hRect = host.getBoundingClientRect();
@@ -23354,6 +23473,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let lastDomCompactionCheckAt = 0;
 
   function checkHostDomCompactionSignals(options = {}) {
+    if (IS_SIDECAR_EMBED) return;
     if (state.disposed || !state.route || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
     const forceCheck = Boolean(options && options.force);
     const nowMs = Date.now();
@@ -23479,9 +23599,10 @@ function formatPeriodCalendarLabel(currentPeriod) {
       resizeObserver = new ResizeObserver(() => updateResponsiveLayout(true));
       if (document.body) resizeObserver.observe(document.body);
     }
-    if (typeof MutationObserver !== 'undefined' && document.body) {
+    if (!IS_SIDECAR_EMBED && typeof MutationObserver !== 'undefined' && document.body) {
       hostDomObserver = new MutationObserver((mutations) => {
         if (state.disposed) return;
+        if (domMutationThrottleTimer && host.isConnected) return;
         if (Array.isArray(mutations) && mutations.length > 0 && mutations.every(isOwnMeterMutation)) return;
         if (!host.isConnected) {
           layoutMeasurementDirty = true;
@@ -23652,6 +23773,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
       syncHostStackingElevation(true);
       positionFloatingPanels();
       pTokens.hidden = false;
+      syncCumResponsiveNarrowState?.();
       renderActiveHeatView(true);
       const hasCachedHistory = Boolean(ANTIGRAVITY_TOKEN_DATA.updatedAt || ANTIGRAVITY_TOKEN_DATA.summary?.grandTotalTokens);
       if (!hasCachedHistory || !lastHistorySync || (Date.now() - lastHistorySync) > 15000) {
@@ -23694,7 +23816,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
       pContext.hidden = false;
       applyContextViewVisibility?.();
       syncAuxContextBar?.();
-      if (dockPosition === 'aux' && !dockFallbackReason && activeContextTab === 'session' && !state.historyDrawerOpen && state.route && state.ctxAutoExpandedAuxRoute !== state.route) {
+      if ((IS_SIDECAR_EMBED || (dockPosition === 'aux' && !dockFallbackReason)) && activeContextTab === 'session' && !state.historyDrawerOpen && state.route && state.ctxAutoExpandedAuxRoute !== state.route) {
         state.historyDrawerOpen = true;
         state.ctxAutoExpandedAuxRoute = state.route;
       }
@@ -27650,6 +27772,10 @@ function closeAllDropdowns(exceptWrap = null) {
   // =========================================================================
   // 输入栏紧凑状态条 (Composer Status Bar) 与 5 行悬停卡
   // =========================================================================
+  let lastCsbDomTurnsRoute = '';
+  let lastCsbDomTurnsAt = 0;
+  let lastCsbDomTurnsCount = 0;
+
   function renderComposerStatusBar() {
     const csbBar = el('composer-status-bar');
     if (!csbBar) return;
@@ -27659,11 +27785,20 @@ function closeAllDropdowns(exceptWrap = null) {
     const speedTextEl = el('csb-speed-text');
     let detectedDomTurns = 0;
     try {
-      if (typeof document?.querySelectorAll === 'function') {
-        const userMsgEls = document.querySelectorAll(
-          '[data-testid*="user-message"], [data-role="user"], .user-message, div.items-end > div.rounded-2xl, div.items-end > div[class*="rounded"]'
-        );
-        if (userMsgEls && userMsgEls.length > 0) detectedDomTurns = userMsgEls.length;
+      if (!IS_SIDECAR_EMBED && typeof document?.querySelectorAll === 'function') {
+        const curCsbRoute = state.route || '';
+        const nowCsbMs = Date.now();
+        if (curCsbRoute === lastCsbDomTurnsRoute && (nowCsbMs - lastCsbDomTurnsAt) < 1200) {
+          detectedDomTurns = lastCsbDomTurnsCount;
+        } else {
+          const userMsgEls = document.querySelectorAll(
+            '[data-testid*="user-message"], [data-role="user"], .user-message, div.items-end > div.rounded-2xl, div.items-end > div[class*="rounded"]'
+          );
+          if (userMsgEls && userMsgEls.length > 0) detectedDomTurns = userMsgEls.length;
+          lastCsbDomTurnsRoute = curCsbRoute;
+          lastCsbDomTurnsAt = nowCsbMs;
+          lastCsbDomTurnsCount = detectedDomTurns;
+        }
       }
     } catch { }
 
@@ -28073,6 +28208,7 @@ function closeAllDropdowns(exceptWrap = null) {
   }
 
   function renderTurnFooterStats() {
+    if (IS_SIDECAR_EMBED) return;
     try {
       if (typeof document?.querySelectorAll !== 'function') return;
       const existing = document.querySelectorAll('.ag-cm-turn-footer');
@@ -36971,7 +37107,7 @@ function closeAllDropdowns(exceptWrap = null) {
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
     if (!path.includes(host)) {
       closeColorPicker(true);
-      const isPersistentDocked = (dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason;
+      const isPersistentDocked = IS_SIDECAR_EMBED || ((dockPosition === 'aux' || dockPosition === 'page') && !dockFallbackReason);
       if (!isPersistentDocked) {
         toggle(false);
         syncHostStackingElevation(false);
@@ -37028,6 +37164,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (isFocusInsidePlugin()) btnDisplaySettings?.focus?.();
         return;
       }
+      if (IS_SIDECAR_EMBED) return;
       toggle(false);
       hideContextTooltip();
       closePanelPicker();
@@ -38001,7 +38138,7 @@ function closeAllDropdowns(exceptWrap = null) {
         if (savedDock === 'page' && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
           void saveSettingsPayloadBridge({ dockPosition: 'flow', hideTopbar: isTopbarHidden });
         }
-        if (preserveSessionView && dockPosition === 'page') {
+        if (IS_SIDECAR_EMBED || (preserveSessionView && dockPosition === 'page')) {
           syncDockPositionUi();
         } else if (normalizedSavedDock && VALID_DOCK_POSITIONS.includes(normalizedSavedDock) && normalizedSavedDock !== dockPosition) {
           setDockPosition(normalizedSavedDock, { persist: false });
@@ -38269,7 +38406,7 @@ function closeAllDropdowns(exceptWrap = null) {
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-2';
     const currentDisplayVer = formatDisplayVersion(currentVer);
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
@@ -38417,7 +38554,7 @@ function closeAllDropdowns(exceptWrap = null) {
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-1';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.0-2';
         const nextVer = res.version || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const nextDisplayVer = formatDisplayVersion(nextVer);
         const vEl = el('v');
@@ -48193,7 +48330,7 @@ var cumLockedKey = null;
       ensureHostDocked();
     }
     if (id !== prevRoute) {
-      lastDomCompactionCheckAt = 0;
+      lastDomCompactionCheckAt = Date.now() - 1000;
       if (prevRoute) saveSessionSnapshotToCache(prevRoute);
       const sameScreenSwitch = isSameScreenSessionSwitch(prevLayout, nextLayout, prevRoute, id);
       const cachedSnap = (sameScreenSwitch && id) ? readSessionSnapshotFromCache(id) : null;
@@ -48238,7 +48375,7 @@ var cumLockedKey = null;
       if (lastHistorySync > 0) {
         lastHistorySync = Math.max(lastHistorySync, Date.now() - 8000);
       }
-      const keepAuxOpen = dockPosition === 'aux' && !dockFallbackReason && !el('panel')?.hidden;
+      const keepAuxOpen = IS_SIDECAR_EMBED || (dockPosition === 'aux' && !dockFallbackReason && !el('panel')?.hidden);
       if (!sameScreenSwitch && !keepAuxOpen) toggle(false);
       if (keepAuxOpen && activeContextTab === 'session') {
         state.historyDrawerOpen = true;
@@ -48288,10 +48425,13 @@ var cumLockedKey = null;
     Promise.resolve().then(() => {
       routeHookScheduled = false;
       if (state.disposed) return;
-      enforceMarketplaceAvoidance();
       const nextLayout = parseConversationLayout();
       if (resolveEffectiveRoute(nextLayout, false) !== state.route || nextLayout.layoutKey !== state.lastLayoutKey) {
         tick();
+      } else {
+        lastMarketplaceTickHref = typeof location !== 'undefined' ? String(location.href || '') : '';
+        lastMarketplaceTickCheckAt = Date.now();
+        if (enforceMarketplaceAvoidance() && isAnyPanelOpen()) showPanel('none');
       }
     });
   };
@@ -48474,7 +48614,7 @@ var cumLockedKey = null;
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch { }
   globalThis.__AGContextMeter = {
-    buildId: '964ae7452c936052',
+    buildId: '6aa693585def93de',
     version: METER_RENDERER_VERSION,
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {
@@ -49114,6 +49254,40 @@ var cumLockedKey = null;
       feedbackText: el('dock-open-feedback')?.textContent || '',
       fallbackActionsHidden: Boolean(el('dock-fallback-actions')?.hidden),
       auxContainerFound: Boolean(findAuxSidebarContainer())
+    }),
+    showPanel: (target) => showPanel(target),
+    switchContextTab: (tab) => {
+      if (typeof switchContextTab === 'function') switchContextTab(tab);
+      showPanel('context');
+    },
+    setSidecarRoute: (id) => {
+      if (typeof globalThis !== 'undefined') {
+        globalThis.__AGContextMeterSidecarRoute = typeof id === 'string' ? id.trim() : '';
+      }
+      tick();
+    },
+    refreshAllForSidecar: async (force = true) => {
+      tick();
+      const tasks = [];
+      if (typeof syncQuotaFromHost === 'function') tasks.push(syncQuotaFromHost(force, { manual: force }));
+      if (typeof syncTokenHistoryFromHost === 'function') tasks.push(syncTokenHistoryFromHost(force));
+      if (typeof refreshAccountsOverview === 'function') tasks.push(refreshAccountsOverview({ silent: true }));
+      await Promise.allSettled(tasks);
+    },
+    getSidecarSummary: () => ({
+      route: state.route || null,
+      contextPct: el('badge-ctx-len')?.textContent || '',
+      contextSubPct: el('badge-ctx-pct')?.textContent || '',
+      speedText: el('speed-amount')?.textContent || '',
+      quotaVal: el('quota-badge-val')?.textContent || '',
+      quotaTag: el('quota-badge-tag')?.textContent || '',
+      tokenVal: el('token-amount')?.textContent || '',
+      activePanel: (el('panel') && !el('panel').hidden)
+        ? 'context'
+        : ((el('panel-quota') && !el('panel-quota').hidden)
+          ? 'quota'
+          : ((el('panel-tokens') && !el('panel-tokens').hidden) ? 'tokens' : 'none')),
+      panelLanguage: currentPanelLanguage
     }),
     isDisposedForTest: () => Boolean(state.disposed),
     dispose() {

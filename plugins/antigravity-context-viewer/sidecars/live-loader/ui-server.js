@@ -3,11 +3,21 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
+const { EventEmitter } = require('events');
+const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 
 const PLUGIN_ROOT = path.resolve(__dirname, '..', '..');
 const LOADER_DIR = __dirname;
 const UUID_RE = /^[a-f\d-]{36}$/i;
+const LS_RPC_ALLOWLIST = new Set([
+  'GetCascadeTrajectoryGeneratorMetadata',
+  'GetCascadeTrajectorySteps',
+  'GetUserStatus',
+  'GetAvailableModels',
+  'GetAllCascadeTrajectories'
+]);
 
 async function loadSidecarSdk() {
   try {
@@ -32,9 +42,9 @@ async function loadSidecarSdk() {
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '0.9.0-1';
+    return pkg.version || '0.9.0-2';
   } catch {
-    return '0.9.0-1';
+    return '0.9.0-2';
   }
 }
 
@@ -145,18 +155,39 @@ function createDefaultDeps() {
   const cli = require(path.join(PLUGIN_ROOT, 'cli'));
   const sidecarLive = require(path.join(PLUGIN_ROOT, 'sidecar-live'));
   const asarEngine = require(path.join(PLUGIN_ROOT, 'asar-engine'));
+  const liveHost = require(path.join(PLUGIN_ROOT, 'live-host'));
   return {
     localApi,
     collector,
     cli,
     sidecarLive,
-    asarEngine
+    asarEngine,
+    liveHost
   };
 }
 
 function createUiHandlers(options = {}) {
   const deps = options.deps || createDefaultDeps();
   const originCache = { origin: null, origins: [], checkedAt: 0 };
+  const liveWindowCache = { value: null, checkedAt: 0 };
+  const internalSecret = crypto.randomBytes(16).toString('hex');
+  const liveAllowedOrigins = new Set(['https://127.0.0.1:0']);
+  let livePrimaryOrigin = 'https://127.0.0.1:0';
+  let cachedLiveHandler = null;
+
+  async function getLiveWindowSnapshot(force = false) {
+    if (!force && liveWindowCache.value && (Date.now() - liveWindowCache.checkedAt) < 15000) {
+      return liveWindowCache.value;
+    }
+    const snapshot = await deps.cli.queryLiveWindow().catch(err => ({
+      running: false,
+      cdpEnabled: false,
+      error: err?.message || String(err)
+    }));
+    liveWindowCache.value = snapshot;
+    liveWindowCache.checkedAt = Date.now();
+    return snapshot;
+  }
 
   async function resolveLiveOrigin(requestedOrigin, liveWindow, force = false) {
     const normalize = deps.localApi.normalizeLoopbackOrigin;
@@ -256,12 +287,9 @@ function createUiHandlers(options = {}) {
 
   async function buildOverview(data = {}) {
     const force = Boolean(data?.force);
+    const lightweight = Boolean(data?.lightweight) && !force;
     const agDir = options.agDir || process.env.AG_DIR || path.join(os.homedir(), '.gemini', 'antigravity');
-    const liveWindow = await deps.cli.queryLiveWindow().catch(err => ({
-      running: false,
-      cdpEnabled: false,
-      error: err?.message || String(err)
-    }));
+    const liveWindow = await getLiveWindowSnapshot(force);
     const conn = await resolveLiveOrigin(data?.origin, liveWindow, force);
     const origin = conn.origin;
     const apiClient = conn.api || (origin ? await deps.localApi.connect({ origin }).catch(() => null) : null);
@@ -269,10 +297,44 @@ function createUiHandlers(options = {}) {
     const requestedConvId = typeof data?.conversationId === 'string' && UUID_RE.test(data.conversationId.trim())
       ? data.conversationId.trim()
       : null;
-    const selectedConversationId = requestedConvId || conversations[0]?.id || null;
+    const liveRouteHint = typeof liveWindow?.route === 'string' && UUID_RE.test(liveWindow.route.trim())
+      ? liveWindow.route.trim()
+      : null;
+    const sidecarCfg = typeof options.getSidecarConfig === 'function' ? options.getSidecarConfig() : null;
+    const sidecarConvHint = typeof sidecarCfg?.conversationId === 'string' && UUID_RE.test(sidecarCfg.conversationId.trim())
+      ? sidecarCfg.conversationId.trim()
+      : null;
+    const selectedConversationId = requestedConvId || liveRouteHint || sidecarConvHint || conversations[0]?.id || null;
 
     const errors = {};
     if (conn.connectionError) errors.connection = conn.connectionError;
+
+    const meta = {
+      pluginVersion: readPackageVersion(),
+      generatedAt: new Date().toISOString(),
+      origin,
+      origins: conn.origins,
+      antigravityRunning: Boolean(liveWindow?.running || origin),
+      cdpEnabled: Boolean(liveWindow?.cdpEnabled),
+      cdpPort: liveWindow?.cdpPort || null,
+      cdpReason: liveWindow?.reason || (liveWindow?.cdpEnabled ? 'connected' : (liveWindow?.running ? 'cdp_disabled' : 'not_running')),
+      pageFound: Boolean(liveWindow?.pageFound),
+      topbarActive: Boolean(liveWindow?.active),
+      topbarVersion: liveWindow?.version || null,
+      activeHostRoute: liveRouteHint || sidecarConvHint || null,
+      capabilities: deps.liveHost?.LIVE_CAPABILITIES || null
+    };
+
+    if (lightweight) {
+      return {
+        ok: true,
+        lightweight: true,
+        meta,
+        conversations,
+        selectedConversationId,
+        errors
+      };
+    }
 
     const [sessionRes, quotaRes, tokensRes, unlockRes] = await Promise.allSettled([
       origin && selectedConversationId
@@ -343,17 +405,7 @@ function createUiHandlers(options = {}) {
     return {
       ok: true,
       meta: {
-        pluginVersion: readPackageVersion(),
-        generatedAt: new Date().toISOString(),
-        origin,
-        origins: conn.origins,
-        antigravityRunning: Boolean(liveWindow?.running || origin),
-        cdpEnabled: Boolean(liveWindow?.cdpEnabled),
-        cdpPort: liveWindow?.cdpPort || null,
-        cdpReason: liveWindow?.reason || (liveWindow?.cdpEnabled ? 'connected' : (liveWindow?.running ? 'cdp_disabled' : 'not_running')),
-        pageFound: Boolean(liveWindow?.pageFound),
-        topbarActive: Boolean(liveWindow?.active),
-        topbarVersion: liveWindow?.version || null,
+        ...meta,
         installMarker
       },
       conversations,
@@ -375,6 +427,7 @@ function createUiHandlers(options = {}) {
       injectChinese,
       forceInject: true
     });
+    liveWindowCache.checkedAt = 0;
     return {
       ok: true,
       result: res
@@ -401,10 +454,139 @@ function createUiHandlers(options = {}) {
     };
   }
 
+  function ensureLiveHandler(originCandidates = []) {
+    const normalize = deps.localApi?.normalizeLoopbackOrigin || (v => v);
+    for (const raw of originCandidates) {
+      const norm = normalize(raw);
+      if (norm) {
+        liveAllowedOrigins.add(norm);
+        if (livePrimaryOrigin === 'https://127.0.0.1:0') {
+          livePrimaryOrigin = norm;
+          cachedLiveHandler = null;
+        }
+      }
+    }
+    if (!cachedLiveHandler) {
+      const liveHostMod = deps.liveHost || require(path.join(PLUGIN_ROOT, 'live-host'));
+      cachedLiveHandler = liveHostMod.createLiveRequestHandler({
+        api: { origin: livePrimaryOrigin, origins: Array.from(liveAllowedOrigins) },
+        secret: internalSecret,
+        getAllowedOrigins: () => Array.from(liveAllowedOrigins),
+        managed: true
+      });
+    }
+    return cachedLiveHandler;
+  }
+
+  async function handleLiveRoute(data = {}) {
+    const liveHostMod = deps.liveHost || require(path.join(PLUGIN_ROOT, 'live-host'));
+    const routePath = typeof data?.route === 'string' ? data.route.trim() : '';
+    const allowed = Array.isArray(liveHostMod.ALLOWED_ROUTES) ? liveHostMod.ALLOWED_ROUTES : [];
+    if (!routePath.startsWith('/') || routePath === '/shutdown' || !allowed.includes(routePath)) {
+      throw new Error(`不允许的 live-host 路由: ${routePath || '(empty)'}`);
+    }
+
+    const conn = await resolveLiveOrigin(data?.origin, null, false);
+    const callOrigin = conn.origin || livePrimaryOrigin || 'https://127.0.0.1:0';
+    const handler = ensureLiveHandler([callOrigin, ...(conn.origins || [])]);
+
+    const payloadJson = JSON.stringify(data?.body && typeof data.body === 'object' ? data.body : {});
+    const req = new EventEmitter();
+    req.method = 'POST';
+    req.url = routePath;
+    req.headers = {
+      origin: callOrigin,
+      'x-ag-context-token': internalSecret,
+      'content-type': 'application/json'
+    };
+    req.destroy = () => {};
+
+    let settled = false;
+    const chunks = [];
+    const headersMap = {};
+    let resolveResponse;
+    const responsePromise = new Promise(resolve => { resolveResponse = resolve; });
+    const res = {
+      statusCode: 200,
+      setHeader(k, v) { headersMap[String(k).toLowerCase()] = v; },
+      writeHead(code, hdrs) {
+        this.statusCode = code;
+        if (hdrs && typeof hdrs === 'object') {
+          for (const [k, v] of Object.entries(hdrs)) this.setHeader(k, v);
+        }
+      },
+      end(chunk) {
+        if (chunk !== undefined && chunk !== null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
+        if (!settled) {
+          settled = true;
+          resolveResponse(Buffer.concat(chunks).toString('utf8'));
+        }
+      }
+    };
+
+    const handlerPromise = Promise.resolve(handler(req, res));
+    req.emit('data', Buffer.from(payloadJson, 'utf8'));
+    req.emit('end');
+    const [rawText] = await Promise.all([responsePromise, handlerPromise]);
+
+    let parsed = null;
+    if (rawText) {
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        parsed = { ok: res.statusCode < 400, raw: rawText };
+      }
+    }
+    if (res.statusCode >= 400) {
+      throw new Error(parsed?.error || `HTTP ${res.statusCode}`);
+    }
+    return parsed || { ok: true };
+  }
+
+  async function handleLsRpc(data = {}) {
+    const method = typeof data?.method === 'string' ? data.method.trim() : '';
+    if (!LS_RPC_ALLOWLIST.has(method)) {
+      throw new Error(`不允许的 Language Server RPC 方法: ${method || '(empty)'}`);
+    }
+    const conn = await resolveLiveOrigin(data?.origin, null, false);
+    const apiClient = conn.api || (conn.origin
+      ? await deps.localApi.connect({ origin: conn.origin })
+      : await deps.localApi.connect(options.agDir ? { agDir: options.agDir } : undefined));
+    const rpcBody = data?.body && typeof data.body === 'object' ? data.body : {};
+    const result = await apiClient.call(method, rpcBody);
+    return {
+      ok: true,
+      origin: apiClient?.origin || conn.origin || null,
+      data: result
+    };
+  }
+
+  function handleOpenExternal(data = {}) {
+    const targetUrl = typeof data?.url === 'string' ? data.url.trim() : '';
+    if (!/^(?:https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?(?:\/|$))/i.test(targetUrl)) {
+      throw new Error('仅允许打开受信任的 https:// 或本地回环 URL');
+    }
+    try {
+      if (process.platform === 'win32') {
+        spawn('cmd.exe', ['/c', 'start', '', targetUrl], { detached: true, stdio: 'ignore' }).unref();
+      } else if (process.platform === 'darwin') {
+        spawn('open', [targetUrl], { detached: true, stdio: 'ignore' }).unref();
+      } else {
+        spawn('xdg-open', [targetUrl], { detached: true, stdio: 'ignore' }).unref();
+      }
+    } catch (err) {
+      throw new Error(err?.message || '无法启动外部浏览器');
+    }
+    return { ok: true, url: targetUrl };
+  }
+
   return {
     buildOverview,
     handleHotInject,
-    handleSaveSettings
+    handleSaveSettings,
+    handleLiveRoute,
+    handleLsRpc,
+    handleOpenExternal
   };
 }
 
@@ -427,7 +609,10 @@ async function startSidecarUiServer(options = {}) {
   const app = typeof options.createSidecarApp === 'function'
     ? options.createSidecarApp()
     : new SidecarApp();
-  const handlers = createUiHandlers(options);
+  const handlers = createUiHandlers({
+    ...options,
+    getSidecarConfig: () => app?.config || options.sidecarConfig || null
+  });
   const uiDir = options.uiDir || LOADER_DIR;
 
   app.page('/', () => fs.readFileSync(path.join(uiDir, 'index.html'), 'utf8'));
@@ -437,6 +622,14 @@ async function startSidecarUiServer(options = {}) {
   ), 'GET');
   app.api('/app.js', () => new Response(
     fs.readFileSync(path.join(uiDir, 'app.js'), 'utf8'),
+    { contentType: 'application/javascript; charset=utf-8' }
+  ), 'GET');
+  app.api('/meter-core.js', () => new Response(
+    fs.readFileSync(path.join(PLUGIN_ROOT, 'meter-core.js'), 'utf8'),
+    { contentType: 'application/javascript; charset=utf-8' }
+  ), 'GET');
+  app.api('/meter-renderer.js', () => new Response(
+    fs.readFileSync(path.join(PLUGIN_ROOT, 'meter-renderer.js'), 'utf8'),
     { contentType: 'application/javascript; charset=utf-8' }
   ), 'GET');
 
@@ -452,6 +645,9 @@ async function startSidecarUiServer(options = {}) {
   app.api('/api/refresh', wrap((data) => handlers.buildOverview({ ...data, force: true })), 'POST');
   app.api('/api/hot-inject', wrap(() => handlers.handleHotInject()), 'POST');
   app.api('/api/settings', wrap((data) => handlers.handleSaveSettings(data)), 'POST');
+  app.api('/api/live', wrap((data) => handlers.handleLiveRoute(data)), 'POST');
+  app.api('/api/ls-rpc', wrap((data) => handlers.handleLsRpc(data)), 'POST');
+  app.api('/api/open-external', wrap((data) => handlers.handleOpenExternal(data)), 'POST');
 
   const runResult = await Promise.resolve(app.run());
   const port = Number(options.webPort || process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || runResult?.port || 0) || null;

@@ -5,6 +5,10 @@ All notable changes to the `antigravity-plugins` monorepo will be documented in 
 ## [Unreleased]
 
 ### Changed
+- Bumped `antigravity-context-viewer` to `v0.9.0-2`:
+  - Achieved **100% desktop topbar feature parity inside the Aux Pane Sidecar UI** (`data-dock="sidecar"`, `plugin:` WebView embed support, in-process `/api/live`, allowlisted `/api/ls-rpc`, `/api/open-external`, and 4-tab layout with live summary pills), working with or without CDP.
+  - Eliminated conversation-switch stutter under CDP & Sidecar: added 6ms `rAF` budgeted DFS slicing (`translateElementBudgeted`), $O(1)$ descendant isolation, and per-callback `MutationObserver` container short-circuiting in `i18n-runtime.js`; deferred post-switch `checkHostDomCompactionSignals()` DOM scan, added $O(1)$ early return in `hostDomObserver`, cached `renderComposerStatusBar()` DOM turn queries, and deduplicated `scheduleImmediateRouteTick()` market avoidance checks in `src/renderer/main.js`; added `15s` `queryLiveWindow` TTL cache and `lightweight` `/api/overview` mode (`25s` cadence when embedded) in `sidecars/live-loader/*`.
+  - Switched `#csb-speed-text` in the composer status bar to display the active conversation's **latest-step pure streaming speed** (without TTFT) while keeping topbar `#speed-amount` as the conversation average pure streaming speed, and restored automatic Google AI Ultra `5x` (`g1-ultra-lite-tier`) / `20x` (`g1-ultra-tier`) sub-tier detection in `meter-core.js`.
 - Upgraded monorepo CLI diagnostics, packaging hygiene, docs, and CI toolchains:
   - Enhanced [scripts/cli.mjs](scripts/cli.mjs) `doctor` (plus `--json` mode) to report Antigravity desktop client version (`Info.plist`), read-only `~/.gemini/config/config.json` per-plugin enable/disable state, `linked-other` warnings, and optional `agy` CLI `PATH` hints.
   - Excluded `__pycache__/` and `*.pyc` artifacts across `scripts/cli.mjs --copy` installs and `scripts/package-release.mjs` archives.

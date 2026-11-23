@@ -1,8 +1,8 @@
-# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.9.0-1`）
+# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.9.0-2`）
 
 **简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.9.0`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.9.0-1`**）：
+> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.9.0`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.9.0-2`**）：
 > 1. **原生 Aux Pane Sidecar UI + Daemon / CDP 双模适配（兼容 Antigravity `2.33+` / `2.34+`）**（`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`）：Antigravity `2.33+` / `2.34+` 默认关闭 `DevToolsActivePort`，且 macOS `2.34.0` 启用了 `ElectronAsarIntegrity` 签名完整性校验。插件自动通过 `authBootstrap`、`~/.gemini/antigravity/daemon/hub_*.json` 与 `main.log` 免改盘直连本地 Language Server，在原生侧边栏 `sidecar://antigravity-context-viewer/live-loader/` 展示实时上下文用量、生成速度、配额、历史 Token 与解锁诊断；同时完整保留 CDP 自动热注入、`node cli.js watch` 免改盘守护模式、`node cli.js launch --restart` 与显式 `--force-mac-asar` 支持。
 > 2. **渲染器界面与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：顶栏胶囊紧致上下文长度+比例双显示、克制双圆环风格、默认隐藏 CLI 启动按钮（可在设置中切换）、免改盘中文热注入自愈，以及对 `v0.9.0` 4 行响应式 Bento 当前会话工作台、9 维上下文拆分、耗时环形图、Gemini 4 Neon 统一配额池、`v2.34.0` 宿主汉化与多账号分账对照的全量同步（提示词与标题改写默认严格关闭）。
 > 3. **多平台上下文加长解锁、完整性预检与 CLI 增强**（`meter-context-unlock.js`、`host-recovery.js`、`macos-binary-utils.js`、`cli.js`）：支持 macOS `ElectronAsarIntegrity` 写前预检与 Apple Silicon (`arm64`) Mach-O `fixed` / `dynamic` / `default` + `codesign` 上下文解锁、`watch` / `stop-watch` 与独立 `sidecar:*` 生命周期管理。
@@ -48,7 +48,7 @@ node scripts/cli.mjs install antigravity-context-viewer
 
 ## 🤖 给 AI 智能体的一键安装指令 (For AI Agents)
 
-如果在 Antigravity 插件环境下使用，AI 助手可直接读取本插件 [SKILL.md](skills/context-viewer/SKILL.md) 与 [README.md](README.md)；**注意：macOS `2.34.0` 启用了 `ElectronAsarIntegrity`，切勿直接对官方签名包运行 `node cli.js install` 改盘**（优先使用原生 Sidecar 看板或 `node cli.js watch` / `launch --restart`）。在允许改盘的环境升级主进程/预加载模块（如 `0.9.0-1`）后需完全重启客户端：
+如果在 Antigravity 插件环境下使用，AI 助手可直接读取本插件 [SKILL.md](skills/context-viewer/SKILL.md) 与 [README.md](README.md)；**注意：macOS `2.34.0` 启用了 `ElectronAsarIntegrity`，切勿直接对官方签名包运行 `node cli.js install` 改盘**（优先使用原生 Sidecar 看板或 `node cli.js watch` / `launch --restart`）。在允许改盘的环境升级主进程/预加载模块（如 `0.9.0-2`）后需完全重启客户端：
 
 ```bash
 # 1. 持久化写入 ASAR 与全部插件模块
@@ -142,7 +142,7 @@ antigravity-context-viewer/
 ├── meter-enhance.js                        # 系统提示词 0~4 档、防幻觉与中文标题等长替换引擎
 ├── i18n/                                   # 客户端简体中文化词典与运行时 (zh-CN.json / i18n-runtime.js)
 ├── unlock/                                 # PR #3 跨平台解锁工具与文档 (language-server & agy-cli)
-├── meter-renderer.js                       # 渲染层构建产物 (0.9.0-1)
+├── meter-renderer.js                       # 渲染层构建产物 (0.9.0-2)
 ├── src/renderer/                           # 渲染层源码
 ├── sidecars/live-loader/                   # Aux Pane 原生面板与自动热挂载 Sidecar
 ├── scripts/                                # 构建、发布打包与基准测试

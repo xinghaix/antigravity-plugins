@@ -11671,3 +11671,53 @@
       animation: none !important;
       will-change: auto !important;
     }
+
+    /* Native Sidecar Aux Pane full-feature embed mode */
+    :host([data-dock="sidecar"]) {
+      position: static !important;
+      display: block !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      height: auto !important;
+      min-height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+      z-index: 1 !important;
+    }
+
+    :host([data-dock="sidecar"]) .ag-unit,
+    :host([data-dock="sidecar"]) #overflow-menu,
+    :host([data-dock="sidecar"]) #context-tooltip,
+    :host([data-dock="sidecar"]) #token-five-line-card,
+    :host([data-dock="sidecar"]) #dock-aux-context-bar,
+    :host([data-dock="sidecar"]) #close,
+    :host([data-dock="sidecar"]) #close-tokens,
+    :host([data-dock="sidecar"]) #close-quota {
+      display: none !important;
+    }
+
+    :host([data-dock="sidecar"]) .ag-panel[data-panel-docked="true"] {
+      position: static !important;
+      top: auto !important;
+      left: auto !important;
+      right: auto !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      max-height: none !important;
+      margin: 0 !important;
+      border: none !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      overflow: visible !important;
+      background: transparent !important;
+      container-type: inline-size;
+      container-name: ctx-panel;
+    }
+
+    :host([data-dock="sidecar"]) .ag-panel[data-panel-docked="true"][hidden] {
+      display: none !important;
+    }

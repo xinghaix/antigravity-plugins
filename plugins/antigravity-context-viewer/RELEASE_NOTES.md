@@ -1,3 +1,20 @@
+## v0.9.0-2
+
+基于 `v0.9.0-1`（上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) **`v0.9.0`** 同步基线）推出 Aux Pane 全功能对齐与 CDP 运行时流畅度专项优化版本：
+
+- **Aux Pane Sidecar 全功能引擎对齐（免 CDP / 免改盘 100% 功能一致）**：
+  - 将完整渲染引擎（`meter-core.js` + `meter-renderer.js`，`data-dock="sidecar"`）直接嵌入右侧 Aux Pane（`sidecar://antigravity-context-viewer/live-loader/`），放行受信任的 Sidecar `plugin:` WebView 上下文（`__AGContextMeterSidecarEmbed`）；
+  - `sidecars/live-loader/ui-server.js` 新增进程内 `POST /api/live`（复用 `live-host.js` 路由并拦截 `/shutdown`）、白名单 `POST /api/ls-rpc` 与 `POST /api/open-external`，无需开启 CDP 即可在侧边栏完整使用 4 行 Bento 会话工作台、模型/上下文解锁（Gate 3A/3B）、ELV-91 速度分析、系统增强中心、共享配额池与多账号切换、5 视图 Token 热力图、请求时间线、订阅费用估算与运行环境诊断。
+- **CDP 切换会话卡顿与后台双轮询优化**：
+  - **`i18n-runtime.js`**：为异步 `flushPendingNodes()` 引入真正按元素粒度的 **6ms `requestAnimationFrame` 分片让出机制**（`translateElementBudgeted`），切换长会话挂载大 DOM 树时不再单帧阻塞主线程；提取 $O(1)$ 后代隔离检查（`shouldIgnoreDescendant`）并复用文本父节点校验，免除递归过程中对每个节点的重复祖先链遍历；在 `MutationObserver` 中缓存 `target` 隔离结果、对 `markdown-body` / 代码块 / 思考内容等受保护容器整批短路，并在队列达到上限时提前中止遍历；
+  - **`src/renderer/main.js`**：切换会话后将 `checkHostDomCompactionSignals()` 首次 1200 节点 DOM 扫描延后约 `1.5s` 避开 React 挂载峰值；`hostDomObserver` 节流定时器已激活且宿主已挂载时 $O(1)$ 早退；输入栏 `renderComposerStatusBar()` 对 DOM 轮次查询增加 `1.2s` 路由级缓存；合并 `scheduleImmediateRouteTick()` 重复的 `enforceMarketplaceAvoidance()` 调用；
+  - **Sidecar `ui-server.js` / `app.js`**：内嵌引擎就绪且非「诊断」页签时启用 `{ lightweight: true }` 轻量同步与 `25s` 轮询间隔，并为 `queryLiveWindow()` 增加 `15s` TTL 缓存（手动强制刷新与热注入自动失效），消除 Sidecar 与顶栏渲染层并行的重复 CDP/全量采集开销。
+- **速度统计与账号订阅档位修复**：
+  - **输入栏底部状态条与顶栏分工明确**：底部 `#csb-speed-text` 改为展示当前会话**最后 1 步纯吐字速度**（不含 TTFT），顶栏 `#speed-amount` 保持当前会话平均纯吐字速度；
+  - **恢复 Google AI Ultra `5x` / `20x` 自动子档识别**：恢复 `g1-ultra-lite-tier`（`5x`，`$99.99/mo`）与 `g1-ultra-tier`（`20x`，`$199.99/mo`）识别及缓存中 `子档未知` 记录自动升级逻辑。
+
+---
+
 ## v0.9.0-1
 
 基于上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) **`v0.9.0`**（含 `2.34.0` 窗口锚点与鉴权兼容性升级）完成全量合并，并保留全部 `antigravity-plugins` 原生插件特性：

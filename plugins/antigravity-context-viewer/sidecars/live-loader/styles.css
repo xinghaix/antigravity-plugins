@@ -61,10 +61,10 @@ body {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border-col);
-  padding: 10px 12px 0;
+  padding: 8px 12px 0;
 }
 
 .topbar-row {
@@ -77,14 +77,14 @@ body {
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
 }
 
 .brand-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   display: inline-flex;
@@ -96,13 +96,14 @@ body {
 .brand-text {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .brand-text h1 {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -246,21 +247,27 @@ body {
 
 .tabs {
   display: flex;
-  gap: 4px;
-  margin-top: 8px;
+  gap: 2px;
+  margin-top: 6px;
+  overflow-x: auto;
 }
 
 .tab {
-  flex: 1;
+  flex: 1 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   border: none;
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--fg-muted);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
-  padding: 6px 4px 7px;
+  padding: 6px 6px 7px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .tab:hover { color: var(--fg); }
@@ -269,15 +276,54 @@ body {
   border-bottom-color: var(--accent);
 }
 
-.content {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.tab-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
 }
 
-.panel { display: none; flex-direction: column; gap: 10px; }
+.tab.active .tab-pill {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.content {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.panel { display: none; flex-direction: column; }
 .panel.active { display: flex; }
+
+.embed-panel {
+  padding: 0;
+  gap: 0;
+}
+
+.ag-sidecar-aux-host {
+  width: 100%;
+  min-width: 0;
+}
+
+.embed-loading {
+  padding: 20px 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.diag-panel {
+  padding: 12px;
+  gap: 10px;
+}
 
 .card {
   background: var(--card-bg);

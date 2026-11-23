@@ -5622,19 +5622,19 @@ test('v0.8.8 chart visual redesign E2E: single 1.82M vs heavy 100..3.64B, cross-
   }
 });
 
-test('v0.9.0-1 版本展示与预发布更新比较隔离', async () => {
+test('v0.9.0-2 版本展示与预发布更新比较隔离', async () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.9.0-1');
-  assert.equal(pkg.displayVersion, 'v0.9.0-1');
+  assert.equal(pkg.version, '0.9.0-2');
+  assert.equal(pkg.displayVersion, 'v0.9.0-2');
 
-  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 v0.9.0-1，且渲染源码中不含“正式版”字样，beta 通道开关默认未勾选
+  // 1. 默认构建模板中 #v 与 #up-pop-ver 均为 v0.9.0-2，且渲染源码中不含“正式版”字样，beta 通道开关默认未勾选
   const builtCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
-  assert.match(builtCode, /<span id="v"[^>]*>v0\.9\.0-1<\/span>/);
-  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>v0\.9\.0-1<\/span>/);
+  assert.match(builtCode, /<span id="v"[^>]*>v0\.9\.0-2<\/span>/);
+  assert.match(builtCode, /<span id="up-pop-ver"[^>]*>v0\.9\.0-2<\/span>/);
   assert.equal(builtCode.includes('正式版'), false);
   assert.equal(builtCode.includes('id="check-allow-beta-updates"'), true);
 
-  // 2. 0.9.0-1 vs 0.9.0-1 判为已是最新，且文案展示 v0.9.0-1
+  // 2. 0.9.0-2 vs 0.9.0-2 判为已是最新，且文案展示 v0.9.0-2
   {
     const h = harness();
     const api = h.sandbox.__AGContextMeter;
@@ -5642,23 +5642,23 @@ test('v0.9.0-1 版本展示与预发布更新比较隔离', async () => {
     h.sandbox.window.contextMeterAPI = {
       ...h.sandbox.window.contextMeterAPI,
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.0-1');
+        assert.equal(req.currentVersion, '0.9.0-2');
         assert.equal(req.allowBetaUpdates, false);
-        return { ok: true, hasUpdate: false, currentVersion: '0.9.0-1', installedVersion: '0.9.0-1' };
+        return { ok: true, hasUpdate: false, currentVersion: '0.9.0-2', installedVersion: '0.9.0-2' };
       }
     };
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.9.0-1 (已是最新)');
-      assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.0-1/);
+      assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.9.0-2 (已是最新)');
+      assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.0-2/);
       assert.equal(h.elements.get('up-pop-body').textContent.includes('正式版'), false);
     } finally {
       api.dispose();
     }
   }
 
-  // 3. 0.9.0-1 -> beta.2 展示格式，以及开启 beta 通道开关持久化
+  // 3. 0.9.0-2 -> beta.2 展示格式，以及开启 beta 通道开关持久化
   {
     const savedPayloads = [];
     const h = harness();
@@ -5670,9 +5670,9 @@ test('v0.9.0-1 版本展示与预发布更新比较隔离', async () => {
         return { ok: true };
       },
       checkUpdate: async (req) => {
-        assert.equal(req.currentVersion, '0.9.0-1');
+        assert.equal(req.currentVersion, '0.9.0-2');
         assert.equal(req.allowBetaUpdates, true);
-        return { ok: true, hasUpdate: true, currentVersion: '0.9.0-1', latestVersion: '0.9.1-beta.2', releaseNotes: 'v0.9.1-beta.2' };
+        return { ok: true, hasUpdate: true, currentVersion: '0.9.0-2', latestVersion: '0.9.1-beta.2', releaseNotes: 'v0.9.1-beta.2' };
       }
     };
     const chkBeta = h.elements.get('check-allow-beta-updates');
@@ -5684,7 +5684,7 @@ test('v0.9.0-1 版本展示与预发布更新比较隔离', async () => {
     try {
       await api.checkUpdate(true);
       await h.flush();
-      assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.9.0-1 → 0.9.1 beta2');
+      assert.equal(h.elements.get('up-pop-ver').textContent, 'v0.9.0-2 → 0.9.1 beta2');
       assert.match(h.elements.get('up-pop-body').textContent, /v0\.9\.1/);
       assert.equal(h.elements.get('btn-apply-update').style.display, 'inline-block');
     } finally {
@@ -9662,6 +9662,119 @@ test('输入栏底栏展示当前会话最后 1 步纯吐字速度（不含 TTFT
     const csb = api.getComposerStatusBarStateForTest();
     assert.match(csb.speedText, /150 tok\/s/);
     assert.doesNotMatch(csb.speedText, /\b27 tok\/s\b/);
+  } finally {
+    h.sandbox?.__AGContextMeter?.dispose?.();
+  }
+});
+
+test('Sidecar Aux Pane 完整嵌入模式：挂载至 #ag-sidecar-aux-host、走 __AGContextMeterSidecarLiveFetch、面板切页/Esc/点击外部常驻', async () => {
+  const stylesCss = fs.readFileSync(require('node:path').join(__dirname, 'src', 'renderer', 'styles.css'), 'utf8');
+  assert.match(stylesCss, /:host\(\[data-dock="sidecar"\]\)/);
+
+  const sidecarHostEl = {
+    id: 'ag-sidecar-aux-host',
+    children: [],
+    appendChild(n) { n.parentElement = this; if (!this.children.includes(n)) this.children.push(n); }
+  };
+  const docBody = {
+    children: [sidecarHostEl],
+    appendChild(n) { n.parentElement = this; if (!this.children.includes(n)) this.children.push(n); },
+    contains(n) { return this.children.includes(n) || sidecarHostEl.children.includes(n); }
+  };
+  const sidecarDocElements = new Map([['ag-sidecar-aux-host', sidecarHostEl]]);
+  const sidecarListeners = new Map();
+  const mkNode = () => ({
+    style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; } },
+    children: [], childNodes: [], hidden: false, textContent: '',
+    classList: { add() {}, remove() {}, contains() { return false; } },
+    addEventListener() {}, setAttribute() {}, getAttribute() { return null; }, removeAttribute() {},
+    appendChild() {}, replaceChildren() {}, querySelectorAll() { return []; },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 460, height: 600, right: 460, bottom: 600 })
+  });
+
+  const liveCalls = [];
+  const conv1 = '11111111-1111-4111-8111-111111111111';
+  const conv2 = '22222222-2222-4222-8222-222222222222';
+  const h = harness(session(), {
+    location: {
+      protocol: 'plugin:',
+      hostname: 'antigravity-context-viewer--live-loader-62067',
+      pathname: '/',
+      search: `?conversationId=${conv1}`
+    },
+    __AGContextMeterSidecarEmbed: true,
+    __AGContextMeterSidecarRoute: conv1,
+    __AGContextMeterSidecarLiveFetch: async (routePath, body) => {
+      liveCalls.push({ routePath, body });
+      if (routePath === '/get-settings') return { ok: true, contextScopeMode: 'unified' };
+      if (routePath === '/quota') {
+        return {
+          ok: true,
+          data: {
+            planTierSummary: { tierKey: 'ultra', tierName: 'Google AI Ultra (5x)' },
+            snapshot: { activeStatus: 'available', badge: { text: '85%', status: 'available' }, pools: [] }
+          }
+        };
+      }
+      if (routePath === '/token-history') return { ok: true, data: { summary: { grandTotalTokens: 123456 } } };
+      if (routePath === '/accounts-overview') return { ok: true, accounts: [] };
+      if (routePath === '/scan') return { ok: true, data: { session: session(), scannedAt: Date.now(), latest: null } };
+      return { ok: true };
+    },
+    document: {
+      body: docBody,
+      head: { appendChild() {} },
+      hidden: false,
+      createElement: () => mkNode(),
+      getElementById: id => sidecarDocElements.get(id) || null,
+      documentElement: { appendChild() {} },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener(type, fn) {
+        if (!sidecarListeners.has(type)) sidecarListeners.set(type, new Set());
+        sidecarListeners.get(type).add(fn);
+      },
+      removeEventListener(type, fn) { sidecarListeners.get(type)?.delete(fn); },
+      dispatchEvent(ev) { for (const fn of (sidecarListeners.get(ev?.type || ev) || [])) fn(ev); }
+    }
+  });
+
+  try {
+    await h.flush();
+    const api = h.sandbox.__AGContextMeter;
+    assert.equal(h.host.getAttribute('data-dock'), 'sidecar');
+    assert.equal(h.host.parentElement, sidecarHostEl, 'Sidecar 嵌入态必须直接挂载进 #ag-sidecar-aux-host');
+    assert.equal(h.host.getAttribute('data-marketplace-active'), null);
+    assert.equal(api.snapshot().route, conv1);
+
+    api.showPanel('context');
+    assert.equal(h.elements.get('panel').hidden, false);
+    assert.equal(h.elements.get('panel').getAttribute('data-panel-docked'), 'true');
+
+    // Esc 与外部点击不得在 Sidecar 常驻嵌入态把已打开面板收起成空白
+    h.sandbox.document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    h.sandbox.document.dispatchEvent({ type: 'click', composedPath: () => [docBody] });
+    assert.equal(h.elements.get('panel').hidden, false);
+
+    // 切换配额与 Token 面板并验证后端路由走 __AGContextMeterSidecarLiveFetch
+    api.showPanel('quota');
+    assert.equal(h.elements.get('panel-quota').hidden, false);
+    assert.equal(h.elements.get('panel').hidden, true);
+    api.showPanel('tokens');
+    assert.equal(h.elements.get('panel-tokens').hidden, false);
+
+    // 切换会话保持当前面板开启并更新路线
+    api.showPanel('context');
+    api.setSidecarRoute(conv2);
+    assert.equal(api.snapshot().route, conv2);
+    assert.equal(h.elements.get('panel').hidden, false);
+
+    await api.refreshAllForSidecar(true);
+    await h.flush();
+    assert.ok(liveCalls.some(c => c.routePath === '/quota'));
+    assert.ok(liveCalls.some(c => c.routePath === '/token-history'));
+    assert.equal(api.getSidecarSummary().route, conv2);
+    assert.equal(api.getSidecarSummary().activePanel, 'context');
   } finally {
     h.sandbox?.__AGContextMeter?.dispose?.();
   }

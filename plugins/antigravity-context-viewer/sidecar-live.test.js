@@ -780,3 +780,214 @@ test('tickSidecarLive preserves healthy bridge when CDP probe hits transient tim
   assert.equal(logs.length, 1);
   assert.match(logs[0], /keeping live bridge active/);
 });
+
+test('sidecar ui-server exposes full live-host bridge (/api/live), allowlisted /api/ls-rpc, bundle assets, and safe /api/open-external', async () => {
+  const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
+  const pages = new Map();
+  const gets = new Map();
+  const posts = new Map();
+
+  class MockResponse {
+    constructor(body, init = {}) {
+      this.body = body;
+      this.init = init;
+    }
+  }
+  class MockSidecarApp {
+    constructor() {
+      this.config = { conversationId: '11111111-2222-4333-8444-555555555555' };
+    }
+    page(route, handler) { pages.set(route, handler); }
+    api(route, handler, method = 'POST') {
+      if (method === 'GET') gets.set(route, handler);
+      else posts.set(route, handler);
+    }
+    run() { return { port: 49998, async close() {} }; }
+  }
+
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-full-'));
+  fs.mkdirSync(path.join(tmpAg, 'conversations'), { recursive: true });
+  let capturedLsRpc = null;
+  let capturedLiveRoute = null;
+
+  try {
+    const srv = await startSidecarUiServer({
+      agDir: tmpAg,
+      importSidecarSdk: async () => ({ SidecarApp: MockSidecarApp, Response: MockResponse }),
+      deps: {
+        localApi: {
+          normalizeLoopbackOrigin: v => v,
+          connect: async () => ({
+            origin: 'https://127.0.0.1:54111',
+            origins: ['https://127.0.0.1:54111'],
+            call: async (method, body) => {
+              capturedLsRpc = { method, body };
+              return { generatorMetadata: [{ stepIndex: 1 }] };
+            }
+          })
+        },
+        collector: {
+          collect: async () => null,
+          fetchQuotaSnapshotFromHost: async () => ({ ok: true, snapshot: { pools: [] } }),
+          collectTokenHistoryAsync: async () => ({ summary: { grandTotalTokens: 100 } }),
+          getContextUnlockStatus: async () => ({ status: 'unpatched' }),
+          getPluginSettings: () => ({ sidecarChinese: true, showCliButton: false, panelLanguage: 'zh-CN' }),
+          savePluginSettings: () => ({ ok: true })
+        },
+        cli: {
+          queryLiveWindow: async () => ({ running: true, cdpEnabled: false, origins: ['https://127.0.0.1:54111'] })
+        },
+        sidecarLive: {
+          getSidecarPluginStatus: () => ({ installed: true, scriptExists: true, runtimeLog: { tail: [] } })
+        },
+        asarEngine: { getStateDir: () => tmpAg },
+        liveHost: {
+          ALLOWED_ROUTES: ['/get-settings', '/runtime-info', '/quota', '/shutdown'],
+          LIVE_CAPABILITIES: { quota: true, settings: true, accounts: true },
+          createLiveRequestHandler: () => (req, res) => {
+            let buf = '';
+            req.on('data', c => { buf += c.toString('utf8'); });
+            req.on('end', () => {
+              capturedLiveRoute = { url: req.url, body: JSON.parse(buf || '{}') };
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: true, route: req.url, settings: { panelLanguage: 'zh-CN' } }));
+            });
+          }
+        }
+      }
+    });
+
+    assert.equal(gets.has('/meter-core.js'), true);
+    assert.equal(gets.has('/meter-renderer.js'), true);
+    assert.match(gets.get('/meter-core.js')().body, /__AGContextMeterCore/);
+    assert.match(gets.get('/meter-renderer.js')().body, /__AGContextMeter/);
+
+    const overview = await posts.get('/api/overview')({});
+    assert.equal(overview.selectedConversationId, '11111111-2222-4333-8444-555555555555');
+    assert.deepEqual(overview.meta.capabilities, { quota: true, settings: true, accounts: true });
+
+    const liveRes = await posts.get('/api/live')({ route: '/get-settings', body: { email: 'default' } });
+    assert.equal(liveRes.ok, true);
+    assert.equal(liveRes.route, '/get-settings');
+    assert.deepEqual(capturedLiveRoute, { url: '/get-settings', body: { email: 'default' } });
+
+    const shutResp = await posts.get('/api/live')({ route: '/shutdown' });
+    assert.match(JSON.parse(shutResp.body).error, /不允许/);
+
+    const badRouteResp = await posts.get('/api/live')({ route: '/not-allowed' });
+    assert.match(JSON.parse(badRouteResp.body).error, /不允许/);
+
+    const rpcRes = await posts.get('/api/ls-rpc')({ method: 'GetCascadeTrajectoryGeneratorMetadata', body: { cascadeId: 'abc' } });
+    assert.equal(rpcRes.ok, true);
+    assert.equal(capturedLsRpc.method, 'GetCascadeTrajectoryGeneratorMetadata');
+    assert.deepEqual(capturedLsRpc.body, { cascadeId: 'abc' });
+
+    const badRpcResp = await posts.get('/api/ls-rpc')({ method: 'DeleteAllChats' });
+    assert.match(JSON.parse(badRpcResp.body).error, /不允许/);
+
+    const badUrlResp = await posts.get('/api/open-external')({ url: 'javascript:alert(1)' });
+    assert.match(JSON.parse(badUrlResp.body).error, /仅允许/);
+
+    await srv.close();
+  } finally {
+    fs.rmSync(tmpAg, { recursive: true, force: true });
+  }
+});
+
+test('sidecar ui-server lightweight overview skips heavy collectors and caches queryLiveWindow across non-force polls', async () => {
+  const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
+  const posts = new Map();
+
+  class MockResponse {
+    constructor(body, init = {}) {
+      this.body = body;
+      this.init = init;
+    }
+  }
+  class MockSidecarApp {
+    constructor() {
+      this.config = { conversationId: 'aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb' };
+    }
+    page() {}
+    api(route, handler, method = 'POST') {
+      if (method !== 'GET') posts.set(route, handler);
+    }
+    run() { return { port: 49997, async close() {} }; }
+  }
+
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-lw-'));
+  fs.mkdirSync(path.join(tmpAg, 'conversations'), { recursive: true });
+
+  let queryCalls = 0;
+  let collectCalls = 0;
+  let quotaCalls = 0;
+  let tokensCalls = 0;
+  let unlockCalls = 0;
+
+  try {
+    const srv = await startSidecarUiServer({
+      agDir: tmpAg,
+      importSidecarSdk: async () => ({ SidecarApp: MockSidecarApp, Response: MockResponse }),
+      deps: {
+        localApi: {
+          normalizeLoopbackOrigin: v => v,
+          connect: async () => ({
+            origin: 'https://127.0.0.1:54112',
+            origins: ['https://127.0.0.1:54112'],
+            call: async () => ({ trajectorySummaries: {} })
+          })
+        },
+        collector: {
+          collect: async () => { collectCalls++; return null; },
+          fetchQuotaSnapshotFromHost: async () => { quotaCalls++; return { ok: true, snapshot: { pools: [] } }; },
+          collectTokenHistoryAsync: async () => { tokensCalls++; return { summary: { grandTotalTokens: 100 } }; },
+          getContextUnlockStatus: async () => { unlockCalls++; return { status: 'unpatched' }; },
+          getPluginSettings: () => ({ sidecarChinese: true, showCliButton: false, panelLanguage: 'zh-CN' }),
+          savePluginSettings: () => ({ ok: true })
+        },
+        cli: {
+          queryLiveWindow: async () => {
+            queryCalls++;
+            return { running: true, cdpEnabled: true, cdpPort: 58321, active: true, origins: ['https://127.0.0.1:54112'] };
+          }
+        },
+        sidecarLive: {
+          getSidecarPluginStatus: () => ({ installed: true, scriptExists: true, runtimeLog: { tail: [] } })
+        },
+        asarEngine: { getStateDir: () => tmpAg },
+        liveHost: { LIVE_CAPABILITIES: { quota: true }, createLiveRequestHandler: () => () => {} }
+      }
+    });
+
+    // 1. 首次非 force lightweight overview：应执行 1 次 queryLiveWindow，但跳过 4 个重型采集
+    const lw1 = await posts.get('/api/overview')({ lightweight: true });
+    assert.equal(lw1.ok, true);
+    assert.equal(lw1.lightweight, true);
+    assert.equal(lw1.meta.cdpPort, 58321);
+    assert.equal(queryCalls, 1);
+    assert.equal(collectCalls, 0);
+    assert.equal(quotaCalls, 0);
+    assert.equal(tokensCalls, 0);
+    assert.equal(unlockCalls, 0);
+
+    // 2. 15s TTL 内第二次非 force overview：复用 queryLiveWindow 缓存，并正常返回完整概览
+    const fullNonForce = await posts.get('/api/overview')({ lightweight: false });
+    assert.equal(fullNonForce.ok, true);
+    assert.equal(Boolean(fullNonForce.lightweight), false);
+    assert.equal(queryCalls, 1, '15s 内非 force overview 应复用 queryLiveWindow 缓存');
+    assert.equal(quotaCalls, 1);
+    assert.equal(tokensCalls, 1);
+    assert.equal(unlockCalls, 1);
+
+    // 3. /api/refresh (force: true) 必须绕过 TTL 缓存并忽略 lightweight
+    const forced = await posts.get('/api/refresh')({ lightweight: true });
+    assert.equal(forced.ok, true);
+    assert.equal(Boolean(forced.lightweight), false);
+    assert.equal(queryCalls, 2, '/api/refresh 必须绕过 queryLiveWindow 缓存');
+    assert.equal(quotaCalls, 2);
+
+    await srv.close();
+  } finally {
+    fs.rmSync(tmpAg, { recursive: true, force: true });
+  }
+});
