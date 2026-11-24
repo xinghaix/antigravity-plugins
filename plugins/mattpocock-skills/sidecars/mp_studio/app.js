@@ -76,10 +76,30 @@
       deliverModeLabel: '写入方式',
       deliverCopyOpt: '复制文件（推荐，可提交 Git 团队共享）',
       deliverLinkOpt: '软链接（跟随本地插件目录实时更新）',
+      deliverManifestOpt: '写入 .agents/skills.json 清单（Antigravity 2.35+ 零复制引用）',
       deliverSingleNameLabel: '技能名称',
       cancelBtn: '取消',
       confirmDeliverBtn: '确认投递',
       deliveredToast: '已投递 {n} 个技能到项目 .agents/skills/',
+      wsManifestTitle: '2.35+ 层级声明清单（.agents/skills.json / rules.json）',
+      wsManifestSub: 'Antigravity 2.35+ 沿父目录至仓库根自动发现 skills.json，无需复制文件即可按 include_only 激活技能',
+      wsManifestGenBtn: '写入启用技能到 .agents/skills.json',
+      wsManifestSavedToast: '已写入 .agents/skills.json 声明清单（已创建备份）',
+      wsManifestResolved: '清单已解析技能 ({n})',
+      wsManifestAncestors: '祖先链命中 ({n})',
+      wsManifestRulesFound: '检测到 rules.json',
+      wsManifestEmpty: '当前仓库层级中未配置 .agents/skills.json。可点击右侧按钮零复制引用已启用技能。',
+      wsConvTitle: '2.35+ 原生会话追踪（ConversationService）',
+      wsConvSub: '直连本地 Language Server 查看由 Studio 派发及当前项目的交互式会话',
+      wsConvRefreshBtn: '刷新会话',
+      wsConvFilterStudio: '仅看 mp-studio',
+      wsConvFilterAll: '全部项目会话',
+      wsConvOpenBtn: '切换打开',
+      wsConvPinBtn: '置顶',
+      wsConvUnpinBtn: '取消置顶',
+      wsConvArchiveBtn: '归档',
+      wsConvEmpty: '暂无匹配的会话记录。点击任意技能或波次的「新会话执行」即可创建带标签的会话。',
+      wsConvUpdatedToast: '已更新会话状态',
       noWorkspaceErr: '请先在「项目工作台」关联一个本地项目目录',
       // Workflow tab
       wfSpineTitle: '主干研发流水线（Idea → Ship Spine）',
@@ -208,10 +228,30 @@
       deliverModeLabel: 'Delivery Mode',
       deliverCopyOpt: 'Copy files (recommended for Git team sharing)',
       deliverLinkOpt: 'Symlink (follows local plugin updates)',
+      deliverManifestOpt: 'Write .agents/skills.json manifest (Antigravity 2.35+ zero-copy)',
       deliverSingleNameLabel: 'Skill Name',
       cancelBtn: 'Cancel',
       confirmDeliverBtn: 'Deliver',
       deliveredToast: 'Delivered {n} skills to .agents/skills/',
+      wsManifestTitle: '2.35+ Hierarchical Manifests (.agents/skills.json / rules.json)',
+      wsManifestSub: 'Antigravity 2.35+ walks up to repo root to auto-load .agents/skills.json without copying skill folders',
+      wsManifestGenBtn: 'Write Enabled Skills to .agents/skills.json',
+      wsManifestSavedToast: 'Updated .agents/skills.json manifest (backup created)',
+      wsManifestResolved: 'Resolved in manifest ({n})',
+      wsManifestAncestors: 'Ancestor configs ({n})',
+      wsManifestRulesFound: 'rules.json detected',
+      wsManifestEmpty: 'No .agents/skills.json found along ancestor chain yet. Click to link enabled skills zero-copy.',
+      wsConvTitle: '2.35+ Native Conversation Tracker (ConversationService)',
+      wsConvSub: 'Inspect and focus Studio-dispatched or workspace conversations directly on the local Language Server',
+      wsConvRefreshBtn: 'Refresh',
+      wsConvFilterStudio: 'mp-studio only',
+      wsConvFilterAll: 'All project sessions',
+      wsConvOpenBtn: 'Open',
+      wsConvPinBtn: 'Pin',
+      wsConvUnpinBtn: 'Unpin',
+      wsConvArchiveBtn: 'Archive',
+      wsConvEmpty: 'No matching conversations yet. Use New Session on any skill or wave to start a tagged session.',
+      wsConvUpdatedToast: 'Conversation updated',
       noWorkspaceErr: 'Please add a workspace path in Workspace Hub first',
       wfSpineTitle: 'Idea → Ship Spine',
       wfSpineSub: 'Click any stage to inspect guidance, phase-boundary advice, and copy starter prompt',
@@ -351,8 +391,28 @@
     toast(t('sidecarAgentFallback'), 'warn');
   }
 
-  async function runInNewSession(prompt, title = '') {
+  async function runInNewSession(prompt, title = '', tags = ['mp-studio']) {
     if (!prompt) return;
+    if (state.data?.capabilities?.conversationService) {
+      try {
+        const res = await api('/api/conversations/create', {
+          title: title || undefined,
+          tags,
+          prompt,
+          model: 'flash',
+        });
+        const cid = res?.conversation?.id;
+        if (cid && window.sidecar?.ui?.toggleConversation) {
+          try { await window.sidecar.ui.toggleConversation(cid); } catch { /* ignore */ }
+        }
+        toast(t('newConvStartedToast'), 'ok');
+        if (state.activeTab === 'workspace') {
+          await loadConversations();
+          renderMain();
+        }
+        return;
+      } catch { /* fallback below */ }
+    }
     if (window.sidecar?.agent?.startConversation) {
       try {
         const conv = await window.sidecar.agent.startConversation(prompt, title || undefined);
@@ -406,8 +466,29 @@
     hostWorkspaceUris: [],    // 2.34+ dynamic workspace URIs
     orchestrate: null,        // { plan, activeView }
     backups: [],
+    conversations: [],
+    conversationsAvailable: false,
+    convFilter: 'mp-studio',  // 'mp-studio' | 'all'
+    convLoaded: false,
     syncing: false,
   };
+
+  async function loadConversations() {
+    try {
+      const tags = state.convFilter === 'mp-studio' ? ['mp-studio'] : undefined;
+      const res = await api('/api/conversations/query', {
+        pageSize: 15,
+        includeArchived: false,
+        tags,
+      });
+      state.conversationsAvailable = Boolean(res?.available);
+      state.conversations = Array.isArray(res?.conversations) ? res.conversations : [];
+      state.convLoaded = true;
+    } catch {
+      state.conversations = [];
+      state.convLoaded = true;
+    }
+  }
 
   async function refresh() {
     try {
@@ -908,11 +989,14 @@
             <h3>${esc(t('wsDeliveredTitle'))}</h3>
             <p>${esc(t('wsDeliveredSub'))}</p>
           </div>
-          <button type="button" id="btn-ws-deliver-open" class="btn btn-primary btn-sm">${esc(t('deliverBtn'))}</button>
+          <div class="btn-row-compact">
+            <button type="button" id="btn-ws-save-skills-json" class="btn btn-secondary btn-sm">${esc(t('wsManifestGenBtn'))}</button>
+            <button type="button" id="btn-ws-deliver-open" class="btn btn-primary btn-sm">${esc(t('deliverBtn'))}</button>
+          </div>
         </div>
         ${active.deliveredSkills.length === 0
           ? `<span class="section-sub">${esc(t('wsDeliveredEmpty'))}</span>`
-          : `<div style="display:flex; flex-wrap:wrap; gap:6px;">
+          : `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
               ${active.deliveredSkills.map((ds) => `
                 <span class="chip">
                   <span class="mono">${esc(ds.name)}</span>
@@ -922,7 +1006,69 @@
               `).join('')}
             </div>`
         }
+        <div style="border-top:1px solid var(--border-col); padding-top:10px; margin-top:8px; display:flex; flex-direction:column; gap:6px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+            <strong style="font-size:12px;">${esc(t('wsManifestTitle'))}</strong>
+            <div class="btn-row-compact">
+              ${active.manifests?.ancestors?.length ? `<span class="badge badge-ok">${esc(t('wsManifestAncestors', { n: active.manifests.ancestors.length }))}</span>` : ''}
+              ${active.manifests?.hasRulesJson ? `<span class="badge">${esc(t('wsManifestRulesFound'))}</span>` : ''}
+              ${active.manifests?.skillsJsonPath ? `<button type="button" class="file-link-btn" data-open-file="${esc(active.manifests.skillsJsonPath)}">${esc(active.manifests.skillsJsonPath)}</button>` : ''}
+            </div>
+          </div>
+          <span class="section-sub">${esc(t('wsManifestSub'))}</span>
+          ${active.manifests?.resolvedSkills?.length
+            ? `<div style="display:flex; flex-wrap:wrap; gap:5px; align-items:center;">
+                <span class="badge">${esc(t('wsManifestResolved', { n: active.manifests.resolvedSkills.length }))}</span>
+                ${active.manifests.resolvedSkills.slice(0, 14).map((rs) => `<span class="chip mono">${esc(rs.name)}</span>`).join('')}
+                ${active.manifests.resolvedSkills.length > 14 ? `<span class="section-sub">+${active.manifests.resolvedSkills.length - 14}</span>` : ''}
+              </div>`
+            : `<span class="section-sub">${esc(t('wsManifestEmpty'))}</span>`
+          }
+        </div>
       </section>
+
+      ${(state.data?.capabilities?.conversationService || state.conversationsAvailable) ? `
+        <section class="panel-card">
+          <div class="panel-card-head">
+            <div>
+              <h3>${esc(t('wsConvTitle'))}</h3>
+              <p>${esc(t('wsConvSub'))}</p>
+            </div>
+            <div class="btn-row-compact">
+              <button type="button" class="chip ${state.convFilter === 'mp-studio' ? 'active' : ''}" data-conv-filter="mp-studio">${esc(t('wsConvFilterStudio'))}</button>
+              <button type="button" class="chip ${state.convFilter === 'all' ? 'active' : ''}" data-conv-filter="all">${esc(t('wsConvFilterAll'))}</button>
+              <button type="button" id="btn-conv-refresh" class="btn btn-secondary btn-xs">${esc(t('wsConvRefreshBtn'))}</button>
+            </div>
+          </div>
+          ${state.conversations.length === 0
+            ? `<span class="section-sub">${esc(t('wsConvEmpty'))}</span>`
+            : `<div class="skills-list-card">
+                ${state.conversations.map((cv) => {
+                  const titleTxt = cv.annotations?.title || cv.state?.summary || cv.id;
+                  const pinned = Boolean(cv.annotations?.pinned);
+                  const runState = String(cv.state?.runState || '').replace('RUN_STATE_', '') || 'IDLE';
+                  const tagsList = [...new Set([...(cv.metadata?.tags || []), ...(cv.annotations?.tags || [])])];
+                  return `
+                    <div class="skill-item">
+                      <div class="skill-row">
+                        <div class="skill-main">
+                          <strong style="font-size:12px;">${pinned ? '📌 ' : ''}${esc(titleTxt)}</strong>
+                          <span class="badge ${runState === 'RUNNING' ? 'badge-user' : ''}">${esc(runState)}</span>
+                          ${tagsList.map((tg) => `<span class="badge">${esc(tg)}</span>`).join('')}
+                        </div>
+                        <div class="btn-row-compact">
+                          <button type="button" class="btn btn-primary btn-xs" data-conv-open="${esc(cv.id)}">${esc(t('wsConvOpenBtn'))}</button>
+                          <button type="button" class="btn btn-secondary btn-xs" data-conv-pin="${esc(cv.id)}" data-conv-pinned="${pinned ? '1' : '0'}">${esc(pinned ? t('wsConvUnpinBtn') : t('wsConvPinBtn'))}</button>
+                          <button type="button" class="btn btn-ghost btn-xs" data-conv-archive="${esc(cv.id)}">${esc(t('wsConvArchiveBtn'))}</button>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>`
+          }
+        </section>
+      ` : ''}
 
       <section class="panel-card">
         <div class="panel-card-head">
@@ -1298,6 +1444,79 @@
 
     $('btn-ws-deliver-open')?.addEventListener('click', () => openDeliverModal(''));
 
+    $('btn-ws-save-skills-json')?.addEventListener('click', async () => {
+      if (!state.selectedWorkspace) return;
+      try {
+        await api('/api/workspace/skills-json', { workspacePath: state.selectedWorkspace });
+        toast(t('wsManifestSavedToast'));
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    });
+
+    $('btn-conv-refresh')?.addEventListener('click', async () => {
+      await loadConversations();
+      renderMain();
+    });
+
+    document.querySelectorAll('[data-conv-filter]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        state.convFilter = btn.dataset.convFilter === 'all' ? 'all' : 'mp-studio';
+        await loadConversations();
+        renderMain();
+      });
+    });
+
+    document.querySelectorAll('[data-conv-open]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const cid = btn.dataset.convOpen;
+        if (!cid) return;
+        if (window.sidecar?.ui?.toggleConversation) {
+          try {
+            await window.sidecar.ui.toggleConversation(cid);
+            return;
+          } catch { /* ignore */ }
+        }
+        copyText(cid);
+      });
+    });
+
+    document.querySelectorAll('[data-conv-pin]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const cid = btn.dataset.convPin;
+        const currentlyPinned = btn.dataset.convPinned === '1';
+        try {
+          await api('/api/conversations/update', {
+            conversationId: cid,
+            annotations: { pinned: !currentlyPinned },
+          });
+          toast(t('wsConvUpdatedToast'));
+          await loadConversations();
+          renderMain();
+        } catch (err) {
+          toast(err.message, 'err');
+        }
+      });
+    });
+
+    document.querySelectorAll('[data-conv-archive]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const cid = btn.dataset.convArchive;
+        try {
+          await api('/api/conversations/update', {
+            conversationId: cid,
+            annotations: { archived: true },
+          });
+          toast(t('wsConvUpdatedToast'));
+          await loadConversations();
+          renderMain();
+        } catch (err) {
+          toast(err.message, 'err');
+        }
+      });
+    });
+
     document.querySelectorAll('[data-ws-rm-skill]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         try {
@@ -1585,6 +1804,8 @@
       });
       if (state.activeTab === 'settings') {
         await loadBackups();
+      } else if (state.activeTab === 'workspace' && state.data?.capabilities?.conversationService && !state.convLoaded) {
+        await loadConversations();
       }
       renderMain();
     });

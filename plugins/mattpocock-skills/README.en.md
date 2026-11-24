@@ -24,7 +24,9 @@ A native **Google Antigravity** migration of [mattpocock/skills](https://github.
 4. **Antigravity 2.34+ Native Multi-Agent Orchestration (`run_workflow` + `swarm` + `schedule`)**:
    - Upgrades `implement-spec` with topological wave execution via `run_workflow` (`parallel(..., workspace="share")` + wave merger + closing two-axis `code-review`), native `swarm` + `.system_generated/swarm/plan.json`, and lightweight `invoke_subagent`.
    - Adapts `code-review`, `wayfinder`, `codebase-design`, `triage`, and `loop-me` (stateful Generator ↔ Verifier `agent()` loops) to `run_workflow`, plus maps `chief-of-staff` & `software-factory` onto `schedule` crons and `hooks.json`.
-   - **Live Studio Wave Orchestrator & Host Dispatch**: Syncs workspaces via `sidecar.getWorkspaceUris()` / `onWorkspaceChange`, computes `.scratch` topological ticket waves & dependency cycles, generates runnable `run_workflow` Python scripts and `Swarm` `plan.json` prompts, supports one-click **Send to Chat** / **New Session**, and opens tickets, `spec.md`, `GLOSSARY.md`, and ADRs directly in Aux Pane tabs.
+   - **Live Studio Wave Orchestrator & Host Dispatch**: Syncs workspaces via `sidecar.getWorkspaceUris()` / `onWorkspaceChange`, computes `.scratch` topological ticket waves & dependency cycles, generates runnable `run_workflow` Python scripts and `Swarm` `plan.json` prompts, supports one-click **Send to Chat** / **New Session** (preferring Antigravity `2.35+ ConversationService` with `mp-studio` tags plus live focus/pin/archive tracking), and opens tickets, `spec.md`, `GLOSSARY.md`, and ADRs directly in Aux Pane tabs.
+5. **Antigravity 2.35+ Hierarchical `.agents/skills.json` Manifests**:
+   - Walks upward from the active workspace to the `.git` root to inspect `.agents/skills.json` / `.agents/rules.json` (`inherits`, `include_only`, `exclude`), and supports zero-copy manifest delivery directly from **Deliver to Repo** or **Workspace Hub**.
 
 ---
 

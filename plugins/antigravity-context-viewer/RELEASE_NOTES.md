@@ -1,3 +1,23 @@
+## v0.9.2-1
+
+基于上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) **`v0.9.2`**（含 `v0.9.1`）完成全量合并，并完整保留与兼容本仓近期 Bug 修复、性能优化及全部改版特性：
+
+- **上游 `v0.9.1` ~ `v0.9.2` 核心更新全量同步**：
+  - **会话看板（Skyline 自由布局）与速度对比增强**：支持卡片缩放/拖动四边对齐参考线与双卡并排吸附、自定义多套个人布局管理、分屏窗格悬停定位与右键聚焦/批量关闭；「速度与成本」新增单次请求估算费用与缓存节省明细，并支持按今日 / 3 日 / 5 日 / 一周 / 近 30 天 / 全量 / 自定义范围对比模型速度折线。
+  - **性能、更新安全与首装收敛**：隐藏历史子页按需延迟绘制、空闲会话降频轮询（`60s`）与按账号核对历史修订；`i18n-runtime` 预编译正则 + `WeakMap` + 悬停子树预算保护并移除周期全树 `setInterval`；应用内更新改用后台子进程解压，磁盘更新后提示重启；首装时可选增强模块默认保持关闭（提示词精简默认 `0` 档，中文标题默认 `false`），同时完整保留既有配置与实装识别；实时请求列表恢复 Antigravity 原版图标。
+  - **Antigravity `2.34.0` 与代理启动链路加固**：显式代理配置优先合并登录 Shell 环境、代理凭据脱敏与自启动管理（`autostart.js`、`autostart-status` / `autostart:enable` / `autostart:disable`）。
+- **完整保留与兼容本仓近期修复与增强特性**：
+  - **Aux Pane Sidecar 全功能引擎与 `v0.9.2` 新版 UI 对齐（免 CDP / 免改盘）**：完整保留内嵌版 `meter-renderer`（`data-dock="sidecar"`、`plugin:` WebView 上下文支持）、进程内 `/api/live`、白名单 `/api/ls-rpc`、`/api/open-external`，以及内嵌稳态下的 `{ lightweight: true }` `25s` 轻量同步与 `15s` `queryLiveWindow()` TTL 缓存；针对 `v0.9.1`/`v0.9.2` 新增 Skyline 2D 看板重排（`relayoutForSidecar()` + `resize` 自适应）、宽表/费用子视图全宽自适应、径向悬浮球与桌面顶栏模式锁定隔离、内部跳页标签双向联动、简/繁/英三语同步，以及诊断页 `autostart` 状态与底栏/尾注开关同步；
+  - **Antigravity `2.35.0` 内存瘦身与环境直连快路径**：
+    - 将 [meter-context-unlock.js](meter-context-unlock.js)（`analyzeBinaryAsync`）与 [meter-enhance.js](meter-enhance.js)（`inspectSingleBinaryAsync`）对约 197 MB `language_server` 二进制的扫描改由独立临时 Node 子进程（`child_process.fork` + `ELECTRON_RUN_AS_NODE=1`）执行并在完成后立即退出回收物理内存，同时新增按 `size + mtimeMs + ctimeMs + ino` 键控的主线程记忆与磁盘签名缓存（`.unlock-inspect-cache-v1.json` / `.enhance-inspect-cache-v1.json`，兼容 Windows PE `BigInt` 偏移序列化），Sidecar 常驻 RSS 由 ~585–710 MB 降至 ~64 MB 级，缓存命中仅 ~8 ms；
+    - 为 [meter-collector.js](meter-collector.js) 的 `_turnStateGmCountCache`、`transcriptFileCache`（512 条）及 `ledgerCacheByPath`（32 条）统一加上界 LRU 淘汰；
+    - 在 [local-api.js](local-api.js) 与 [ui-server.js](sidecars/live-loader/ui-server.js) 接入 Antigravity `2.35.0+` 自动注入的 `ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN` 严格同源回环快路径（带测试隔离守卫），免 CDP 场景无需轮询调试端口即可直接建立 RPC 连接；已完成 `2.35.0` 全部 27 个线上模型归桶/配额/计价与二进制探测实测。
+  - **CDP 切换会话防卡顿专项优化**：将本仓 `i18n-runtime` 的 **6ms `rAF` 分片遍历（`translateElementBudgeted`）**、`MutationObserver` 受保护容器整批短路与队列上限早退融入上游 `v0.9.2` `WeakMap` / 预编译正则引擎；保留切会话后 `checkHostDomCompactionSignals()` 约 `1.5s` 延迟扫描 + 多层孙节点跳过、2000ms/路由变化避让节流、`hostDomObserver` $O(1)$ 早退、`renderComposerStatusBar()` 1200ms DOM 轮次缓存、`renderTurnFooterStats()` 脏检查，以及 `[hidden]` CSS 动画暂停与瞬时 CDP 超时隔离（`cdp_busy`）；
+  - **Google AI Ultra `5x`/`20x` 自动识别与底栏最后 1 步纯吐字速度**：将 `g1-ultra-lite-tier`（`5x`，`$99.99/月`）/ `g1-ultra-tier`（`20x`，`$199.99/月`）自动识别与缓存 `子档未知` 自动升级对接上游 `v0.9.2` 零括号 `SUBSCRIPTION_TIER_SPECS` 二维定价矩阵；底栏 `#csb-speed-text` 保持显示当前会话最后 1 步纯吐字速度（不含 TTFT），顶栏保持当前会话平均纯吐字速度；
+  - **全部自定义顶栏外观与多路发现特性**：保留 `K/M · %` 紧凑胶囊、双圆环单色风格、CLI 按钮默认隐藏开关、Sidecar 中文热注入开关、`authBootstrap` + `daemon/hub_*.json` + `main.log` 本地直连，以及 macOS `arm64` Mach-O 上下文解锁与 `ElectronAsarIntegrity` 预检。
+
+---
+
 ## v0.9.0-2
 
 基于 `v0.9.0-1`（上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) **`v0.9.0`** 同步基线）推出 Aux Pane 全功能对齐与 CDP 运行时流畅度专项优化版本：
@@ -145,94 +165,29 @@
 - 修复 Windows 中文或空格路径下的终端启动问题. 减少更新解压时的窗口闪烁.
 ---
 
-# v0.9.0 beta1 (上游同期摘要)
+# v0.9.2（上游同期参考）
 
-**简体中文** · [English](#v090-beta1-en)
+[English](#english)
 
-<details open>
-<summary><b>简体中文</b></summary>
+### 性能与应用内更新
 
-### 当前会话交互式分析页与宽屏多栏重构
-- 升级「当前会话」分页为 4 行响应式 Bento 工作台 (`wide >=860px` / `medium 540~859px` / `narrow <540px` 三档容器自适应，支持右侧辅助栏停靠与顶部原位浮层双模式同源交互).
-- 严格区分单次上下文已用与会话累计 Token、单步缓存读取与累计缓存、插件配置预算与宿主确认窗口上限; 拆分 9 维上下文构成并如实标注宿主实报、本地估算与未归类残差 (`unaccountedTokens`).
-- 上下文趋势支持总量/增量 Δ、按步/按轮切换、键盘方向键切步、`Esc` 返回最新与固定历史步骤对比 (`比前一步` / `比前一轮`); 缺乏压缩/剪枝证据的突降标为「占用下降，原因未知」.
-- 耗时统计增加多色环形图与并发墙钟 vs 累计任务时长对照; 宿主未导出思考/正文/工具参数独立时间戳时仅展示 TTFT、模型流式与工具执行三段并如实注明边界.
-- 工作台下端接入上下文事件、文件活动、命令执行与基于可核实父子关系的子 Agent 汇总，默认对路径与令牌脱敏.
+- 更新包解压在后台子进程执行，校验仍使用官方 SHA-256。桌面应用内更新写入磁盘后提示重启，避免当前窗口同时换渲染器和后台服务。
+- 隐藏的历史子页等打开后再绘制，后台降低历史轮询和空闲会话扫描频率。历史更新按账号核对，避免用当前缓存覆盖切换后的账号。
+- 宿主更新移除插件后，更新检查按磁盘实际状态识别旧安装记录。
 
-### 界面修正与自定义扩展避让
-- 修复正常未固定状态下「当前会话」`#ctx-ov-pinned-banner` 与「配置 → 外观与停靠」`#dock-fallback-note` / `#dock-open-feedback` 因 `[hidden]` CSS 优先级缺失导致的细长蓝色空框残留，仅在实际存在提示文本时显示并在状态解除后完整收起.
-- 修复进入「自定义扩展 / 插件市场 / 插件详情页」的面板与右侧辅助栏避让回归，并防止无输入框的已归档历史会话 (`/c/...`) 被侧栏导航与全局后退按钮误锁.
-- 实时请求列表 `Antigravity` 行改用 `antigravity-color.svg` 静态矢量图标（分发许可待核实，见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 第 3.4 节）; 保留 Claude/OpenAI 图标与统计口径.
+### 首次安装
 
-### 兼容性、安装安全与 CLI 助手收尾
-- 新增 Antigravity `2.34.0` 加载锚点 (`loadHubWindowUrl`) 与同源 `authBootstrap` 鉴权兼容，以及宿主更新覆盖后的隔离备份恢复与 macOS `ElectronAsarIntegrity` 写前预检 (`host-recovery.js`).
-- 收尾 GitHub Issue #17 Windows CLI 窗口助手: 将预编译 `scripts/cli-window-helper.exe` 移出 Git 跟踪，Windows 打包与安装改为临时目录从 `scripts/cli-window-helper.cs` 现场编译并校验 SHA-256，保留标准控制台 (`cmd.exe /d /k`) 无助手回退路径与 `@riandycandra` 署名.
-- 宿主界面汉化升级: Antigravity 界面汉化基于 Antigravity-Chinese-Localization，感谢 aabbWei 与 antigravity-cn-community 贡献者. 上游仓库 `<https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization>`, 采用本地工具包 Release `v2.34.0`, 完整 MIT 许可与第三方声明见随包 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-### 贡献者致谢
+- 核心看板可从顶栏打开。汉化、中文标题、上下文解锁、压缩恢复、免 TUN、三个径向入口、输入框底栏、回复尾部统计和自动检查更新默认关闭。提示词增强默认 0 档。可在配置页按需手动启用。
+- 首装不会挂载宿主汉化运行时。已有统一配置中的手动选择会随升级保留。
+- 实时请求列表恢复 Antigravity 原版彩色图标。
 
-- @Tswatery 将上下文取消归类为中性中断. [PR #38](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/38)
-- @Kisaragi-Mio-0127 修复推荐配置复选框与磁盘状态不同步的问题. [PR #47](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/47)
-- @feizaodemon 添加 Gemini 4 Neon 识别并适配 Antigravity 2.33 的统一 Gemini 配额池. [PR #52](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/52)
-- @Tswatery 修复浅色主题下紫色热力图与图例方向相反的问题. [PR #53](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/53)
-- @yuanyang749 过滤内置浏览器中的第三方本地预览页，并改进多 origin 连接容错. [PR #57](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/57)
+感谢 [@ltppp](https://github.com/ltppp)、[@tihonovaaybeniz-code](https://github.com/tihonovaaybeniz-code)、[@Nymph-Beta](https://github.com/Nymph-Beta)、[@lllhhhh](https://github.com/lllhhhh) 和 [@Staaaying](https://github.com/Staaaying)。贡献来源和采纳范围见 [Contributors](https://github.com/elviscjn-cjn/antigravity-context-viewer/blob/v0.9.2/CONTRIBUTORS.md)。
 
-#### 挂载与兼容性相关贡献
+Antigravity 界面汉化基于 Antigravity-Chinese-Localization，感谢 aabbWei 与 antigravity-cn-community 贡献者。
 
-- @x1051445024 提供 2.34.0 窗口加载锚点与空 HTML 场景的鉴权方案. [PR #61](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/61)
-- @Hirasawa8 提供 2.34.0 安装与桌面额度恢复方案. [PR #66](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/66)
-- @shixin08052 提供 2.34.0 窗口加载与 Hub 同源会话适配. [PR #67](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/67)
-- @Xuhang0607 协助解决 2.34.0 桌面额度鉴权失败. [PR #68](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/68)
-- @Jemiking 提供 2.34.0 窗口加载与 bootstrap CSRF 兼容方案. [PR #69](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/69)
-- @awu5425 提供安装器对新版 loadHubWindowUrl 锚点的适配. [PR #73](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/73)
-- @LC9999216 独立提交同一窗口加载与鉴权问题的修复方案，与本版采用的方案重叠. [PR #65](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/65)
-- @Nymph-Beta 协助定位 macOS 未开启 CDP 时的 live / watch 挂载问题，本版部分采用. [PR #43](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/43)
+## English
 
-### macOS 使用反馈
-
-用 macOS 的朋友请多反馈这个版本的使用情况. 安装、升级或日常使用遇到问题，请附上 macOS 和 Antigravity 的版本，以及出现问题的操作. 运行正常也可以留个反馈，方便我确认不同机型和系统版本的兼容性.
-
-</details>
-
-<details id="v090-beta1-en">
-<summary><b>English</b></summary>
-
-### Interactive Session Analysis & Responsive Bento Layout
-- Upgraded the Session view into a 4-row responsive Bento workbench (`wide >=860px` / `medium 540-859px` / `narrow <540px`) shared across both right-sidebar dock and topbar popover modes.
-- Separated single-call context occupancy vs session cumulative tokens, per-step cache vs cumulative cache, and user configured budget vs host-confirmed context window limit. Split 9 composition categories while preserving actual reported totals, visible estimates, and unattributed residuals.
-- Added total/delta and per-step/per-turn trend toggles, keyboard step navigation (`Left`/`Right` and `Esc`), pinned step comparison, and conservative `unknown_drop` classification when compaction evidence is absent.
-- Added timing breakdown donut with concurrent wall-clock vs cumulative task duration while explicitly noting that independent thinking/body/tool-arg streaming sub-timestamps are not exported by Antigravity 2.34.0.
-- Integrated context change events, file activity filters, command execution telemetry, and verified parent-child subagent summaries with redacted paths and secrets.
-
-### UI Fixes & Customizations Avoidance
-- Fixed lingering thin blue empty bars (`#ctx-ov-pinned-banner` and `#dock-fallback-note` / `#dock-open-feedback`) caused by `[hidden]` CSS specificity overrides. Banners now collapse completely when hidden or empty and appear only with active message text.
-- Fixed Customizations / Marketplace / plugin detail panel avoidance and prevented archived `/c/...` conversation routes without a composer from being mislocked.
-- Updated `Antigravity` rows in the Live Requests table to render `antigravity-color.svg` (redistribution license pending verification in `THIRD_PARTY_NOTICES.md` §3.4) while keeping existing source text, models, and other icons unchanged.
-
-### Host Compatibility, Recovery & Issue #17 Helper Closure
-- Added Antigravity `2.34.0` window loader anchor (`loadHubWindowUrl`), same-origin `authBootstrap` fallback, version-isolated ASAR backup/recovery (`host-recovery.js`), and macOS `ElectronAsarIntegrity` preflight guards.
-- Removed tracked prebuilt `scripts/cli-window-helper.exe` from Git. Windows local packaging and installation now compile from `scripts/cli-window-helper.cs` in a temporary directory with SHA-256 verification and automatic fallback to standard console (`cmd.exe /d /k`), preserving attribution to `@riandycandra`.
-- Client UI localization upstream: Antigravity UI localization is based on Antigravity-Chinese-Localization (`v2.34.0`), thanks to aabbWei and antigravity-cn-community contributors (MIT License; see `THIRD_PARTY_NOTICES.md`).
-### Contributors
-
-- @Tswatery classified context cancellations as neutral interruptions. [PR #38](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/38)
-- @Kisaragi-Mio-0127 fixed recommended settings checkboxes to reflect the saved configuration. [PR #47](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/47)
-- @feizaodemon added Gemini 4 Neon detection and support for the unified Gemini quota pool in Antigravity 2.33. [PR #52](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/52)
-- @Tswatery corrected the light-theme heatmap colors to match the legend. [PR #53](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/53)
-- @yuanyang749 filtered third-party local previews in the built-in browser and made connections more resilient across origins. [PR #57](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/57)
-
-#### Attachment and compatibility contributions
-
-- @x1051445024 Proposed fixes for the 2.34.0 window loader and authentication when the HTML contains no token. [PR #61](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/61)
-- @Hirasawa8 Proposed 2.34.0 installation and desktop quota fixes. [PR #66](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/66)
-- @shixin08052 Proposed 2.34.0 window loading and same-origin Hub session support. [PR #67](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/67)
-- @Xuhang0607 Helped address 2.34.0 desktop quota authentication failures. [PR #68](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/68)
-- @Jemiking Proposed 2.34.0 window loader and bootstrap CSRF compatibility fixes. [PR #69](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/69)
-- @awu5425 Proposed installer support for the new loadHubWindowUrl anchor. [PR #73](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/73)
-- @LC9999216 Independently submitted an overlapping fix for the same window loading and authentication issue. [PR #65](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/65)
-- @Nymph-Beta Helped diagnose macOS live / watch attachment without CDP, with parts of the proposal adopted. [PR #43](https://github.com/elviscjn-cjn/antigravity-context-viewer/pull/43)
-
-### macOS Feedback
-
-If you use macOS, please tell me how this release works for you. If you run into problems installing, updating, or using it, include your macOS and Antigravity versions and what you were doing when the issue occurred. Reports that everything works also help me confirm compatibility across Macs and macOS versions.
-
-</details>
+- Update extraction runs in a child process. The desktop updater writes the verified package to disk and asks for a restart before loading the new version.
+- Hidden history views render on demand. Idle sessions poll less often. History revisions are checked against the account, and stale installation records are ignored when the patch is missing.
+- Optional modules and display extensions start off on first install. Host translation requires manual opt-in. Prompt enhancement starts at level 0. Explicit existing settings are preserved.
+- Restored the original Antigravity icon in Live Requests.

@@ -894,6 +894,74 @@ test('sidecar ui-server exposes full live-host bridge (/api/live), allowlisted /
   }
 });
 
+test('sidecar ui-server exposes autostart status and saves v0.9.2 opt-in display toggles', async () => {
+  const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
+  const posts = new Map();
+
+  class MockResponse {
+    constructor(body, init = {}) {
+      this.body = body;
+      this.init = init;
+    }
+  }
+  class MockSidecarApp {
+    page() {}
+    api(route, handler, method = 'POST') {
+      if (method !== 'GET') posts.set(route, handler);
+    }
+    run() { return { port: 49996, async close() {} }; }
+  }
+
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-v092-'));
+  fs.mkdirSync(path.join(tmpAg, 'conversations'), { recursive: true });
+  const storedSettings = {
+    sidecarChinese: true,
+    showCliButton: false,
+    showComposerQuotaSummary: false,
+    showTurnFooterStats: false,
+    panelLanguage: 'zh-CN'
+  };
+
+  try {
+    const srv = await startSidecarUiServer({
+      agDir: tmpAg,
+      importSidecarSdk: async () => ({ SidecarApp: MockSidecarApp, Response: MockResponse }),
+      deps: {
+        localApi: { normalizeLoopbackOrigin: v => v, connect: async () => null },
+        collector: {
+          collect: async () => null,
+          fetchQuotaSnapshotFromHost: async () => ({ ok: true, snapshot: { pools: [] } }),
+          collectTokenHistoryAsync: async () => ({ summary: {} }),
+          getContextUnlockStatus: async () => ({ status: 'unpatched' }),
+          getPluginSettings: () => ({ ...storedSettings }),
+          savePluginSettings: (patch) => { Object.assign(storedSettings, patch); return { ok: true }; }
+        },
+        cli: { queryLiveWindow: async () => ({ running: true, cdpEnabled: false }) },
+        sidecarLive: { getSidecarPluginStatus: () => ({ installed: true, scriptExists: true, runtimeLog: { tail: [] } }) },
+        asarEngine: { getStateDir: () => tmpAg },
+        autostart: { getAutostartStatus: () => ({ supported: true, enabled: true, platform: 'darwin', kind: 'launchagent', file: '/secret/home/path.plist' }) },
+        liveHost: { LIVE_CAPABILITIES: {}, createLiveRequestHandler: () => () => {} }
+      }
+    });
+
+    const ov = await posts.get('/api/overview')({});
+    assert.equal(ov.ok, true);
+    assert.deepEqual(ov.autostart, { supported: true, enabled: true, platform: 'darwin', kind: 'launchagent', method: 'launchagent', reason: null });
+    assert.equal(ov.autostart.file, undefined, 'autostart payload must omit filesystem paths');
+    assert.equal(ov.settings.showComposerQuotaSummary, false);
+    assert.equal(ov.settings.showTurnFooterStats, false);
+
+    const saved = await posts.get('/api/settings')({ showComposerQuotaSummary: true, showTurnFooterStats: true });
+    assert.equal(saved.ok, true);
+    assert.equal(saved.settings.showComposerQuotaSummary, true);
+    assert.equal(saved.settings.showTurnFooterStats, true);
+
+    await srv.close();
+  } finally {
+    fs.rmSync(tmpAg, { recursive: true, force: true });
+  }
+});
+
 test('sidecar ui-server lightweight overview skips heavy collectors and caches queryLiveWindow across non-force polls', async () => {
   const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
   const posts = new Map();
@@ -985,6 +1053,74 @@ test('sidecar ui-server lightweight overview skips heavy collectors and caches q
     assert.equal(Boolean(forced.lightweight), false);
     assert.equal(queryCalls, 2, '/api/refresh 必须绕过 queryLiveWindow 缓存');
     assert.equal(quotaCalls, 2);
+
+    await srv.close();
+  } finally {
+    fs.rmSync(tmpAg, { recursive: true, force: true });
+  }
+});
+
+test('sidecar ui-server exposes autostart status and saves v0.9.2 opt-in display toggles', async () => {
+  const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
+  const posts = new Map();
+
+  class MockResponse {
+    constructor(body, init = {}) {
+      this.body = body;
+      this.init = init;
+    }
+  }
+  class MockSidecarApp {
+    page() {}
+    api(route, handler, method = 'POST') {
+      if (method !== 'GET') posts.set(route, handler);
+    }
+    run() { return { port: 49996, async close() {} }; }
+  }
+
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-v092-'));
+  fs.mkdirSync(path.join(tmpAg, 'conversations'), { recursive: true });
+  const storedSettings = {
+    sidecarChinese: true,
+    showCliButton: false,
+    showComposerQuotaSummary: false,
+    showTurnFooterStats: false,
+    panelLanguage: 'zh-CN'
+  };
+
+  try {
+    const srv = await startSidecarUiServer({
+      agDir: tmpAg,
+      importSidecarSdk: async () => ({ SidecarApp: MockSidecarApp, Response: MockResponse }),
+      deps: {
+        localApi: { normalizeLoopbackOrigin: v => v, connect: async () => null },
+        collector: {
+          collect: async () => null,
+          fetchQuotaSnapshotFromHost: async () => ({ ok: true, snapshot: { pools: [] } }),
+          collectTokenHistoryAsync: async () => ({ summary: {} }),
+          getContextUnlockStatus: async () => ({ status: 'unpatched' }),
+          getPluginSettings: () => ({ ...storedSettings }),
+          savePluginSettings: (patch) => { Object.assign(storedSettings, patch); return { ok: true }; }
+        },
+        cli: { queryLiveWindow: async () => ({ running: true, cdpEnabled: false }) },
+        sidecarLive: { getSidecarPluginStatus: () => ({ installed: true, scriptExists: true, runtimeLog: { tail: [] } }) },
+        asarEngine: { getStateDir: () => tmpAg },
+        autostart: { getAutostartStatus: () => ({ supported: true, enabled: true, platform: 'darwin', kind: 'launchagent', file: '/secret/home/path.plist' }) },
+        liveHost: { LIVE_CAPABILITIES: {}, createLiveRequestHandler: () => () => {} }
+      }
+    });
+
+    const ov = await posts.get('/api/overview')({});
+    assert.equal(ov.ok, true);
+    assert.deepEqual(ov.autostart, { supported: true, enabled: true, platform: 'darwin', kind: 'launchagent', method: 'launchagent', reason: null });
+    assert.equal(ov.autostart.file, undefined, 'autostart payload must omit filesystem paths');
+    assert.equal(ov.settings.showComposerQuotaSummary, false);
+    assert.equal(ov.settings.showTurnFooterStats, false);
+
+    const saved = await posts.get('/api/settings')({ showComposerQuotaSummary: true, showTurnFooterStats: true });
+    assert.equal(saved.ok, true);
+    assert.equal(saved.settings.showComposerQuotaSummary, true);
+    assert.equal(saved.settings.showTurnFooterStats, true);
 
     await srv.close();
   } finally {

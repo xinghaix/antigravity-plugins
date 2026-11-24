@@ -24,7 +24,9 @@
 4. **Antigravity 2.34+ 原生多智能体编排引擎（`run_workflow` + `swarm` + `schedule`）**：
    - `implement-spec` 新增三模式调度：3 张以上票据推荐 `run_workflow`（Python 拓扑波次 + `workspace="share"` + 波次合入 + 双轴收尾 Review），跨智能体协作推荐原生 `swarm` + `.system_generated/swarm/plan.json`（Swarm UI 实时追踪），1-2 票据沿用轻量 `invoke_subagent`。
    - `code-review`、`wayfinder`、`codebase-design`、`triage` 与 `loop-me` 适配 `run_workflow` 的并发/有状态 `agent()` 循环；`chief-of-staff` 与 `software-factory` 映射 Antigravity `schedule` 与 `hooks.json`。
-   - **Studio 在线编排与会话直连**：支持动态感知 `2.34+` 工作区切换（`sidecar.getWorkspaceUris()` / `onWorkspaceChange`），自动为 `.scratch` 票据计算拓扑波次与环检测并生成可运行的 `run_workflow` Python 脚本 / `Swarm` 看板，同时支持**发送到当前对话**、**新会话执行**（落地阶段边界原则）以及在 **Aux Pane 打开票据 / `spec.md` / `GLOSSARY.md` / ADR**。
+   - **Studio 在线编排与会话直连**：支持动态感知 `2.34+` 工作区切换（`sidecar.getWorkspaceUris()` / `onWorkspaceChange`），自动为 `.scratch` 票据计算拓扑波次与环检测并生成可运行的 `run_workflow` Python 脚本 / `Swarm` 看板，同时支持**发送到当前对话**、**新会话执行**（优先通过 `2.35+ ConversationService` 创建带 `mp-studio` 标签的会话并支持在工作台置顶/归档追踪）以及在 **Aux Pane 打开票据 / `spec.md` / `GLOSSARY.md` / ADR**。
+5. **Antigravity 2.35+ 零复制层级声明清单（`.agents/skills.json`）**：
+   - 在项目工作台自动沿父目录至仓库根扫描 `.agents/skills.json` / `.agents/rules.json`（含 `inherits`、`include_only` 与 `exclude`），并支持一键生成 `.agents/skills.json` 以零复制方式按需激活全局已启用技能。
 
 ---
 

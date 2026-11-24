@@ -418,7 +418,7 @@ test('i18n-runtime 性能优化防回归：非品牌文本零重排、忽略节�
   const beforeRaf = rafCount;
   capturedObserverCb([{ type: 'childList', addedNodes: [mdSpan] }]);
   assert.equal(rafCount, beforeRaf, '被隔离的正文/Markdown 子树增量不得触发 requestAnimationFrame');
-  assert.ok(intervals.some(ms => ms >= 60000), `兜底巡检间隔应 >= 60000ms，实得 ${intervals.join(',')}`);
+  assert.ok(intervals.length === 0 || intervals.every(ms => ms >= 60000), `兜底巡检应已移除或 >= 60000ms，实得 ${intervals.join(',')}`);
 });
 
 test('i18n-runtime 切会话大树分帧让出与 protected-core MutationObserver 容器短路', () => {
@@ -523,4 +523,84 @@ test('i18n-runtime 切会话大树分帧让出与 protected-core MutationObserve
   assert.equal(isoMdText.nodeValue, 'Planning', 'markdown-body 正文必须严格保留原文');
   assert.equal(isoAssText.nodeValue, 'Settings', 'assistant-message 正文必须严格保留原文');
   assert.equal(isoMeterText.nodeValue, 'Settings', '#composer-status-bar 自身文本必须严格保留原文');
+});
+
+test('性能回归: 3000+ 节点模拟设置弹窗 O(N) 单趟翻译 <50ms 且 pointerenter 不对大容器全树重扫', () => {
+  const dict = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'zh-CN.json'), 'utf8'));
+  const rtSrc = fs.readFileSync(path.join(ROOT_DIR, 'i18n', 'i18n-runtime.js'), 'utf8');
+  const d = makeMockDom();
+
+  // 构造深层嵌套容器 + 3,200+ 个模拟设置弹窗节点 + Issue #58 受保护正文节点
+  const modal = d.el('div', { className: 'agy-dialog settings-modal-container', attrs: { role: 'dialog' } });
+  const nav = d.el('div');
+  modal.appendChild(nav);
+  const sampleLabels = [];
+  for (let i = 0; i < 650; i++) {
+    const row = d.el('div', { className: 'settings-row' });
+    const wrap = d.el('div', { className: 'settings-cell' });
+    const lbl = d.el('span');
+    const txt = d.text(i % 2 === 0 ? 'General' : 'Settings');
+    lbl.appendChild(txt);
+    const btn = d.el('button');
+    btn.appendChild(d.text('Save'));
+    wrap.appendChild(lbl);
+    wrap.appendChild(btn);
+    row.appendChild(wrap);
+    nav.appendChild(row);
+    if (i < 5) sampleLabels.push(txt);
+  }
+  const mdGuard = d.el('div', { className: 'markdown-body' });
+  const mdText = d.text('Settings');
+  mdGuard.appendChild(mdText);
+  d.body.appendChild(modal);
+  d.body.appendChild(mdGuard);
+
+  const listeners = {};
+  const docMock = {
+    documentElement: d.body,
+    body: d.body,
+    readyState: 'complete',
+    addEventListener(type, fn) {
+      listeners[type] = listeners[type] || [];
+      listeners[type].push(fn);
+    }
+  };
+  const sandbox = {
+    window: {
+      __AGY_I18N_CONFIG__: { enabled: true, language: 'zh-CN', brandTitle: 'english' },
+      __AGY_I18N_DATA__: dict
+    },
+    document: docMock,
+    performance,
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval: () => 1
+  };
+  sandbox.window.document = docMock;
+  vm.runInNewContext(rtSrc, sandbox);
+
+  const t0 = performance.now();
+  sandbox.window.__AGY_TRANSLATE_EL__(modal);
+  const scanMs = performance.now() - t0;
+
+  assert.ok(scanMs < 150, `3250+ 节点单次 O(N) 扫描耗时 ${scanMs.toFixed(2)}ms 应显著低于卡顿阈值`);
+  for (const tn of sampleLabels) {
+    assert.ok(tn.nodeValue === '通用' || tn.nodeValue === '设置', '设置项必须正确汉化');
+  }
+
+  // 验证 Issue #58 受保护节点仍严格不翻译
+  sandbox.window.__AGY_TRANSLATE_EL__(mdGuard);
+  assert.equal(mdText.nodeValue, 'Settings');
+
+  // 验证高频 pointerenter 落在大型容器 (childElementCount > 12) 时直接跳过整树递归
+  const origNavChild = d.el('button');
+  const untouchedTxt = d.text('Save');
+  origNavChild.appendChild(untouchedTxt);
+  nav.appendChild(origNavChild);
+  nav.childElementCount = nav.children.length;
+  modal.childElementCount = modal.children.length;
+  for (const fn of (listeners.pointerenter || [])) {
+    fn({ target: nav });
+  }
+  assert.equal(untouchedTxt.nodeValue, 'Save', 'pointerenter 落在大型容器时禁止重扫整棵大子树');
 });

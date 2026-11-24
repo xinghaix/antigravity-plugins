@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Response, SidecarApp } from 'sidecar_sdk';
+import { createConversationClient } from './conversations_client.mjs';
 import { createStore } from './studio_store.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const store = createStore();
 const app = new SidecarApp();
+const convClient = createConversationClient();
 
 const STATIC = {
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
@@ -70,16 +72,24 @@ for (const [route, [file, contentType]] of Object.entries(STATIC)) {
   app.api(route, () => new Response(readFileSync(join(__dirname, file), 'utf-8'), { contentType }), 'GET');
 }
 
+function buildCapabilities() {
+  return {
+    conversationService: convClient.isAvailable(),
+    projectId: app.config?.projectId || null,
+    conversationId: app.config?.conversationId || null,
+  };
+}
+
 app.api('/api/state', handle((data) => {
   const hostWs = detectHostWorkspaces(data);
   const selected = typeof data?.workspace === 'string' ? data.workspace : '';
-  return { ok: true, ...store.getState(hostWs, selected) };
+  return { ok: true, capabilities: buildCapabilities(), ...store.getState(hostWs, selected) };
 }), 'GET');
 
 app.api('/api/state/query', handle((data) => {
   const hostWs = detectHostWorkspaces(data);
   const selected = typeof data?.workspace === 'string' ? data.workspace : '';
-  return { ok: true, ...store.getState(hostWs, selected) };
+  return { ok: true, capabilities: buildCapabilities(), ...store.getState(hostWs, selected) };
 }));
 
 app.api('/api/skill/preview', handle((data) => ({ ok: true, ...store.getSkillPreview(data) })));
@@ -98,9 +108,56 @@ app.api('/api/workspaces/remove', handle((data) => {
 }));
 app.api('/api/workspace/inspect', handle((data) => ({ ok: true, workspace: store.inspectWorkspace(data.workspacePath) })));
 app.api('/api/workspace/deliver', handle((data) => store.deliverToWorkspace(data)));
+app.api('/api/workspace/skills-json', handle((data) => store.saveWorkspaceSkillsJson(data)));
 app.api('/api/workspace/skill/remove', handle((data) => store.removeWorkspaceSkill(data)));
 app.api('/api/workspace/setup', handle((data) => store.saveRepoSetup(data)));
 app.api('/api/workspace/glossary', handle((data) => store.saveGlossary(data)));
+
+app.api('/api/conversations', handle(async () => {
+  if (!convClient.isAvailable()) {
+    return { ok: true, available: false, conversations: [] };
+  }
+  const res = await convClient.listConversations({
+    pageSize: 15,
+    projectId: app.config?.projectId || undefined,
+  });
+  return { ok: true, available: true, ...res };
+}), 'GET');
+
+app.api('/api/conversations/query', handle(async (data) => {
+  if (!convClient.isAvailable()) {
+    return { ok: true, available: false, conversations: [] };
+  }
+  const res = await convClient.listConversations({
+    pageSize: data.pageSize || 15,
+    pageToken: data.pageToken,
+    projectId: data.projectId !== undefined ? data.projectId : (app.config?.projectId || undefined),
+    parentConversationId: data.parentConversationId,
+    tags: Array.isArray(data.tags) ? data.tags : undefined,
+    includeArchived: Boolean(data.includeArchived),
+  });
+  return { ok: true, available: true, ...res };
+}));
+
+app.api('/api/conversations/create', handle(async (data) => {
+  const res = await convClient.createConversation({
+    title: data.title,
+    model: data.model || 'flash',
+    tags: Array.isArray(data.tags) ? data.tags : ['mp-studio'],
+    prompt: data.prompt,
+    projectId: data.projectId || app.config?.projectId || undefined,
+    environmentId: data.environmentId,
+  });
+  return { ok: true, ...res };
+}));
+
+app.api('/api/conversations/update', handle(async (data) => {
+  const res = await convClient.updateConversation({
+    conversationId: data.conversationId,
+    annotations: data.annotations,
+  });
+  return { ok: true, ...res };
+}));
 
 app.api('/api/backups', handle(() => ({ ok: true, backups: store.listBackups() })), 'GET');
 app.api('/api/backups/restore', handle((data) => store.restoreBackup(data)));

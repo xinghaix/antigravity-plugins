@@ -2,6 +2,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
 let ipcMain = null;
 let app = null;
 try {
@@ -15,7 +16,7 @@ const {
   collect,
   collectTurnState,
   collectTokenHistory,
-  collectTokenHistoryAsync,
+  getTokenHistoryResponse,
   collectSessionTimelineAsync,
   recordModelCalls,
   recordModelCallsAsync,
@@ -61,7 +62,8 @@ const {
   detectProxyConfig,
   normalizeProxyUrl,
   normalizeBypassListForCompare,
-  parseAndValidateProxyUrl
+  parseAndValidateProxyUrl,
+  redactProxyUrl
 } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
 
@@ -88,6 +90,7 @@ function resolveBootProxySnapshot() {
 }
 
 const bootProxySnapshot = resolveBootProxySnapshot();
+let languageServerProxy = null;
 const bootChineseSnapshots = new Map();
 
 /**
@@ -134,9 +137,10 @@ function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
   return {
     injectedAtStartup: Boolean(bootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
-    runtimeProxyUrl: runtimeUrl || null,
+    runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
     runtimeBypassList: typeof bootProxySnapshot.bypassList === 'string' ? bootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
+    languageServerProxy,
     chineseActive: Boolean(bootZh.enabled),
     chineseBootLanguage: bootZh.language,
     chineseNeedsRestart: diskZhActive !== Boolean(bootZh.enabled)
@@ -145,7 +149,18 @@ function buildRuntimeModulesMeta(cfg, customAsarPath = null) {
 
 function ensureProxyEnvironment(targetEnv = process.env) {
   try {
-    return applyProxyEnvironment(targetEnv, { overrideExisting: true });
+    const env = applyProxyEnvironment(targetEnv, { overrideExisting: true });
+    if (targetEnv !== process.env) {
+      const url = env.HTTPS_PROXY;
+      const httpConsistent = Boolean(url && ['HTTP_PROXY', 'http_proxy', 'https_proxy'].every(key => env[key] === url));
+      const allConsistent = Boolean(env.ALL_PROXY && env.all_proxy === env.ALL_PROXY);
+      languageServerProxy = {
+        endpoint: redactProxyUrl(url),
+        configured: httpConsistent && allConsistent && env.NODE_USE_ENV_PROXY === '1',
+        bypassConsistent: (env.NO_PROXY || '') === (env.no_proxy || '')
+      };
+    }
+    return env;
   } catch {
     return targetEnv;
   }
@@ -163,20 +178,116 @@ function buildBootBackendPayload() {
   };
 }
 
+const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
+const DIAGNOSTIC_LOG_KEEP_BYTES = 128 * 1024;
+const DIAGNOSTIC_LOG_MAX_QUEUE = 200;
+const diagnosticLogQueue = [];
+let diagnosticFlushPromise = null;
+let diagnosticDirReadyFor = null;
+const meterSourceFileCache = new Map();
+
+async function trimDiagnosticLogIfNeeded(logFile) {
+  try {
+    const st = await fs.promises.stat(logFile).catch(() => null);
+    if (!st || !st.isFile() || st.size <= DIAGNOSTIC_LOG_MAX_BYTES) return;
+    const keepBytes = Math.min(DIAGNOSTIC_LOG_KEEP_BYTES, st.size);
+    const startOffset = Math.max(0, st.size - keepBytes);
+    const handle = await fs.promises.open(logFile, 'r');
+    try {
+      const buf = Buffer.allocUnsafe(keepBytes);
+      const { bytesRead } = await handle.read(buf, 0, keepBytes, startOffset);
+      let tail = buf.subarray(0, bytesRead).toString('utf8');
+      if (startOffset > 0) {
+        const nlIdx = tail.indexOf('\n');
+        if (nlIdx >= 0 && nlIdx + 1 < tail.length) {
+          tail = tail.slice(nlIdx + 1);
+        }
+      }
+      await fs.promises.writeFile(logFile, tail, 'utf8');
+    } finally {
+      await handle.close().catch(() => { });
+    }
+  } catch { }
+}
+
+async function flushDiagnosticLogQueue() {
+  while (diagnosticLogQueue.length > 0) {
+    const first = diagnosticLogQueue[0];
+    const targetDir = first.logDir;
+    const targetFile = first.logFile;
+    let batch = '';
+    while (diagnosticLogQueue.length > 0 && diagnosticLogQueue[0].logFile === targetFile) {
+      batch += diagnosticLogQueue.shift().line;
+    }
+    try {
+      if (diagnosticDirReadyFor !== targetDir) {
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        diagnosticDirReadyFor = targetDir;
+      }
+      await fs.promises.appendFile(targetFile, batch, 'utf8');
+      await trimDiagnosticLogIfNeeded(targetFile);
+    } catch {
+      diagnosticDirReadyFor = null;
+    }
+  }
+}
+
 function logDiagnostic(stage, details = {}) {
   try {
     const logDir = getStateDir();
     const logFile = path.join(logDir, 'meter-stage-diagnostics.log');
     const time = new Date().toISOString();
     const line = `[${time}] [STAGE:${stage}] ${JSON.stringify(details)}\n`;
-    fs.appendFileSync(logFile, line, 'utf8');
+    if (diagnosticLogQueue.length >= DIAGNOSTIC_LOG_MAX_QUEUE) {
+      diagnosticLogQueue.shift();
+    }
+    diagnosticLogQueue.push({ logDir, logFile, line });
+    if (!diagnosticFlushPromise) {
+      const startFlush = () => {
+        diagnosticFlushPromise = flushDiagnosticLogQueue()
+          .catch(() => { })
+          .finally(() => {
+            diagnosticFlushPromise = null;
+            if (diagnosticLogQueue.length > 0) {
+              startFlush();
+            }
+          });
+      };
+      startFlush();
+    }
   } catch { }
+}
+
+async function flushDiagnosticLogsForTest() {
+  while (diagnosticFlushPromise || diagnosticLogQueue.length > 0) {
+    if (diagnosticFlushPromise) {
+      await diagnosticFlushPromise;
+    } else {
+      await flushDiagnosticLogQueue();
+    }
+  }
+}
+
+function readCachedSourceFile(filePath) {
+  const resolved = path.resolve(filePath);
+  const st = fs.statSync(resolved);
+  const cached = meterSourceFileCache.get(resolved);
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+    return cached.content;
+  }
+  const content = fs.readFileSync(resolved, 'utf8');
+  meterSourceFileCache.set(resolved, { size: st.size, mtimeMs: st.mtimeMs, content });
+  return content;
+}
+
+function clearMeterSourceCacheForTest() {
+  meterSourceFileCache.clear();
 }
 
 function getMeterSource() {
   try {
-    const coreCode = fs.readFileSync(path.join(__dirname, 'meter-core.js'), 'utf8');
-    const rendererCode = fs.readFileSync(path.join(__dirname, 'meter-renderer.js'), 'utf8');
+    const coreCode = readCachedSourceFile(path.join(__dirname, 'meter-core.js'));
+    const rendererCode = readCachedSourceFile(path.join(__dirname, 'meter-renderer.js'));
     let bootstrap = `window.__AGContextMeterBootBackend = ${JSON.stringify(buildBootBackendPayload())};\n`;
     try {
       const settingsSnap = getPluginSettings();
@@ -243,6 +354,8 @@ let isAppQuitting = false;
 const boundWindows = new WeakSet();
 const boundWebContents = new WeakSet();
 const injectionTimers = new WeakMap();
+const inFlightInjections = new WeakMap();
+const pendingForceInjections = new WeakMap();
 const wcProbeTimers = new WeakMap();
 
 function setAppQuitting(val = true) {
@@ -467,7 +580,60 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       };
     }
 
-    // 结果类型 3: 磁盘上原本没有该组件/资源或组件不完整，无法在客户端运行中直接热注入
+    // 首次手动启用时，由独立进程写盘。当前 Electron 窗口继续使用原运行时。
+    const installerDir = fs.existsSync(path.join(__dirname, 'package.json')) ? __dirname : getLiveRuntimeDir();
+    const installBrandSupport = moduleName === 'chinese' && extraOpts.brandTitle && extraOpts.brandTitle !== 'english';
+    if ((targetEnable || installBrandSupport) && disk.meterReady && disk.asarPath && ['proxy', 'chinese'].includes(moduleName)
+        && fs.existsSync(path.join(installerDir, 'install.js'))) {
+      const patch = { enabled: true };
+      if (moduleName === 'proxy') {
+        const proxy = validateProxyUrlInput(extraOpts.proxyUrl ?? cfg.modules.proxy.proxyUrl);
+        if (!proxy.ok) return { ok: false, status: 'invalid_config', error: proxy.error };
+        patch.proxyUrl = proxy.value;
+        if (typeof extraOpts.bypassList === 'string') patch.bypassList = extraOpts.bypassList.trim();
+      } else {
+        const { normalizeBrandTitle, normalizeClientLanguage } = require('./modules-config');
+        patch.language = normalizeClientLanguage(extraOpts.language, targetEnable);
+        patch.enabled = patch.language === 'zh-CN';
+        if (extraOpts.brandTitle !== undefined) patch.brandTitle = normalizeBrandTitle(extraOpts.brandTitle);
+      }
+      resolveBootChineseSnapshot(disk.asarPath);
+      const rt = resolveNodeRuntime();
+      const argv = [
+        ...rt.args, '-e',
+        'process.noAsar = true; const args = JSON.parse(process.env.AG_OPTIONAL_MODULE_INSTALL); require("./install").install(args).catch(e => { console.error(e.message); process.exitCode = 1; });'
+      ];
+      try {
+        await new Promise((resolve, reject) => {
+          execFile(rt.runtime, argv, {
+            cwd: installerDir,
+            env: { ...rt.env, AG_METER_STATE_DIR: getStateDir(), AG_OPTIONAL_MODULE_INSTALL: JSON.stringify({
+              path: disk.asarPath, modules: { [moduleName]: patch }, noHotInject: true
+            }) },
+            windowsHide: true,
+            timeout: 60000
+          }, (error, _stdout, stderr) => {
+            if (error) reject(new Error(String(stderr || '可选模块安装未完成').trim()));
+            else resolve();
+          });
+        });
+        const installed = inspectDiskModules(disk.asarPath, { forceRefresh: true });
+        const next = loadModulesConfig();
+        const ready = moduleName === 'proxy' ? installed.proxyReady : installed.chineseReady;
+        if (!ready) throw new Error('磁盘校验未找到可选模块');
+        return {
+          ok: true, status: 'config_toggled', data: next, disk: installed,
+          runtime: buildRuntimeModulesMeta(next, disk.asarPath), restartRequired: true,
+          message: '可选模块已安装，重启客户端后生效'
+        };
+      } catch (error) {
+        return { ok: false, status: 'install_failed', data: loadModulesConfig(),
+          disk: inspectDiskModules(disk.asarPath, { forceRefresh: true }),
+          restartRequired: false, error: error.message };
+      }
+    }
+
+    // 组件缺失且无法在本次启动中写盘时，保留原配置并显示终端入口。
     const modLabel = moduleName === 'chinese' ? '汉化' : (moduleName === 'proxy' ? '免 TUN 代理' : '核心监控');
     const partialReason = moduleName === 'chinese'
       ? (disk.chinese && !disk.chineseReady ? (disk.chineseReason || '汉化资源或门禁不完整') : '')
@@ -599,10 +765,10 @@ function registerMeterIpcHandlers(ipcMain) {
     }
   });
 
-  ipcMain.handle('context-meter:token-history', async (event, force) => {
+  ipcMain.handle('context-meter:token-history', async (event, force, knownRevision, knownAccountKey) => {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
-    try { return { ok: true, data: await collectTokenHistoryAsync({ force: force === true }) }; }
+    try { return await getTokenHistoryResponse({ force: force === true, knownRevision, knownAccountKey }); }
     catch (e) { return { ok: false, error: e.message }; }
   });
 
@@ -646,7 +812,7 @@ function registerMeterIpcHandlers(ipcMain) {
         const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
         const email = !switchInFlight
-          ? (_raw?.planStatus?.email || res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+          ? (res?.email || _raw?.planStatus?.email || res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
           : null;
         if (!switchInFlight && res?.ok && email && res?.snapshot) {
           mgr.syncActiveHostQuotaSnapshot(res, email);
@@ -767,8 +933,12 @@ function registerMeterIpcHandlers(ipcMain) {
     const url = isLocalMainFrameSender(event);
     if (!url) throw new Error('仅允许本机主聊天窗口');
     try {
-      const updateRes = await applyUpdateAsync(options || {});
-      return await tryInAppHotReloadAfterUpdate(updateRes, options || {});
+      const updateRes = await applyUpdateAsync({
+        version: typeof options?.version === 'string' ? options.version : undefined,
+        allowBetaUpdates: typeof options?.allowBetaUpdates === 'boolean' ? options.allowBetaUpdates : undefined,
+        diskOnly: true
+      });
+      return updateRes.ok ? { ...updateRes, restartRequired: true } : updateRes;
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -950,7 +1120,13 @@ function registerMeterIpcHandlers(ipcMain) {
   });
 
   ipcMain.handle('context-meter:modules-status', handleModulesStatus);
-  ipcMain.handle('context-meter:toggle-module', handleToggleModule);
+  ipcMain.handle('context-meter:toggle-module', (event, name, enable, options) =>
+    handleToggleModule(event, name, enable, {
+      language: options?.language,
+      brandTitle: options?.brandTitle,
+      proxyUrl: options?.proxyUrl,
+      bypassList: options?.bypassList
+    }));
 
   ipcMain.handle('context-meter:test-proxy', async (event, proxyUrl) => {
     const url = isLocalMainFrameSender(event);
@@ -983,7 +1159,22 @@ function registerMeterIpcHandlers(ipcMain) {
     try {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
-      return await dispatchAccountsAction(mgr, payload || {});
+      let restartClient;
+      if (payload?.action === 'switch' && process.platform === 'darwin' && /^2\.34\./.test(app?.getVersion?.() || '')
+          && typeof app?.relaunch === 'function' && typeof app?.quit === 'function') {
+        const { dialog } = require('electron');
+        const zh = /^zh/i.test(app.getLocale?.() || '');
+        const result = await dialog.showMessageBox({
+          type: 'question',
+          buttons: zh ? ['切换并重启', '取消'] : ['Switch and restart', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1,
+          message: zh ? '切换账号需要重新启动 Antigravity' : 'Restart Antigravity to switch accounts'
+        });
+        if (result.response !== 0) return { ok: false, cancelled: true };
+        restartClient = () => handleRestartHost(event);
+      }
+      return await dispatchAccountsAction(mgr, payload || {}, { restartClient });
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1131,7 +1322,7 @@ function syncWindowOverlayHeight(win) {
   } catch { }
 }
 
-async function ensureMeterInjected(win, options = {}) {
+async function runEnsureMeterInjected(win, options = {}) {
   try {
     if (!win || win.isDestroyed?.()) return false;
     const wc = getWindowWebContents(win);
@@ -1207,6 +1398,48 @@ async function ensureMeterInjected(win, options = {}) {
   }
 }
 
+async function ensureMeterInjected(win, options = {}) {
+  if (!win || win.isDestroyed?.()) return false;
+  const existing = inFlightInjections.get(win);
+  if (!existing && pendingForceInjections.has(win)) {
+    return pendingForceInjections.get(win).promise;
+  }
+  if (existing) {
+    if (options?.force === true && !existing.isForce) {
+      let pending = pendingForceInjections.get(win);
+      if (!pending) {
+        pending = { options: { ...options, attempt: 0 }, promise: null };
+        pending.promise = existing.promise.then(() => {
+          if (pendingForceInjections.get(win) === pending) {
+            pendingForceInjections.delete(win);
+          }
+          if (!win || win.isDestroyed?.()) return false;
+          return ensureMeterInjected(win, pending.options);
+        });
+        pendingForceInjections.set(win, pending);
+      } else {
+        pending.options = { ...options, attempt: 0 };
+      }
+      return pending.promise;
+    }
+    const pending = pendingForceInjections.get(win);
+    return pending ? pending.promise : existing.promise;
+  }
+
+  const isForce = options?.force === true;
+  const task = (async () => {
+    try {
+      return await runEnsureMeterInjected(win, options);
+    } finally {
+      if (inFlightInjections.get(win)?.promise === task) {
+        inFlightInjections.delete(win);
+      }
+    }
+  })();
+  inFlightInjections.set(win, { promise: task, isForce });
+  return task;
+}
+
 exports.ensureMeterInjected = ensureMeterInjected;
 
 exports.installContextMeter = function (win) {
@@ -1275,8 +1508,15 @@ exports.installContextMeter = function (win) {
       void ensureMeterInjected(win, { force: false });
     });
     wc.on('zoom-changed', () => syncWindowOverlayHeight(win));
-    wc.on('console-message', (_event, level, message, line, _sourceId) => {
-      if (message.includes('Context Meter') || message.includes('ag-context-meter') || level >= 2) {
+    wc.on('console-message', function (event) {
+      const isModernEvent = event && typeof event === 'object' && typeof event.message === 'string';
+      const level = isModernEvent ? event.level : arguments[1];
+      const message = isModernEvent ? event.message : String(arguments[2] ?? '');
+      const line = isModernEvent ? event.lineNumber : arguments[3];
+      const isWarnOrError = typeof level === 'string'
+        ? (level === 'warning' || level === 'error')
+        : Number(level) >= 2;
+      if (message.includes('Context Meter') || message.includes('ag-context-meter') || isWarnOrError) {
         logDiagnostic('renderer:console', { level, line, message: message.slice(0, 200) });
       }
     });
@@ -1747,3 +1987,7 @@ exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
 exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;
+exports.getMeterSource = getMeterSource;
+exports.clearMeterSourceCacheForTest = clearMeterSourceCacheForTest;
+exports.logDiagnostic = logDiagnostic;
+exports.flushDiagnosticLogsForTest = flushDiagnosticLogsForTest;

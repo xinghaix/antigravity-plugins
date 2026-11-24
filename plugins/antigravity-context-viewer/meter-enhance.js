@@ -14,8 +14,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile, execFileSync } = require('child_process');
+const { execFile, execFileSync, fork } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
+const { getStateDir, isIsolatedTestPath } = require('./asar-engine');
 const contextUnlock = require('./meter-context-unlock');
 const { loadModulesConfig, saveModulesConfig } = require('./modules-config');
 const {
@@ -1150,6 +1151,123 @@ async function checkLanguageServerRunningAsync(options = {}) {
   return { running, startTimeMs: earliestStartMs };
 }
 
+/**
+ * PR #43 / Issue #42：Windows 端语言服务重启必须精确匹配目标可执行文件路径 / PID。
+ * 旧实现按映像名直接 taskkill，会把用户其他安装路径（甚至其他产品）的同名进程一起杀掉。
+ */
+const WINDOWS_LS_IMAGES = ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe'];
+
+function resolveAntigravityRoots() {
+  const roots = new Set();
+  const add = (p) => {
+    if (typeof p !== 'string' || !p.trim()) return;
+    try { roots.add(path.resolve(p).toLowerCase()); } catch { }
+  };
+  add(process.env.AG_APP_DIR);
+  add(process.env.AG_HOST_DIR);
+  const localAppData = process.env.LOCALAPPDATA;
+  if (localAppData) {
+    add(path.join(localAppData, 'Programs', 'antigravity'));
+    add(path.join(localAppData, 'Programs', 'Antigravity IDE'));
+    add(path.join(localAppData, 'antigravity'));
+    add(path.join(localAppData, 'Antigravity Tools'));
+  }
+  const home = process.env.USERPROFILE || process.env.HOME;
+  if (home) {
+    add(path.join(home, '.gemini', 'antigravity'));
+    add(path.join(home, 'AppData', 'Local', 'Programs', 'antigravity'));
+  }
+  if (typeof __dirname === 'string') add(__dirname);
+  return [...roots];
+}
+
+function isPathUnderRoots(exePath, roots) {
+  if (typeof exePath !== 'string' || !exePath.trim()) return false;
+  const normalized = exePath.replace(/\//g, '\\').toLowerCase();
+  return roots.some(root => {
+    const rel = root.replace(/\//g, '\\').toLowerCase();
+    return normalized === rel || normalized.startsWith(rel.endsWith('\\') ? rel : `${rel}\\`);
+  });
+}
+
+/** 收集当前进程的所有祖先 PID，重启时绝不误杀自己所在的终端或宿主链 */
+function collectAncestorPids() {
+  const ancestors = new Set();
+  let pid = process.ppid;
+  let guard = 0;
+  while (pid && pid > 0 && guard < 8) {
+    ancestors.add(pid);
+    let next = 0;
+    try {
+      const out = execFileSync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`
+      ], { encoding: 'utf8', timeout: 4000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      next = Number(String(out || '').trim()) || 0;
+    } catch { next = 0; }
+    if (!next || ancestors.has(next)) break;
+    pid = next;
+    guard++;
+  }
+  return ancestors;
+}
+
+function queryWindowsProcessesSync(names) {
+  const filter = names.map(n => `Name='${n}'`).join(' or ');
+  const script = `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,Name,ExecutablePath | ConvertTo-Json -Compress`;
+  try {
+    const raw = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 8000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const parsed = JSON.parse(String(raw || '[]').trim() || '[]');
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.map(item => ({
+      pid: Number(item?.ProcessId) || 0,
+      name: String(item?.Name || ''),
+      exePath: String(item?.ExecutablePath || '')
+    })).filter(item => item.pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** 精确命中：映像名在白名单 + 可执行文件路径落在 Antigravity 根目录内 + 不是当前进程祖先 */
+function selectWindowsTargetProcesses(images, roots, ancestors) {
+  const wanted = new Set(images.map(i => i.toLowerCase()));
+  return queryWindowsProcessesSync(WINDOWS_LS_IMAGES.filter(n => wanted.has(n.toLowerCase())))
+    .filter(item => wanted.has(item.name.toLowerCase()))
+    .filter(item => isPathUnderRoots(item.exePath, roots))
+    .filter(item => !ancestors.has(item.pid));
+}
+
+function terminateWindowsPid(pid) {
+  try {
+    execFileSync('taskkill.exe', ['/PID', String(pid)], {
+      encoding: 'utf8',
+      timeout: 4000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    return true;
+  } catch {
+    // 优雅关闭失败再强制结束同一个 PID，绝不扩大到映像名
+    try {
+      execFileSync('taskkill.exe', ['/F', '/PID', String(pid)], {
+        encoding: 'utf8',
+        timeout: 4000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 function restartLanguageServers(options = {}) {
   const includeCli = options?.includeCli !== false;
   if (process.platform === 'darwin') {
@@ -1172,20 +1290,15 @@ function restartLanguageServers(options = {}) {
   const images = includeCli
     ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
     : ['language_server.exe', 'language_server_windows_x64.exe'];
+  const roots = resolveAntigravityRoots();
+  const ancestors = collectAncestorPids();
+  const targets = selectWindowsTargetProcesses(images, roots, ancestors);
   const killed = [];
-  for (const img of images) {
-    try {
-      execFileSync('taskkill.exe', ['/F', '/IM', img], {
-        encoding: 'utf8',
-        timeout: 4000,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore']
-      });
-      killed.push(img);
-    } catch {}
+  for (const target of targets) {
+    if (terminateWindowsPid(target.pid)) killed.push(`${target.name}#${target.pid}`);
   }
   lsProcCache = { ts: 0, running: false, startTimeMs: null };
-  return { ok: true, killed };
+  return { ok: true, killed, scannedRoots: roots.length, skippedSelfTree: ancestors.size };
 }
 
 async function restartLanguageServersAsync(options = {}) {
@@ -1210,19 +1323,34 @@ async function restartLanguageServersAsync(options = {}) {
   const images = includeCli
     ? ['language_server.exe', 'language_server_windows_x64.exe', 'agy.exe']
     : ['language_server.exe', 'language_server_windows_x64.exe'];
+  const roots = resolveAntigravityRoots();
+  const ancestors = collectAncestorPids();
+  const targets = selectWindowsTargetProcesses(images, roots, ancestors);
   const killed = [];
-  await Promise.all(images.map((img) => new Promise((resolve) => {
-    execFile('taskkill.exe', ['/F', '/IM', img], {
+  await Promise.all(targets.map((target) => new Promise((resolve) => {
+    const pid = String(target.pid);
+    execFile('taskkill.exe', ['/PID', pid], {
       encoding: 'utf8',
       timeout: 4000,
       windowsHide: true
     }, (err) => {
-      if (!err) killed.push(img);
-      resolve();
+      if (!err) {
+        killed.push(`${target.name}#${target.pid}`);
+        resolve();
+        return;
+      }
+      execFile('taskkill.exe', ['/F', '/PID', pid], {
+        encoding: 'utf8',
+        timeout: 4000,
+        windowsHide: true
+      }, (forceErr) => {
+        if (!forceErr) killed.push(`${target.name}#${target.pid}`);
+        resolve();
+      });
     });
   })));
   lsProcCache = { ts: 0, running: false, startTimeMs: null };
-  return { ok: true, killed };
+  return { ok: true, killed, scannedRoots: roots.length, skippedSelfTree: ancestors.size };
 }
 
 function getEnhanceBackupPath(targetPath, options = {}) {
@@ -1241,14 +1369,126 @@ function getEnhanceBackupPath(targetPath, options = {}) {
 // 状态查询与统一协调应用（系统提示词 + 中文标题 + 统一上下文窗口委托）
 // ============================================================================
 
+const BINARY_INSPECT_CACHE_MAX_ENTRIES = 16;
 const binaryInspectCache = new Map();
+const enhanceDiskCacheDirs = new Set();
 
-function invalidateBinaryCache(targetPath) {
+function setBoundedInspectCache(key, value) {
+  if (!key || !value) return;
+  if (binaryInspectCache.has(key)) binaryInspectCache.delete(key);
+  binaryInspectCache.set(key, value);
+  while (binaryInspectCache.size > BINARY_INSPECT_CACHE_MAX_ENTRIES) {
+    const oldest = binaryInspectCache.keys().next().value;
+    binaryInspectCache.delete(oldest);
+  }
+}
+
+function resolveEnhanceDiskCacheDir(options = {}) {
+  if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
+    return path.resolve(options.stateDir.trim());
+  }
+  if (options && typeof options.enhanceBackupDir === 'string' && options.enhanceBackupDir.trim()) {
+    return path.resolve(options.enhanceBackupDir.trim());
+  }
+  if (options && typeof options.backupDir === 'string' && options.backupDir.trim()) {
+    return path.resolve(options.backupDir.trim());
+  }
+  const inTestEnv = Boolean(
+    process.env.AG_METER_TEST_MODE === '1' ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.NODE_TEST_CONTEXT ||
+    isIsolatedTestPath(process.env.AG_METER_STATE_DIR)
+  );
+  if (inTestEnv) return null;
+  try {
+    return getStateDir();
+  } catch {
+    return null;
+  }
+}
+
+function readEnhanceDiskCacheStore(cacheDir) {
+  if (!cacheDir) return {};
+  try {
+    const p = path.join(cacheDir, '.enhance-inspect-cache-v1.json');
+    if (!fs.existsSync(p)) return {};
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object'
+      ? parsed.entries
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeEnhanceDiskCacheStore(cacheDir, entries) {
+  if (!cacheDir) return;
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    enhanceDiskCacheDirs.add(cacheDir);
+    const p = path.join(cacheDir, '.enhance-inspect-cache-v1.json');
+    const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries }, null, 2), 'utf8');
+    fs.renameSync(tmp, p);
+  } catch {}
+}
+
+function readEnhanceDiskCacheEntry(cacheKey, statSig, options = {}) {
+  const cacheDir = resolveEnhanceDiskCacheDir(options);
+  if (!cacheDir) return null;
+  const entries = readEnhanceDiskCacheStore(cacheDir);
+  const entry = entries[cacheKey];
+  if (!entry || entry.statSig !== statSig || !entry.result || entry.result.error) return null;
+  return entry.result;
+}
+
+function writeEnhanceDiskCacheEntry(cacheKey, statSig, result, options = {}) {
+  if (!cacheKey || !statSig || !result || result.error) return;
+  const cacheDir = resolveEnhanceDiskCacheDir(options);
+  if (!cacheDir) return;
+  const entries = readEnhanceDiskCacheStore(cacheDir);
+  if (Object.prototype.hasOwnProperty.call(entries, cacheKey)) {
+    delete entries[cacheKey];
+  }
+  entries[cacheKey] = { statSig, result };
+  const keys = Object.keys(entries);
+  while (keys.length > 8) {
+    const oldest = keys.shift();
+    if (oldest) delete entries[oldest];
+  }
+  writeEnhanceDiskCacheStore(cacheDir, entries);
+}
+
+function clearEnhanceDiskCacheEntry(targetPath = null, options = {}) {
+  const dirs = new Set(enhanceDiskCacheDirs);
+  const resolved = resolveEnhanceDiskCacheDir(options);
+  if (resolved) dirs.add(resolved);
+  for (const cacheDir of dirs) {
+    try {
+      const p = path.join(cacheDir, '.enhance-inspect-cache-v1.json');
+      if (!fs.existsSync(p)) continue;
+      if (!targetPath) {
+        fs.unlinkSync(p);
+        continue;
+      }
+      const cacheKey = path.resolve(String(targetPath)).toLowerCase();
+      const entries = readEnhanceDiskCacheStore(cacheDir);
+      if (Object.prototype.hasOwnProperty.call(entries, cacheKey)) {
+        delete entries[cacheKey];
+        writeEnhanceDiskCacheStore(cacheDir, entries);
+      }
+    } catch {}
+  }
+}
+
+function invalidateBinaryCache(targetPath, options = {}) {
   if (!targetPath) {
     binaryInspectCache.clear();
+    clearEnhanceDiskCacheEntry(null, options);
     return;
   }
   binaryInspectCache.delete(path.resolve(targetPath).toLowerCase());
+  clearEnhanceDiskCacheEntry(targetPath, options);
 }
 
 function yieldEventLoop() {
@@ -1314,7 +1554,7 @@ function saveSavedEnhancePreference(pref, options = {}) {
   }
 }
 
-function buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unlockSummary) {
+function buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unlockSummary, options = {}) {
   const templates = parsePeEmbedTemplates(buf);
   const promptTier = detectPromptTier(templates, buf);
   const titleInfo = inspectChineseTitleRules(buf);
@@ -1350,7 +1590,9 @@ function buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unl
     error: null
   };
   if (statSig) {
-    binaryInspectCache.set(path.resolve(target.path).toLowerCase(), { statSig, result });
+    const cacheKey = path.resolve(target.path).toLowerCase();
+    setBoundedInspectCache(cacheKey, { statSig, result });
+    writeEnhanceDiskCacheEntry(cacheKey, statSig, result, options);
   }
   return result;
 }
@@ -1417,10 +1659,17 @@ function inspectSingleBinary(target, options = {}) {
   try {
     st = fs.statSync(target.path);
     const bakMtime = fs.existsSync(bakPath) ? fs.statSync(bakPath).mtimeMs : 0;
-    statSig = `${st.size}:${st.mtimeMs}:${bakExists ? 1 : 0}:${bakMtime}`;
+    statSig = `${st.size}:${st.mtimeMs}:${st.ctimeMs ?? 0}:${st.ino ?? 0}:${bakExists ? 1 : 0}:${bakMtime}`;
     const cached = binaryInspectCache.get(cacheKey);
     if (cached && cached.statSig === statSig && options.forceRefresh !== true) {
       return { ...cached.result, id: target.id, label: target.label, path: target.path };
+    }
+    if (options.forceRefresh !== true) {
+      const diskResult = readEnhanceDiskCacheEntry(cacheKey, statSig, options);
+      if (diskResult) {
+        setBoundedInspectCache(cacheKey, { statSig, result: diskResult });
+        return { ...diskResult, id: target.id, label: target.label, path: target.path };
+      }
     }
   } catch {}
 
@@ -1442,7 +1691,7 @@ function inspectSingleBinary(target, options = {}) {
         };
       } catch {}
     }
-    return buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unlockSummary);
+    return buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unlockSummary, options);
   } catch (err) {
     return makeErrorBinaryResult(target, bakExists, err);
   }
@@ -1464,10 +1713,17 @@ async function inspectSingleBinaryAsync(target, options = {}) {
   try {
     st = await fs.promises.stat(target.path);
     const bakMtime = fs.existsSync(bakPath) ? (await fs.promises.stat(bakPath)).mtimeMs : 0;
-    statSig = `${st.size}:${st.mtimeMs}:${bakExists ? 1 : 0}:${bakMtime}`;
+    statSig = `${st.size}:${st.mtimeMs}:${st.ctimeMs ?? 0}:${st.ino ?? 0}:${bakExists ? 1 : 0}:${bakMtime}`;
     const cached = binaryInspectCache.get(cacheKey);
     if (cached && cached.statSig === statSig && options.forceRefresh !== true) {
       return { ...cached.result, id: target.id, label: target.label, path: target.path };
+    }
+    if (options.forceRefresh !== true) {
+      const diskResult = readEnhanceDiskCacheEntry(cacheKey, statSig, options);
+      if (diskResult) {
+        setBoundedInspectCache(cacheKey, { statSig, result: diskResult });
+        return { ...diskResult, id: target.id, label: target.label, path: target.path };
+      }
     }
   } catch {}
 
@@ -1476,15 +1732,32 @@ async function inspectSingleBinaryAsync(target, options = {}) {
   }
 
   if (canUseEnhanceWorker(options)) {
-    const wRes = await runEnhanceWorkerTask('inspect', {
-      target,
-      options: sanitizeEnhanceWorkerOptions(options)
-    });
+    const useSubprocess = !options._enhanceWorkerScript && options.useWorkerThread !== true;
+    const wRes = useSubprocess
+      ? await runEnhanceSubprocessInspect(target, sanitizeEnhanceWorkerOptions(options))
+      : await runEnhanceWorkerTask('inspect', {
+          target,
+          options: sanitizeEnhanceWorkerOptions(options)
+        });
     if (wRes && wRes._workerHandled && wRes.result) {
       if (wRes.result.statSig && wRes.result.inspected && !wRes.result.inspected.error) {
-        binaryInspectCache.set(cacheKey, { statSig: wRes.result.statSig, result: wRes.result.inspected });
+        setBoundedInspectCache(cacheKey, { statSig: wRes.result.statSig, result: wRes.result.inspected });
+        writeEnhanceDiskCacheEntry(cacheKey, wRes.result.statSig, wRes.result.inspected, options);
       }
       return wRes.result.inspected;
+    }
+    if (useSubprocess) {
+      const fallbackRes = await runEnhanceWorkerTask('inspect', {
+        target,
+        options: sanitizeEnhanceWorkerOptions(options)
+      });
+      if (fallbackRes && fallbackRes._workerHandled && fallbackRes.result) {
+        if (fallbackRes.result.statSig && fallbackRes.result.inspected && !fallbackRes.result.inspected.error) {
+          setBoundedInspectCache(cacheKey, { statSig: fallbackRes.result.statSig, result: fallbackRes.result.inspected });
+          writeEnhanceDiskCacheEntry(cacheKey, fallbackRes.result.statSig, fallbackRes.result.inspected, options);
+        }
+        return fallbackRes.result.inspected;
+      }
     }
   }
 
@@ -1510,7 +1783,7 @@ async function inspectSingleBinaryAsync(target, options = {}) {
       } catch {}
     }
     await yieldEventLoop();
-    return buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unlockSummary);
+    return buildInspectedResultFromBuffer(target, buf, st, bakExists, statSig, unlockSummary, options);
   } catch (err) {
     return makeErrorBinaryResult(target, bakExists, err);
   }
@@ -2603,6 +2876,89 @@ if (!isMainThread && workerData && workerData.agEnhanceWorker && parentPort) {
         }
       }
     }
+  });
+}
+
+async function runEnhanceSubprocessInspect(target, safeOptions = {}) {
+  try {
+    const child = fork(__filename, ['--ag-enhance-child'], {
+      execArgv: [],
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        ...captureEnhanceEnvSnapshot()
+      },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+    });
+    return await new Promise((resolve) => {
+      let settled = false;
+      const done = (val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(val);
+      };
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        done(null);
+      }, 30000);
+      if (typeof timer.unref === 'function') timer.unref();
+      child.on('message', (msg) => {
+        if (!msg || msg.id !== 1) return;
+        if (msg.ok) done({ _workerHandled: true, result: msg.result });
+        else done({ _workerHandled: true, result: { ok: false, error: msg.error || 'Subprocess inspect 失败' } });
+      });
+      child.on('error', () => done(null));
+      child.on('exit', () => done(null));
+      try {
+        child.send({
+          id: 1,
+          cmd: 'inspect',
+          payload: { target, options: safeOptions }
+        });
+      } catch {
+        try { child.kill('SIGKILL'); } catch {}
+        done(null);
+      }
+    });
+  } catch {
+    return null;
+  }
+}
+
+if (require.main === module && process.argv.includes('--ag-enhance-child')) {
+  process.once('message', async (msg) => {
+    const { id, payload } = msg || {};
+    try {
+      const target = payload?.target;
+      const opts = { ...(payload?.options || {}), _inWorker: true };
+      const bakPath = getEnhanceBackupPath(target.path, opts);
+      const bakExists = fs.existsSync(bakPath) || fs.existsSync(`${target.path}.bak`);
+      let st = null;
+      let statSig = null;
+      try {
+        st = await fs.promises.stat(target.path);
+        const bakMtime = fs.existsSync(bakPath) ? (await fs.promises.stat(bakPath)).mtimeMs : 0;
+        statSig = `${st.size}:${st.mtimeMs}:${st.ctimeMs ?? 0}:${st.ino ?? 0}:${bakExists ? 1 : 0}:${bakMtime}`;
+      } catch {}
+      const inspected = await inspectSingleBinaryAsync(target, opts);
+      await new Promise((resolve) => {
+        if (typeof process.send === 'function') {
+          process.send({ id, ok: true, result: { statSig, inspected } }, undefined, undefined, () => resolve());
+        } else {
+          resolve();
+        }
+      });
+    } catch (err) {
+      await new Promise((resolve) => {
+        if (typeof process.send === 'function') {
+          process.send({ id, ok: false, error: err && err.message ? err.message : String(err) }, undefined, undefined, () => resolve());
+        } else {
+          resolve();
+        }
+      });
+    }
+    process.exit(0);
   });
 }
 

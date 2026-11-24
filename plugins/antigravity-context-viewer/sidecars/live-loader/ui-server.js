@@ -42,9 +42,9 @@ async function loadSidecarSdk() {
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '0.9.0-2';
+    return pkg.version || '0.9.2-1';
   } catch {
-    return '0.9.0-2';
+    return '0.9.2-1';
   }
 }
 
@@ -127,9 +127,25 @@ function sanitizeSettingsPayload(settings) {
     panelLanguage: settings.panelLanguage || 'zh-CN',
     showCliButton: settings.showCliButton === true,
     sidecarChinese: settings.sidecarChinese !== false,
+    showComposerQuotaSummary: settings.showComposerQuotaSummary === true,
+    showTurnFooterStats: settings.showTurnFooterStats === true,
+    topbarMode: settings.topbarMode || 'full',
+    panelDockMode: settings.panelDockMode || 'popover',
     contextScopeMode: settings.contextScopeMode || 'unified',
     contextUnifiedPreference: settings.contextUnifiedPreference || { mode: 'default', limitTokens: null },
     updatedAt: settings.updatedAt || ''
+  };
+}
+
+function sanitizeAutostartPayload(status) {
+  if (!status || typeof status !== 'object') return null;
+  return {
+    supported: status.supported !== false,
+    enabled: Boolean(status.enabled),
+    platform: status.platform || process.platform,
+    kind: status.kind || null,
+    method: status.method || status.kind || null,
+    reason: status.reason || null
   };
 }
 
@@ -156,13 +172,18 @@ function createDefaultDeps() {
   const sidecarLive = require(path.join(PLUGIN_ROOT, 'sidecar-live'));
   const asarEngine = require(path.join(PLUGIN_ROOT, 'asar-engine'));
   const liveHost = require(path.join(PLUGIN_ROOT, 'live-host'));
+  let autostart = null;
+  try {
+    autostart = require(path.join(PLUGIN_ROOT, 'autostart'));
+  } catch { }
   return {
     localApi,
     collector,
     cli,
     sidecarLive,
     asarEngine,
-    liveHost
+    liveHost,
+    autostart
   };
 }
 
@@ -209,7 +230,11 @@ function createUiHandlers(options = {}) {
     }
 
     try {
-      const api = await deps.localApi.connect(options.agDir ? { agDir: options.agDir } : undefined);
+      const connectOpts = {
+        ...(options.agDir ? { agDir: options.agDir } : {}),
+        ...(!liveWindow?.cdpEnabled ? { preferEnvLs: true } : {})
+      };
+      const api = await deps.localApi.connect(connectOpts);
       const connectedOrigin = normalize(api?.origin);
       const origins = Array.isArray(api?.origins) && api.origins.length
         ? api.origins
@@ -400,6 +425,15 @@ function createUiHandlers(options = {}) {
       errors.sidecar = err?.message || String(err);
     }
 
+    let autostart = null;
+    try {
+      autostart = deps.autostart?.getAutostartStatus
+        ? sanitizeAutostartPayload(deps.autostart.getAutostartStatus())
+        : null;
+    } catch (err) {
+      errors.autostart = err?.message || String(err);
+    }
+
     const installMarker = readInstallMarker();
 
     return {
@@ -416,6 +450,7 @@ function createUiHandlers(options = {}) {
       unlock,
       settings,
       sidecar,
+      autostart,
       errors
     };
   }
@@ -438,6 +473,8 @@ function createUiHandlers(options = {}) {
     const patch = {};
     if (typeof data.sidecarChinese === 'boolean') patch.sidecarChinese = data.sidecarChinese;
     if (typeof data.showCliButton === 'boolean') patch.showCliButton = data.showCliButton;
+    if (typeof data.showComposerQuotaSummary === 'boolean') patch.showComposerQuotaSummary = data.showComposerQuotaSummary;
+    if (typeof data.showTurnFooterStats === 'boolean') patch.showTurnFooterStats = data.showTurnFooterStats;
     if (typeof data.panelLanguage === 'string' && ['zh-CN', 'zh-TW', 'en'].includes(data.panelLanguage)) {
       patch.panelLanguage = data.panelLanguage;
     }

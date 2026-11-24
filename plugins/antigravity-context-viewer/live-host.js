@@ -8,7 +8,7 @@ const { connect, normalizeLoopbackOrigin, getAppDataDir } = require('./local-api
 const {
   collect,
   collectTurnState,
-  collectTokenHistoryAsync,
+  getTokenHistoryResponse,
   collectSessionTimelineAsync,
   fetchQuotaSnapshotFromHost,
   checkUpdateAsync,
@@ -22,7 +22,7 @@ const {
   restoreContextUnlockAsync,
   syncPricingCatalogAsync
 } = require('./meter-collector');
-const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl } = require('./meter-proxy');
+const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl, redactProxyUrl } = require('./meter-proxy');
 const { getStateDir } = require('./asar-engine');
 const { PROJECT_VERSION, getHostCoreBuildId } = require('./modules-config');
 
@@ -97,7 +97,7 @@ function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
   return {
     injectedAtStartup: Boolean(liveBootProxySnapshot.injectedAtStartup),
     proxyActive: runtimeEnabled,
-    runtimeProxyUrl: runtimeUrl || null,
+    runtimeProxyUrl: redactProxyUrl(runtimeUrl) || null,
     runtimeBypassList: typeof liveBootProxySnapshot.bypassList === 'string' ? liveBootProxySnapshot.bypassList : null,
     proxyNeedsRestart,
     chineseActive: Boolean(bootZh.enabled),
@@ -652,9 +652,9 @@ function createLiveRequestHandler(arg1, arg2) {
           return;
         }
         if (req.url === '/token-history') {
-          const data = await collectTokenHistoryAsync({ force: request.force === true });
+          const result = await getTokenHistoryResponse({ force: request.force === true, knownRevision: request.knownRevision, knownAccountKey: request.knownAccountKey });
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ ok: true, data }));
+          res.end(JSON.stringify(result));
           return;
         }
         if (req.url === '/session-timeline') {
@@ -696,8 +696,11 @@ function createLiveRequestHandler(arg1, arg2) {
           try {
             const { getSharedAccountsManager } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
-            const email = resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null;
-            if (email && resData?.snapshot) {
+            const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
+            const email = !switchInFlight
+              ? (resData?.email || _raw?.planStatus?.email || resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+              : null;
+            if (!switchInFlight && email && resData?.snapshot) {
               mgr.syncActiveHostQuotaSnapshot(resData, email);
               const ov = mgr.getOverviewState();
               if (ov.autoSwitch?.enabled && !resData.error) {

@@ -19,9 +19,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile, execFileSync } = require('child_process');
+const { execFile, execFileSync, fork } = require('child_process');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, isIsolatedTestPath } = require('./asar-engine');
 const {
   isMachO64Buffer,
   parseMachO64,
@@ -1686,8 +1686,138 @@ function resolveBinaryModeLabel(funcs, targetPath) {
   return (isServerOnly && !isAgyCliName) ? 'standalone language_server' : 'agy CLI';
 }
 
+const UNLOCK_STATIC_CACHE_MAX_ENTRIES = 8;
 const unlockStaticCache = new Map();
 const unlockTargetWriteQueues = new Map();
+const unlockDiskCacheDirs = new Set();
+
+function setBoundedUnlockCache(key, value) {
+  if (!key || !value) return;
+  if (unlockStaticCache.has(key)) unlockStaticCache.delete(key);
+  unlockStaticCache.set(key, value);
+  while (unlockStaticCache.size > UNLOCK_STATIC_CACHE_MAX_ENTRIES) {
+    const oldest = unlockStaticCache.keys().next().value;
+    unlockStaticCache.delete(oldest);
+  }
+}
+
+function serializeUnlockStaticInfo(info) {
+  if (!info || typeof info !== 'object') return null;
+  return JSON.parse(JSON.stringify(info, (_, v) => (typeof v === 'bigint' ? { __agBigInt: v.toString() } : v)));
+}
+
+function deserializeUnlockStaticInfo(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const revive = (v) => {
+    if (Array.isArray(v)) return v.map(revive);
+    if (v && typeof v === 'object') {
+      if (Object.keys(v).length === 1 && typeof v.__agBigInt === 'string' && /^-?\d+$/.test(v.__agBigInt)) {
+        try { return BigInt(v.__agBigInt); } catch { return v; }
+      }
+      const out = {};
+      for (const [k, val] of Object.entries(v)) out[k] = revive(val);
+      return out;
+    }
+    return v;
+  };
+  return revive(raw);
+}
+
+function resolveUnlockDiskCacheDir(options = {}) {
+  if (options && typeof options.stateDir === 'string' && options.stateDir.trim()) {
+    return path.resolve(options.stateDir.trim());
+  }
+  if (options && typeof options.backupDir === 'string' && options.backupDir.trim()) {
+    return path.resolve(options.backupDir.trim());
+  }
+  const inTestEnv = Boolean(
+    process.env.AG_METER_TEST_MODE === '1' ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.NODE_TEST_CONTEXT ||
+    isIsolatedTestPath(process.env.AG_METER_STATE_DIR)
+  );
+  if (inTestEnv) return null;
+  try {
+    return getStateDir();
+  } catch {
+    return null;
+  }
+}
+
+function readUnlockDiskCacheStore(cacheDir) {
+  if (!cacheDir) return {};
+  try {
+    const p = path.join(cacheDir, '.unlock-inspect-cache-v1.json');
+    if (!fs.existsSync(p)) return {};
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object'
+      ? parsed.entries
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUnlockDiskCacheStore(cacheDir, entries) {
+  if (!cacheDir) return;
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    unlockDiskCacheDirs.add(cacheDir);
+    const p = path.join(cacheDir, '.unlock-inspect-cache-v1.json');
+    const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries }, null, 2), 'utf8');
+    fs.renameSync(tmp, p);
+  } catch {}
+}
+
+function readUnlockDiskCacheEntry(cacheKey, statSig, expectedLimitKey, options = {}) {
+  const cacheDir = resolveUnlockDiskCacheDir(options);
+  if (!cacheDir) return null;
+  const entries = readUnlockDiskCacheStore(cacheDir);
+  const raw = entries[cacheKey];
+  if (!raw || raw.statSig !== statSig || raw.expectedLimitKey !== expectedLimitKey) return null;
+  if (options.skipSha256 !== true && !raw.currentSha256) return null;
+  return deserializeUnlockStaticInfo(raw);
+}
+
+function writeUnlockDiskCacheEntry(cacheKey, staticInfo, options = {}) {
+  if (!cacheKey || !staticInfo) return;
+  const cacheDir = resolveUnlockDiskCacheDir(options);
+  if (!cacheDir) return;
+  const entries = readUnlockDiskCacheStore(cacheDir);
+  if (Object.prototype.hasOwnProperty.call(entries, cacheKey)) {
+    delete entries[cacheKey];
+  }
+  entries[cacheKey] = serializeUnlockStaticInfo(staticInfo);
+  const keys = Object.keys(entries);
+  while (keys.length > UNLOCK_STATIC_CACHE_MAX_ENTRIES) {
+    const oldest = keys.shift();
+    if (oldest) delete entries[oldest];
+  }
+  writeUnlockDiskCacheStore(cacheDir, entries);
+}
+
+function clearUnlockDiskCacheEntry(targetPath = null, options = {}) {
+  const dirs = new Set(unlockDiskCacheDirs);
+  const resolved = resolveUnlockDiskCacheDir(options);
+  if (resolved) dirs.add(resolved);
+  for (const cacheDir of dirs) {
+    try {
+      const p = path.join(cacheDir, '.unlock-inspect-cache-v1.json');
+      if (!fs.existsSync(p)) continue;
+      if (!targetPath) {
+        fs.unlinkSync(p);
+        continue;
+      }
+      const cacheKey = path.resolve(String(targetPath)).toLowerCase();
+      const entries = readUnlockDiskCacheStore(cacheDir);
+      if (Object.prototype.hasOwnProperty.call(entries, cacheKey)) {
+        delete entries[cacheKey];
+        writeUnlockDiskCacheStore(cacheDir, entries);
+      }
+    } catch {}
+  }
+}
 
 function yieldEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -1705,12 +1835,14 @@ async function sha256BufferAsync(buf) {
   return hash.digest('hex');
 }
 
-function invalidateUnlockCache(targetPath = null) {
+function invalidateUnlockCache(targetPath = null, options = {}) {
   if (!targetPath) {
     unlockStaticCache.clear();
+    clearUnlockDiskCacheEntry(null, options);
     return;
   }
   unlockStaticCache.delete(path.resolve(String(targetPath)).toLowerCase());
+  clearUnlockDiskCacheEntry(targetPath, options);
 }
 
 function enqueueUnlockTargetWrite(targetPath, taskFn) {
@@ -1777,7 +1909,7 @@ async function analyzeBinaryAsync(filePath, options = {}) {
   }
 
   const cacheKey = path.resolve(target).toLowerCase();
-  const statSig = `${stats.size}:${stats.mtimeMs}`;
+  const statSig = `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs ?? 0}:${stats.ino ?? 0}`;
   const expectedLimitKey = options.expectedLimit ?? '';
   const allowCache = options.forceRefresh !== true && !options.preloadedBuf;
   let staticInfo = null;
@@ -1791,17 +1923,46 @@ async function analyzeBinaryAsync(filePath, options = {}) {
       (options.skipSha256 === true || cached.currentSha256)
     ) {
       staticInfo = cached;
+    } else if (!options.expectedLimit) {
+      const diskCached = readUnlockDiskCacheEntry(cacheKey, statSig, expectedLimitKey, options);
+      if (diskCached) {
+        staticInfo = diskCached;
+        setBoundedUnlockCache(cacheKey, diskCached);
+      }
     }
   }
 
   if (!staticInfo) {
     if (canUseUnlockWorker(options) && !options.preloadedBuf) {
-      const workerRes = await runUnlockWorkerTask('analyze', {
-        filePath: target,
-        options: sanitizeUnlockWorkerOptions(options)
-      });
+      const useSubprocess = !options._unlockWorkerScript && options.useWorkerThread !== true;
+      const workerRes = useSubprocess
+        ? await runUnlockSubprocessAnalyze(target, options)
+        : await runUnlockWorkerTask('analyze', {
+            filePath: target,
+            options: sanitizeUnlockWorkerOptions(options)
+          });
       if (workerRes && workerRes._workerHandled) {
+        if (workerRes.staticInfo && !options.expectedLimit) {
+          const revived = deserializeUnlockStaticInfo(workerRes.staticInfo);
+          if (revived) {
+            setBoundedUnlockCache(cacheKey, revived);
+            writeUnlockDiskCacheEntry(cacheKey, revived, options);
+          }
+        }
         return workerRes.result;
+      }
+      if (useSubprocess) {
+        const fallbackRes = await runUnlockWorkerTask('analyze', {
+          filePath: target,
+          options: sanitizeUnlockWorkerOptions(options)
+        });
+        if (fallbackRes && fallbackRes._workerHandled) {
+          if (fallbackRes.staticInfo && !options.expectedLimit) {
+            setBoundedUnlockCache(cacheKey, fallbackRes.staticInfo);
+            writeUnlockDiskCacheEntry(cacheKey, fallbackRes.staticInfo, options);
+          }
+          return fallbackRes.result;
+        }
       }
     }
     let buf = options.preloadedBuf || null;
@@ -1898,7 +2059,8 @@ async function analyzeBinaryAsync(filePath, options = {}) {
       serializerGate
     };
     if (!options.expectedLimit) {
-      unlockStaticCache.set(cacheKey, staticInfo);
+      setBoundedUnlockCache(cacheKey, staticInfo);
+      writeUnlockDiskCacheEntry(cacheKey, staticInfo, options);
     }
   }
 
@@ -3297,6 +3459,59 @@ async function runUnlockWorkerTask(cmd, payload, workerOpts = {}) {
   }
 }
 
+async function runUnlockSubprocessAnalyze(filePath, options = {}) {
+  try {
+    const timeoutMs = (Number.isFinite(options.workerTimeoutMs) && options.workerTimeoutMs > 0)
+      ? options.workerTimeoutMs
+      : UNLOCK_WORKER_TIMEOUT_MS;
+    const child = fork(__filename, ['--ag-unlock-child'], {
+      execArgv: [],
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        ...captureEnvSnapshot()
+      },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+    });
+    return await new Promise((resolve) => {
+      let settled = false;
+      const done = (val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(val);
+      };
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        done(null);
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      child.on('message', (msg) => {
+        if (!msg || msg.id !== 1) return;
+        if (msg.ok) {
+          done({ _workerHandled: true, result: msg.result, staticInfo: msg.staticInfo || null });
+        } else {
+          done(null);
+        }
+      });
+      child.on('error', () => done(null));
+      child.on('exit', () => done(null));
+      try {
+        child.send({
+          id: 1,
+          cmd: 'analyze',
+          payload: { filePath, options: sanitizeUnlockWorkerOptions(options) }
+        });
+      } catch {
+        try { child.kill('SIGKILL'); } catch {}
+        done(null);
+      }
+    });
+  } catch {
+    return null;
+  }
+}
+
 if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
   parentPort.on('message', async (msg) => {
     const { id, cmd, payload, env } = msg || {};
@@ -3310,8 +3525,12 @@ if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
     }
     try {
       let result = null;
+      let staticInfo = null;
       if (cmd === 'analyze') {
         result = await analyzeBinaryAsync(payload.filePath, { ...(payload.options || {}), _inWorker: true });
+        if (payload.filePath && !payload.options?.expectedLimit) {
+          staticInfo = unlockStaticCache.get(path.resolve(String(payload.filePath)).toLowerCase()) || null;
+        }
       } else if (cmd === 'apply') {
         result = await applyUnlockAsync({ ...(payload.options || {}), _inWorker: true });
       } else if (cmd === 'restore') {
@@ -3319,7 +3538,7 @@ if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
       } else {
         throw new Error(`Unknown unlock worker command: ${cmd}`);
       }
-      parentPort.postMessage({ id, ok: true, result });
+      parentPort.postMessage({ id, ok: true, result, staticInfo });
     } catch (err) {
       parentPort.postMessage({ id, ok: false, error: err && err.message ? err.message : String(err) });
     } finally {
@@ -3330,6 +3549,37 @@ if (!isMainThread && workerData && workerData.agUnlockWorker && parentPort) {
         }
       }
     }
+  });
+}
+
+if (require.main === module && process.argv.includes('--ag-unlock-child')) {
+  process.once('message', async (msg) => {
+    const { id, payload } = msg || {};
+    try {
+      const opts = { ...(payload?.options || {}), _inWorker: true };
+      const result = await analyzeBinaryAsync(payload?.filePath, opts);
+      let staticInfo = null;
+      if (payload?.filePath && !opts.expectedLimit) {
+        const cached = unlockStaticCache.get(path.resolve(String(payload.filePath)).toLowerCase()) || null;
+        if (cached) staticInfo = serializeUnlockStaticInfo(cached);
+      }
+      await new Promise((resolve) => {
+        if (typeof process.send === 'function') {
+          process.send({ id, ok: true, result, staticInfo }, undefined, undefined, () => resolve());
+        } else {
+          resolve();
+        }
+      });
+    } catch (err) {
+      await new Promise((resolve) => {
+        if (typeof process.send === 'function') {
+          process.send({ id, ok: false, error: err && err.message ? err.message : String(err) }, undefined, undefined, () => resolve());
+        } else {
+          resolve();
+        }
+      });
+    }
+    process.exit(0);
   });
 }
 

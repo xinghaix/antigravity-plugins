@@ -62,6 +62,13 @@ const testFiles = [
   'meter-elv98-99.test.js',
   'meter-elv103-mixed-session.test.js',
   'meter-first-install-recovery.test.js',
+  'meter-v090-cockpit-subscription.test.js',
+  'meter-v090-decoupled-dock.test.js',
+  'autostart.test.js',
+  'meter-v091-appearance-prefs.test.js',
+  'meter-v091-dashboard-gesture.test.js',
+  'meter-v091-skyline-layout.test.js',
+  'meter-v091-gap-closure.test.js',
   'sidecar-live.test.js',
 ];
 

@@ -618,3 +618,205 @@ test('Issue #80: macOS ElectronAsarIntegrity 与签名预检及 install 完整�
   assert.equal(infoUnknown.patchRisk, 'unknown_signature');
   assert.equal(infoUnknown.recommendedEntry, 'node cli.js watch');
 });
+
+// ============================================================================
+// 5. Antigravity 2.35.0: ANTIGRAVITY_LS_ADDRESS 直连快路径 + 磁盘静态缓存与隔离
+// ============================================================================
+
+test('2.35.0 local-api 支持 ANTIGRAVITY_LS_ADDRESS / ANTIGRAVITY_CSRF_TOKEN 严格回环直连与测试隔离', async (t) => {
+  // 5.1 normalizeEnvLsOrigin 只接受合法回环地址
+  assert.equal(localApi.normalizeEnvLsOrigin('localhost:56266'), 'http://127.0.0.1:56266');
+  assert.equal(localApi.normalizeEnvLsOrigin('127.0.0.1:56266'), 'http://127.0.0.1:56266');
+  assert.equal(localApi.normalizeEnvLsOrigin('[::1]:56266'), 'http://127.0.0.1:56266');
+  assert.equal(localApi.normalizeEnvLsOrigin('https://localhost:56265'), 'https://127.0.0.1:56265');
+  assert.equal(localApi.normalizeEnvLsOrigin('192.168.1.10:56266'), null);
+  assert.equal(localApi.normalizeEnvLsOrigin('https://evil.example:443'), null);
+  assert.equal(localApi.normalizeEnvLsOrigin('not-a-host'), null);
+
+  // 5.2 在 NODE_TEST_CONTEXT 下未显式传入 options.env / allowEnvLsFallback 时必须返回 null 防止宿主机环境泄漏
+  assert.equal(localApi.resolveEnvLsAuth(), null);
+  assert.equal(localApi.resolveEnvLsAuth({
+    env: { ANTIGRAVITY_LS_ADDRESS: 'localhost:56266', ANTIGRAVITY_CSRF_TOKEN: 'env-tok-1' }
+  })?.origin, 'http://127.0.0.1:56266');
+  assert.equal(localApi.resolveEnvLsAuthForOrigin('http://127.0.0.1:56266', {
+    env: { ANTIGRAVITY_LS_ADDRESS: 'localhost:56266', ANTIGRAVITY_CSRF_TOKEN: 'env-tok-1' }
+  }), 'env-tok-1');
+  assert.equal(localApi.resolveEnvLsAuthForOrigin('http://127.0.0.1:59999', {
+    env: { ANTIGRAVITY_LS_ADDRESS: 'localhost:56266', ANTIGRAVITY_CSRF_TOKEN: 'env-tok-1' }
+  }), null, '不同端口严格禁止返回 ANTIGRAVITY_CSRF_TOKEN');
+
+  // 5.3 通过 preferEnvLs + env 绕过 CDP 直接连接本地 mock HTTP Language Server
+  const server = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<script>window.__APP_CONFIG__ = {"productName":"antigravity","csrfToken":""};</script>');
+      return;
+    }
+    if (req.url.endsWith('/GetUserStatus')) {
+      assert.equal(req.headers['x-codeium-csrf-token'], 'ls-env-secret-235');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, lsVersion: '2.35.0' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => server.close(r)));
+  const port = server.address().port;
+
+  const conn = await localApi.connect({
+    preferEnvLs: true,
+    allowDaemonFallback: false,
+    authBootstrap: null,
+    env: {
+      ANTIGRAVITY_LS_ADDRESS: `localhost:${port}`,
+      ANTIGRAVITY_CSRF_TOKEN: 'ls-env-secret-235'
+    }
+  });
+  assert.equal(conn.origin, `http://127.0.0.1:${port}`);
+  const rpcOut = await conn.call('GetUserStatus', {});
+  assert.equal(rpcOut.ok, true);
+  assert.equal(rpcOut.lsVersion, '2.35.0');
+});
+
+test('2.35.0 unlock/enhance 磁盘静态缓存命中与失效控制，且兼容 PE BigInt textVA 序列化', async (t) => {
+  const unlockMod = require('./meter-context-unlock');
+  const enhanceMod = require('./meter-enhance');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-disk-cache-'));
+  const stateDir = path.join(tmpDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  // 构造最小合法 Mach-O 64-bit 二进制测试容器并验证磁盘缓存写入/读取/失效
+  const fakeBin = path.join(tmpDir, 'fake_language_server');
+  fs.writeFileSync(fakeBin, Buffer.alloc(128, 0));
+
+  // 对不支持/小文件返回 unsupported（无 error 异常），不写入无效缓存
+  const unsup = await unlockMod.analyzeBinaryAsync(fakeBin, { stateDir, skipSha256: true, skipProcessCheck: true });
+  assert.equal(unsup.status, 'unsupported');
+
+  // 使用最小合法 PE32+ Go embed.FS 模板容器验证磁盘缓存写入、缓存命中与 invalidateBinaryCache 清理
+  const buildMinimalEnhancePe = () => {
+    const enhanceTestMod = require('./meter-enhance');
+    const imageBase = 0x140000000n;
+    const rdataRva = 0x1000;
+    const rdataPtr = 0x400;
+    const totalSize = 0x4000;
+    const buf = Buffer.alloc(totalSize, 0);
+    buf.write('MZ', 0, 'ascii');
+    buf.writeUInt32LE(0x80, 0x3c);
+    buf.write('PE\0\0', 0x80, 'ascii');
+    buf.writeUInt16LE(0x8664, 0x84);
+    buf.writeUInt16LE(1, 0x86);
+    buf.writeUInt32LE(0x69100000, 0x88);
+    buf.writeUInt16LE(0xf0, 0x94);
+    const opt = 0x98;
+    buf.writeUInt16LE(0x020b, opt);
+    buf.writeBigUInt64LE(imageBase, opt + 24);
+    buf.writeUInt32LE(totalSize, opt + 56);
+    const secOff = opt + 0xf0;
+    buf.write('.rdata\0\0', secOff, 'ascii');
+    buf.writeUInt32LE(totalSize - rdataPtr, secOff + 8);
+    buf.writeUInt32LE(rdataRva, secOff + 12);
+    buf.writeUInt32LE(totalSize - rdataPtr, secOff + 16);
+    buf.writeUInt32LE(rdataPtr, secOff + 20);
+    const fileOffToVa = (off) => imageBase + BigInt(rdataRva + (off - rdataPtr));
+    const fullName = 'google3/third_party/jetski/prompt/template_provider/templates/system_prompts/identity.tmpl';
+    const content = 'You are Antigravity, an agentic AI coding assistant.\n';
+    buf.write(fullName, 0x500, 'utf8');
+    buf.write(content, 0x600, 'utf8');
+    const tableBase = 0x1000;
+    buf.writeBigUInt64LE(fileOffToVa(0x500), tableBase);
+    buf.writeBigUInt64LE(BigInt(Buffer.byteLength(fullName, 'utf8')), tableBase + 8);
+    buf.writeBigUInt64LE(fileOffToVa(0x600), tableBase + 16);
+    buf.writeBigUInt64LE(BigInt(Buffer.byteLength(content, 'utf8')), tableBase + 24);
+    let tc = 0x2000;
+    for (const r of enhanceTestMod.CHINESE_TITLE_RULES) {
+      buf.write(r.oldText, tc, 'ascii');
+      tc += Buffer.byteLength(r.oldText, 'ascii') + 16;
+    }
+    return buf;
+  };
+  const mockEnhanceBin = path.join(tmpDir, 'mock_enhance_ls.exe');
+  fs.writeFileSync(mockEnhanceBin, buildMinimalEnhancePe());
+  const enhanceTarget = { id: 'custom', label: 'MockBin', path: mockEnhanceBin };
+  const res1 = await enhanceMod.getEnhanceStatusAsync({
+    targets: [enhanceTarget],
+    stateDir,
+    backupDir: path.join(tmpDir, 'enh-bak'),
+    skipProcessCheck: true
+  });
+  assert.equal(res1.binaries[0].exists, true);
+  assert.equal(res1.binaries[0].error, null);
+  assert.equal(res1.binaries[0].slotCount, 1);
+  const diskCacheFile = path.join(stateDir, '.enhance-inspect-cache-v1.json');
+  assert.equal(fs.existsSync(diskCacheFile), true, '第一次扫描后应写入 .enhance-inspect-cache-v1.json');
+
+  // invalidateBinaryCache 应同步清除磁盘缓存，二次扫描应重建并命中
+  enhanceMod.invalidateBinaryCache(mockEnhanceBin, { stateDir });
+  const clearedJson = JSON.parse(fs.readFileSync(diskCacheFile, 'utf8'));
+  assert.equal(clearedJson.entries[path.resolve(mockEnhanceBin).toLowerCase()], undefined);
+  const res2 = await enhanceMod.getEnhanceStatusAsync({
+    targets: [enhanceTarget],
+    stateDir,
+    backupDir: path.join(tmpDir, 'enh-bak'),
+    skipProcessCheck: true
+  });
+  assert.equal(res2.binaries[0].slotCount, 1);
+  const res3 = await enhanceMod.getEnhanceStatusAsync({
+    targets: [enhanceTarget],
+    stateDir,
+    backupDir: path.join(tmpDir, 'enh-bak'),
+    skipProcessCheck: true,
+    useMainThread: true
+  });
+  assert.equal(res3.binaries[0].slotCount, res2.binaries[0].slotCount);
+
+  // 验证 PE BigInt textVA 通过 unlock 磁盘缓存往返不丢失类型
+  // 构造一个极简含 valid MZ/PE64 + .text 的文件仅测试 serialize/deserialize via unlock cache 写入
+  const cacheJsonPath = path.join(stateDir, '.unlock-inspect-cache-v1.json');
+  const st = fs.statSync(fakeBin);
+  const statSig = `${st.size}:${st.mtimeMs}:${st.ctimeMs ?? 0}:${st.ino ?? 0}`;
+  const cacheKey = path.resolve(fakeBin).toLowerCase();
+  fs.writeFileSync(cacheJsonPath, JSON.stringify({
+    version: 1,
+    entries: {
+      [cacheKey]: {
+        statSig,
+        expectedLimitKey: '',
+        container: { textVA: { __agBigInt: '5368713216' }, textOff: 1024, arch: 'x86-64', format: 'PE', peTimeDateStamp: 1, peSizeOfImage: 2, buildId: '1_2_400' },
+        currentSha256: 'abc',
+        totalSymbols: 10,
+        mode: 'standalone language_server',
+        gate3a: { status: 'unpatched', mode: 'default', limit: 256000, hasDefaultSite: false },
+        gate3b: { status: 'unpatched', offset: 1200, length: 4 },
+        serializerGate: { present: false, status: 'absent', offset: null, limit: null }
+      }
+    }
+  }), 'utf8');
+  unlockMod.invalidateUnlockCache(fakeBin, { stateDir }); // 先确认 invalidateUnlockCache 会删掉磁盘缓存
+  assert.equal(JSON.parse(fs.readFileSync(cacheJsonPath, 'utf8')).entries[cacheKey], undefined);
+
+  // 重新写入后不清，验证 analyzeBinaryAsync 直接从磁盘命中返回状态且不报错
+  fs.writeFileSync(cacheJsonPath, JSON.stringify({
+    version: 1,
+    entries: {
+      [cacheKey]: {
+        statSig,
+        expectedLimitKey: '',
+        container: { textVA: { __agBigInt: '5368713216' }, textOff: 1024, arch: 'x86-64', format: 'PE', peTimeDateStamp: 1, peSizeOfImage: 2, buildId: '1_2_400' },
+        currentSha256: 'abc',
+        totalSymbols: 10,
+        mode: 'standalone language_server',
+        gate3a: { status: 'unpatched', mode: 'default', limit: 256000, hasDefaultSite: false },
+        gate3b: { status: 'unpatched', offset: 1200, length: 4 },
+        serializerGate: { present: false, status: 'absent', offset: null, limit: null }
+      }
+    }
+  }), 'utf8');
+  const hitRes = await unlockMod.analyzeBinaryAsync(fakeBin, { stateDir, backupDir: path.join(tmpDir, 'bak'), skipProcessCheck: true });
+  assert.equal(hitRes.format, 'PE');
+  assert.equal(hitRes.peBuildId, '1_2_400');
+  assert.equal(hitRes.status, 'not_patched');
+});

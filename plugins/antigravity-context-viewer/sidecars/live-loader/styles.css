@@ -55,6 +55,7 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow-x: clip;
 }
 
 .topbar {
@@ -306,6 +307,7 @@ body {
 .embed-panel {
   padding: 0;
   gap: 0;
+  overflow-x: clip;
 }
 
 .ag-sidecar-aux-host {

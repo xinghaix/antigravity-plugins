@@ -887,12 +887,78 @@ function resolveDaemonHubForOrigin(rawOrigin, options = {}) {
 }
 
 /**
- * 为指定回环原点解析非 HTML 来源的 Antigravity 2.34.0+ 本地 CSRF Token（优先主进程 authBootstrap，其次精确匹配的存活 daemon/hub_*.json）。
+ * 将 Antigravity 2.35.0+ `ANTIGRAVITY_LS_ADDRESS` 环境变量标准化为严格回环 Origin。
+ * 支持裸 `host:port`（默认补 `http://`）及 `http(s)://localhost:<port>`、`127.0.0.1:<port>`、`[::1]:<port>`，拒绝非回环地址。
+ */
+function normalizeEnvLsOrigin(rawAddr) {
+  if (!rawAddr || typeof rawAddr !== 'string') return null;
+  let val = rawAddr.trim();
+  if (!val) return null;
+  if (!/^https?:\/\//i.test(val)) {
+    val = `http://${val}`;
+  }
+  try {
+    const parsed = new URL(val);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const host = parsed.hostname.toLowerCase();
+    if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1' && host !== '[::1]') {
+      return null;
+    }
+    const port = parseExplicitPort(parsed.port);
+    if (!port) return null;
+    return normalizeLoopbackOrigin(`${parsed.protocol}//127.0.0.1:${port}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析 Antigravity 2.35.0+ Sidecar/终端环境自动注入的 `ANTIGRAVITY_LS_ADDRESS` 与 `ANTIGRAVITY_CSRF_TOKEN`。
+ * 在测试隔离环境下默认返回 null（除非显式传入 `options.env` 或 `options.allowEnvLsFallback === true`），防止宿主机环境变量泄漏至单测。
+ */
+function resolveEnvLsAuth(options = {}) {
+  if (options?.allowEnvLsFallback === false) return null;
+  const hasExplicitEnv = Boolean(options && options.env && typeof options.env === 'object');
+  const inTestEnv = Boolean(
+    isIsolatedLocalApiOptions(options) ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.NODE_TEST_CONTEXT
+  );
+  if (!hasExplicitEnv && inTestEnv && options?.allowEnvLsFallback !== true) {
+    return null;
+  }
+  const envObj = hasExplicitEnv ? options.env : process.env;
+  const origin = normalizeEnvLsOrigin(envObj?.ANTIGRAVITY_LS_ADDRESS);
+  const csrfToken = typeof envObj?.ANTIGRAVITY_CSRF_TOKEN === 'string'
+    ? envObj.ANTIGRAVITY_CSRF_TOKEN.trim()
+    : '';
+  if (!origin || !csrfToken) return null;
+  return { origin, csrfToken };
+}
+
+/**
+ * 严格同源匹配 `ANTIGRAVITY_LS_ADDRESS` 对应的 CSRF Token，绝不跨端口或对非回环地址返回凭据。
+ */
+function resolveEnvLsAuthForOrigin(rawOrigin, options = {}) {
+  const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
+  if (!safeOrigin) return null;
+  const auth = resolveEnvLsAuth(options);
+  if (!auth || auth.origin !== safeOrigin) return null;
+  return auth.csrfToken;
+}
+
+/**
+ * 为指定回环原点解析非 HTML 来源的 Antigravity 2.34.0+ 本地 CSRF Token（优先主进程 authBootstrap，其次 2.35+ 注入环境凭据与存活 daemon/hub_*.json）。
  */
 function resolveOriginCsrfToken(rawOrigin, options = {}) {
   const safeOrigin = normalizeLoopbackOrigin(rawOrigin);
   if (!safeOrigin) return null;
-  return resolveAuthBootstrapForOrigin(safeOrigin, options) || resolveDaemonHubForOrigin(safeOrigin, options) || null;
+  return (
+    resolveAuthBootstrapForOrigin(safeOrigin, options) ||
+    resolveEnvLsAuthForOrigin(safeOrigin, options) ||
+    resolveDaemonHubForOrigin(safeOrigin, options) ||
+    null
+  );
 }
 
 async function extractAppConfigViaCdp(page) {
@@ -919,7 +985,7 @@ async function extractAppConfigViaCdp(page) {
 
 /**
  * 解析并缓存或实时提取指定本地页面原点的 CSRF Token 并构造 RPC 客户端。
- * 兼容 Antigravity <= 2.33.0（HTML 内联 csrfToken）与 2.34.0+（空 HTML csrfToken + CDP 会话态 / 主进程 authBootstrap / 存活 daemon hub）。
+ * 兼容 Antigravity <= 2.33.0（HTML 内联 csrfToken）与 2.34.0+（空 HTML csrfToken + CDP 会话态 / 主进程 authBootstrap / 2.35+ 环境凭据 / 存活 daemon hub）。
  */
 async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta = {}, options = {}) {
   const origin = normalizeLoopbackOrigin(rawOrigin);
@@ -962,6 +1028,13 @@ async function connectOrigin(rawOrigin, page = null, origins = null, extraMeta =
       const bootstrapToken = resolveAuthBootstrapForOrigin(origin, mergedMeta);
       if (bootstrapToken) {
         token = bootstrapToken;
+        hasConfig = true;
+      }
+    }
+    if (!token && canUseHostAuthFallback) {
+      const envToken = resolveEnvLsAuthForOrigin(origin, mergedMeta);
+      if (envToken) {
+        token = envToken;
         hasConfig = true;
       }
     }
@@ -1097,6 +1170,18 @@ async function connect(options = {}) {
     }
     return connectOrigin(explicitOrigin, null, [explicitOrigin], options);
   }
+  if (options?.strictPort !== true && options?.requireCdp !== true && options?.preferEnvLs === true) {
+    const envAuth = resolveEnvLsAuth(options);
+    if (envAuth && envAuth.origin) {
+      try {
+        return await connectOrigin(envAuth.origin, null, [envAuth.origin], {
+          ...options,
+          csrfToken: envAuth.csrfToken
+        });
+      } catch {}
+    }
+  }
+
   let cdpInfo = null;
   let cdpErr = null;
   try {
@@ -1130,6 +1215,15 @@ async function connect(options = {}) {
         return await connectOrigin(bootstrapAuth.origin, null, [bootstrapAuth.origin], options);
       } catch {}
     }
+    const envAuth = resolveEnvLsAuth(options);
+    if (envAuth && envAuth.origin) {
+      try {
+        return await connectOrigin(envAuth.origin, null, [envAuth.origin], {
+          ...options,
+          csrfToken: envAuth.csrfToken
+        });
+      } catch {}
+    }
     const liveHubs = discoverLiveDaemonHubs(options);
     if (liveHubs.length > 0) {
       const hubOrigins = Array.from(new Set(liveHubs.map(h => h.origin).filter(Boolean)));
@@ -1156,6 +1250,9 @@ async function connect(options = {}) {
 module.exports = {
   connect,
   connectOrigin,
+  normalizeEnvLsOrigin,
+  resolveEnvLsAuth,
+  resolveEnvLsAuthForOrigin,
   resolveOriginCsrfToken,
   resolveAuthBootstrapForOrigin,
   resolveDaemonHubForOrigin,

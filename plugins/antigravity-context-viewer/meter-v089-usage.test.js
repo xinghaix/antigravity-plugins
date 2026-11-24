@@ -620,11 +620,11 @@ test('v0.8.9 7: 1500 条大量历史记录时间线及聚合缓存命中性能�
     }
 
     const tCold0 = performance.now();
-    const res1 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], force: true });
+    const res1 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], userStatus: null, force: true });
     const coldMs = performance.now() - tCold0;
 
     const tWarm0 = performance.now();
-    const res2 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], force: false });
+    const res2 = await collector.collectTokenHistoryAsync({ agDir, wslRoots: [], userStatus: null, force: false });
     const warmMs = performance.now() - tWarm0;
 
     assert.equal(res1.summary.totalSteps, 1500);
@@ -1584,7 +1584,9 @@ test('输入栏状态条与 5 行卡片：三组信息、精确千分位、缓�
 
     let sb = h.api.getComposerStatusBarStateForTest();
     assert.equal(sb.speedText, '5 轮 83 步 · 213 tok/s');
-    assert.equal(sb.tokensText, '12.5M tok · 会话缓存命中率 99%');
+    assert.equal(sb.tokensText, '12.5M · 缓存 99%');
+    assert.match(h.elements.get('csb-group-tokens').getAttribute('data-tooltip'), /会话缓存命中率 99%/);
+    assert.equal(h.elements.get('csb-group-tokens').title, '', '原生 title 必须清空以杜绝双气泡');
     assert.equal(sb.contextText, '22%');
     assert.equal(sb.cardTotal, '12,536,574 tok');
     assert.equal(sb.cardHit, '99%');
@@ -1596,7 +1598,7 @@ test('输入栏状态条与 5 行卡片：三组信息、精确千分位、缓�
     await h.api.setPanelLanguage('en', { persist: false });
     sb = h.api.getComposerStatusBarStateForTest();
     assert.equal(sb.speedText, '5 turns 83 steps · 213 tok/s');
-    assert.equal(sb.tokensText, '12.5M tok · Session Cache 99%');
+    assert.equal(sb.tokensText, '12.5M · Cache 99%');
     assert.doesNotMatch(sb.speedText, /[\u4e00-\u9fff]/);
     assert.doesNotMatch(sb.tokensText, /[\u4e00-\u9fff]/);
 
@@ -1604,7 +1606,7 @@ test('输入栏状态条与 5 行卡片：三组信息、精确千分位、缓�
     await h.api.setPanelLanguage('zh-TW', { persist: false });
     sb = h.api.getComposerStatusBarStateForTest();
     assert.equal(sb.speedText, '5 輪 83 步 · 213 tok/s');
-    assert.equal(sb.tokensText, '12.5M tok · 會話快取命中率 99%');
+    assert.equal(sb.tokensText, '12.5M · 快取 99%');
 
     // 4. 零分母（纯输出无输入）与 0% 命中率严格区分
     h.api.setComposerStateForTest({
@@ -1683,7 +1685,7 @@ test('输入栏状态条与 5 行悬停卡：单色线性 SVG 图标、动态圆
 
     // 3. 点击入口与悬停卡
     const csbTokens = h.elements.get('csb-group-tokens');
-    const tflCard = h.elements.get('token-five-line-card');
+    const tflCard = h.elements.get('csb-card-tokens');
     if (csbTokens && tflCard) {
       if (typeof csbTokens.trigger === 'function') {
         csbTokens.trigger('mouseenter');
@@ -1761,6 +1763,7 @@ test('输入框下方摘要与工具栏按钮独立挂载', async () => {
 
     const composer = { after(node) { this.nextElementSibling = node; } };
     bar.closest = selector => selector === 'form' ? composer : null;
+    h.api.setComposerQuotaSummaryEnabledForTest(true);
     h.api.ensureComposerStatusBarMountedForTest();
     assert.equal(composer.nextElementSibling, csbBar);
     assert.ok(!bar.children.includes(csbBar));

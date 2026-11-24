@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultPluginTarget, defaultStateDir, installPlugin } from '../../scripts/cli.mjs';
 import { ORCHESTRATION_RECIPES } from '../../overrides/metadata.mjs';
@@ -429,6 +429,206 @@ function upsertAgentSkillsSection(existingContent, newSection) {
   return trimmed ? `${trimmed}\n\n${newSection.trim()}\n` : `${newSection.trim()}\n`;
 }
 
+function matchesManifestPattern(skillName, pattern) {
+  const pat = String(pattern || '').trim();
+  if (!pat) return false;
+  if (skillName === pat) return true;
+  try {
+    return new RegExp(`^(?:${pat})$`).test(skillName);
+  } catch {
+    return false;
+  }
+}
+
+function resolveManifestEntryPath(rawEntryPath, dotDirParent, workspaceRoot, homeDir) {
+  const s = String(rawEntryPath || '').trim();
+  if (!s) return '';
+  if (s === '~' || s.startsWith('~/') || s.startsWith('~\\')) {
+    return expandHome(s, homeDir);
+  }
+  if (isAbsolute(s)) {
+    return resolve(s);
+  }
+  const fromDotParent = resolve(dotDirParent, s);
+  if (existsSync(fromDotParent)) return fromDotParent;
+  return resolve(workspaceRoot, s);
+}
+
+function formatManifestEntryPath(absTarget, homeDir) {
+  const cleanTarget = resolve(absTarget);
+  const cleanHome = resolve(homeDir);
+  if (cleanTarget === cleanHome) return '~';
+  if (cleanTarget.startsWith(`${cleanHome}/`) || cleanTarget.startsWith(`${cleanHome}\\`)) {
+    return `~/${cleanTarget.slice(cleanHome.length + 1).replace(/\\/g, '/')}`;
+  }
+  return cleanTarget;
+}
+
+/**
+ * Inspect hierarchical `.agents/skills.json` & `.agents/rules.json` manifests
+ * walking upward from `workspacePath` to the repository root (`.git`) per Antigravity 2.35+.
+ */
+export function inspectSkillsManifests(workspacePath, homeDir = homedir()) {
+  const absWs = expandHome(workspacePath, homeDir);
+  if (!absWs || !existsSync(absWs)) {
+    return {
+      hasSkillsJson: false,
+      hasRulesJson: false,
+      skillsJsonPath: null,
+      rulesJsonPath: null,
+      entries: [],
+      inherits: [],
+      resolvedSkills: [],
+      ancestors: [],
+      parseError: null,
+    };
+  }
+
+  const dirsToCheck = [];
+  let cur = absWs;
+  for (let i = 0; i < 12; i++) {
+    dirsToCheck.push(cur);
+    if (existsSync(join(cur, '.git'))) break;
+    const parent = dirname(cur);
+    if (!parent || parent === cur) break;
+    cur = parent;
+  }
+
+  const DOT_DIRS = ['.agents', '.agent', '_agents', '_agent'];
+  const ancestors = [];
+  const seenResolved = new Set();
+  const resolvedSkills = [];
+  let rootSkillsInfo = null;
+  let rootRulesPath = null;
+
+  const collectFromManifest = (
+    manifestFile,
+    dotParentDir,
+    depth = 0,
+    inheritedVisited = new Set(),
+    filterIncludeSets = [],
+    filterExcludePatterns = [],
+  ) => {
+    const absManifest = resolve(manifestFile);
+    if (depth > 4 || inheritedVisited.has(absManifest) || !existsSync(absManifest)) return;
+    inheritedVisited.add(absManifest);
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(readFileSync(absManifest, 'utf-8'));
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+
+    const processEntries = (entryList) => {
+      if (!Array.isArray(entryList)) return;
+      for (const item of entryList) {
+        if (!item || typeof item !== 'object' || typeof item.path !== 'string') continue;
+        const targetDir = resolveManifestEntryPath(item.path, dotParentDir, absWs, homeDir);
+        if (!targetDir || !existsSync(targetDir)) continue;
+        const includeOnly = Array.isArray(item.include_only) ? item.include_only : null;
+        const exclude = Array.isArray(item.exclude) ? item.exclude : null;
+        let ents = [];
+        try {
+          ents = readdirSync(targetDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+        } catch {
+          ents = [];
+        }
+        for (const ent of ents) {
+          if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
+          const skillName = ent.name;
+          if (!existsSync(join(targetDir, skillName, 'SKILL.md'))) continue;
+          if (includeOnly && !includeOnly.some((pat) => matchesManifestPattern(skillName, pat))) continue;
+          if (exclude && exclude.some((pat) => matchesManifestPattern(skillName, pat))) continue;
+          if (filterIncludeSets.some((set) => !set.some((pat) => matchesManifestPattern(skillName, pat)))) continue;
+          if (filterExcludePatterns.some((pat) => matchesManifestPattern(skillName, pat))) continue;
+          const dedupeKey = `${skillName}:${targetDir}`;
+          if (seenResolved.has(dedupeKey)) continue;
+          seenResolved.add(dedupeKey);
+          resolvedSkills.push({
+            name: skillName,
+            sourceDir: targetDir,
+            manifestPath: absManifest,
+          });
+        }
+      }
+    };
+
+    if (Array.isArray(parsed.inherits)) {
+      for (const inh of parsed.inherits) {
+        if (!inh || typeof inh !== 'object' || typeof inh.path !== 'string') continue;
+        const inhFile = resolveManifestEntryPath(inh.path, dotParentDir, absWs, homeDir);
+        if (!inhFile || !existsSync(inhFile)) continue;
+        const parentName = basename(dirname(inhFile));
+        const inhDotParent = DOT_DIRS.includes(parentName) ? dirname(dirname(inhFile)) : dirname(inhFile);
+        const nextInc = Array.isArray(inh.include_only) ? [...filterIncludeSets, inh.include_only] : filterIncludeSets;
+        const nextExc = Array.isArray(inh.exclude) ? [...filterExcludePatterns, ...inh.exclude] : filterExcludePatterns;
+        collectFromManifest(inhFile, inhDotParent, depth + 1, new Set(inheritedVisited), nextInc, nextExc);
+      }
+    }
+    processEntries(parsed.entries);
+  };
+
+  for (const baseDir of dirsToCheck) {
+    let foundDot = null;
+    for (const d of DOT_DIRS) {
+      if (existsSync(join(baseDir, d))) {
+        foundDot = d;
+        break;
+      }
+    }
+    if (!foundDot) continue;
+    const dotPath = join(baseDir, foundDot);
+    const sPath = join(dotPath, 'skills.json');
+    const rPath = join(dotPath, 'rules.json');
+    const hasS = existsSync(sPath);
+    const hasR = existsSync(rPath);
+    if (!hasS && !hasR) continue;
+
+    let parsedSkills = null;
+    let parseError = null;
+    if (hasS) {
+      try {
+        parsedSkills = JSON.parse(readFileSync(sPath, 'utf-8'));
+      } catch (err) {
+        parseError = err?.message || 'Invalid JSON';
+      }
+      collectFromManifest(sPath, baseDir);
+    }
+
+    const relPrefix = baseDir === absWs ? '' : `${baseDir}/`;
+    const itemSummary = {
+      dir: baseDir,
+      dotDir: foundDot,
+      skillsJsonPath: hasS ? sPath : null,
+      skillsJsonRel: hasS ? `${relPrefix}${foundDot}/skills.json` : null,
+      rulesJsonPath: hasR ? rPath : null,
+      rulesJsonRel: hasR ? `${relPrefix}${foundDot}/rules.json` : null,
+      entries: Array.isArray(parsedSkills?.entries) ? parsedSkills.entries : [],
+      inherits: Array.isArray(parsedSkills?.inherits) ? parsedSkills.inherits : [],
+      parseError,
+    };
+    ancestors.push(itemSummary);
+    if (baseDir === absWs) {
+      rootSkillsInfo = itemSummary;
+      rootRulesPath = hasR ? rPath : null;
+    }
+  }
+
+  return {
+    hasSkillsJson: Boolean(rootSkillsInfo?.skillsJsonPath || ancestors.some((a) => a.skillsJsonPath)),
+    hasRulesJson: Boolean(rootRulesPath || ancestors.some((a) => a.rulesJsonPath)),
+    skillsJsonPath: rootSkillsInfo?.skillsJsonRel || ancestors.find((a) => a.skillsJsonRel)?.skillsJsonRel || null,
+    rulesJsonPath: rootRulesPath ? `${rootRulesPath}` : (ancestors.find((a) => a.rulesJsonRel)?.rulesJsonRel || null),
+    entries: rootSkillsInfo?.entries || [],
+    inherits: rootSkillsInfo?.inherits || [],
+    resolvedSkills,
+    ancestors,
+    parseError: rootSkillsInfo?.parseError || null,
+  };
+}
+
 export function createStore({
   homeDir = homedir(),
   repoRoot = REPO_ROOT,
@@ -636,6 +836,7 @@ export function createStore({
         domainLayout,
       },
       deliveredSkills,
+      manifests: inspectSkillsManifests(abs, homeDir),
       glossary: {
         exists: existsSync(glossaryPath),
         content: glossaryContent,
@@ -940,10 +1141,102 @@ export function createStore({
     return st.workspaces;
   }
 
+  function saveWorkspaceSkillsJson({
+    workspacePath,
+    skillNames = [],
+    sourceMode = 'plugin',
+    customPath = '',
+    includeOnly,
+    exclude = [],
+  } = {}) {
+    const absWs = expandHome(workspacePath, homeDir);
+    if (!absWs || !existsSync(absWs)) {
+      throw new Error(`Workspace path does not exist: ${workspacePath}`);
+    }
+
+    const catalog = readCatalog();
+    const install = detectInstallInfo();
+    const activeMap = readActiveSkillsMap(install.activePluginRoot);
+
+    let rawEntryPath = '';
+    if (sourceMode === 'custom') {
+      rawEntryPath = String(customPath || '').trim();
+      if (!rawEntryPath) {
+        throw new Error('customPath is required when sourceMode is custom');
+      }
+    } else {
+      const pluginSkillsAbs = join(install.activePluginRoot, 'skills');
+      rawEntryPath = formatManifestEntryPath(pluginSkillsAbs, homeDir);
+    }
+
+    let resolvedIncludeOnly = null;
+    if (Array.isArray(includeOnly)) {
+      resolvedIncludeOnly = [...new Set(includeOnly.map((x) => String(x || '').trim()).filter(Boolean))].sort();
+    } else {
+      const chosen = Array.isArray(skillNames) && skillNames.length > 0
+        ? skillNames
+        : [...activeMap.keys()];
+      if (chosen.length > 0) {
+        const withDeps = new Set(chosen);
+        for (const n of chosen) {
+          for (const d of resolveDependencies(n, catalog.skills)) withDeps.add(d);
+        }
+        resolvedIncludeOnly = [...withDeps].filter((n) => catalog.skills.some((s) => s.name === n)).sort();
+      }
+    }
+
+    const manifestPath = join(absWs, '.agents', 'skills.json');
+    const backupId = createFileBackup(absWs, ['.agents/skills.json']);
+    const existing = readJsonSafe(manifestPath, null);
+    const nextManifest = {};
+    if (existing && typeof existing === 'object' && Array.isArray(existing.inherits)) {
+      nextManifest.inherits = existing.inherits;
+    }
+    const existingEntries = existing && typeof existing === 'object' && Array.isArray(existing.entries)
+      ? existing.entries.filter((e) => e && typeof e === 'object' && typeof e.path === 'string')
+      : [];
+
+    const newEntry = { path: rawEntryPath };
+    if (resolvedIncludeOnly && resolvedIncludeOnly.length > 0) {
+      newEntry.include_only = resolvedIncludeOnly;
+    }
+    const cleanExclude = Array.isArray(exclude) ? exclude.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    if (cleanExclude.length > 0) {
+      newEntry.exclude = cleanExclude;
+    }
+
+    const normTarget = expandHome(rawEntryPath, homeDir);
+    const filteredEntries = existingEntries.filter((e) => {
+      const candidate = e.path.startsWith('~/') || e.path.startsWith('~\\') || isAbsolute(e.path)
+        ? expandHome(e.path, homeDir)
+        : resolve(absWs, e.path);
+      return candidate !== normTarget;
+    });
+    filteredEntries.push(newEntry);
+    nextManifest.entries = filteredEntries;
+
+    atomicWriteText(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`, 0o644);
+    return {
+      ok: true,
+      workspacePath: absWs,
+      backupId,
+      path: '.agents/skills.json',
+      manifest: nextManifest,
+      delivered: resolvedIncludeOnly || [],
+      workspace: inspectWorkspace(absWs),
+    };
+  }
+
   function deliverToWorkspace({ workspacePath, skillNames, mode = 'copy' }) {
     const absWs = expandHome(workspacePath, homeDir);
     if (!absWs || !existsSync(absWs)) {
       throw new Error(`Workspace path does not exist: ${workspacePath}`);
+    }
+    if (mode === 'manifest') {
+      return {
+        ...saveWorkspaceSkillsJson({ workspacePath: absWs, skillNames, sourceMode: 'plugin' }),
+        mode: 'manifest',
+      };
     }
     const catalog = readCatalog();
     const install = detectInstallInfo();
@@ -1248,6 +1541,7 @@ export function createStore({
     removeWorkspace,
     inspectWorkspace,
     deliverToWorkspace,
+    saveWorkspaceSkillsJson,
     removeWorkspaceSkill,
     saveRepoSetup,
     saveGlossary,

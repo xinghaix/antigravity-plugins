@@ -1,7 +1,7 @@
 {
   "name": "antigravity-mattpocock-skills",
-  "version": "1.1.0",
-  "description": "Native Google Antigravity plugin for Matt Pocock's skills with 2.34+ run_workflow/swarm orchestration and a visual Sidecar Aux Pane Studio.",
+  "version": "1.2.0",
+  "description": "Native Google Antigravity plugin for Matt Pocock's skills with 2.34+/2.35+ run_workflow/swarm orchestration, ConversationService tracking, .agents/skills.json manifests, and a Sidecar Aux Pane Studio.",
   "type": "module",
   "bin": {
     "antigravity-mattpocock-skills": "./scripts/cli.mjs"

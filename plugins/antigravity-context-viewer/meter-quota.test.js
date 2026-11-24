@@ -2561,7 +2561,7 @@ test('Google AI Ultra 套餐 allowedTiers 与 New 装饰标签端到端判定不
   };
   const parsedPlan = core.parseUserPlanStatus(userStatusRes);
   assert.equal(parsedPlan.tierKey, 'ultra');
-  assert.equal(parsedPlan.tierName, 'Google AI Ultra (5x)');
+  assert.equal(parsedPlan.tierName, 'Google AI Ultra 5x');
   assert.equal(parsedPlan.teamsTier, 'TEAMS_TIER_PRO');
 
   const quotaSummaryRes = {
@@ -3630,6 +3630,7 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   };
 
   const api = h.sandbox.__AGContextMeter;
+  api.setComposerQuotaSummaryEnabledForTest(true);
   api.setContextLatestForTest(
     { model: 'Gemini 4 Hydrogen (High)', modelId: 'MODEL_PLACEHOLDER_M28', actual: 18000, budget: 256000 },
     userStatusRes.userStatus.cascadeModelConfigData.clientModelConfigs
@@ -3794,10 +3795,14 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   assert.equal(csbNarrow.altWarnHidden, false);
   h.sandbox.window.innerWidth = 1280;
 
-  // 通过配置开关真实 change 事件关闭/开启并校验 localStorage 与 saveSettings 持久化，及 click 打开看板
+  // 补充任务 A: 底栏额度项首帧直达额度看板，二次点击关闭
   h.elements.get('panel-quota').hidden = true;
   h.elements.get('csb-group-quota').click();
-  assert.equal(h.elements.get('panel-quota').hidden, false, '点击输入框额度摘要应直接打开额度看板');
+  assert.equal(h.elements.get('panel-quota').hidden, false, '补充任务 A: 点击底栏额度项直达模型额度看板');
+  h.elements.get('csb-group-quota').click();
+  assert.equal(h.elements.get('panel-quota').hidden, true, '二次点击底栏额度项关闭模型额度看板');
+  h.elements.get('badge-quota').click();
+  assert.equal(h.elements.get('panel-quota').hidden, false, '点击顶部额度圆环正常打开额度看板');
   const chkComposerQuota = h.elements.get('chk-show-composer-quota');
   chkComposerQuota.checked = false;
   chkComposerQuota.dispatchEvent({ type: 'change', target: chkComposerQuota });
@@ -3814,7 +3819,7 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   // 主进程 settings 持久化往返
   const tmpSettingsDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ag-pace-settings-'));
   try {
-    assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, true);
+    assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, false);
     collector.savePluginSettings({ showComposerQuotaSummary: false }, tmpSettingsDir);
     assert.equal(collector.getPluginSettings(tmpSettingsDir).showComposerQuotaSummary, false);
   } finally {
@@ -3891,6 +3896,7 @@ test('v0.9.0-beta.1 同快照额度百分比在顶栏、双轨卡与输入框摘
   };
   const h = createQuotaRendererHarness({ innerWidth: 1280 });
   const api = h.sandbox.__AGContextMeter;
+  api.setComposerQuotaSummaryEnabledForTest(true);
   try {
     api.setContextLatestForTest(
       { model: 'Gemini 4 Hydrogen', modelId: 'MODEL_PLACEHOLDER_M578', actual: 18000, budget: 256000 },
@@ -4023,6 +4029,7 @@ test('PR #74: 带前缀模型选择器、Orchestrator/Worker 身份、分屏聚�
   });
 
   const api = h.sandbox.__AGContextMeter;
+  api.setComposerQuotaSummaryEnabledForTest(true);
   try {
     api.setContextLatestForTest(
       { model: 'Gemini 4 Hydrogen (Low)', modelId: 'MODEL_PLACEHOLDER_M527', actual: 12000, budget: 256000 },

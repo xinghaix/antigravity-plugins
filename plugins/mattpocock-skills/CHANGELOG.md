@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-11-24
+
+### Added & Changed
+- **Antigravity 2.35.0 Hierarchical Manifests (`.agents/skills.json` & `.agents/rules.json`)**:
+  - Added `inspectSkillsManifests()` in `sidecars/mp_studio/studio_store.mjs` walking upward from the workspace to `.git` root to inspect ancestor `.agents/skills.json` / `rules.json`, `inherits` chains, `include_only`, and `exclude` filters.
+  - Added `saveWorkspaceSkillsJson()`, `POST /api/workspace/skills-json`, and zero-copy `"manifest"` delivery mode in `deliverToWorkspace()` & **Deliver to Repo** modal (with automatic `0600` config backup snapshots).
+- **Antigravity 2.35.0 Native `ConversationService` Integration**:
+  - Added `sidecars/mp_studio/conversations_client.mjs` (`http://$ANTIGRAVITY_LS_ADDRESS/product.v1.ConversationService/*` with `Connect-Protocol-Version: 1` & `x-antigravity-csrf-token`) plus `/api/conversations`, `/api/conversations/query`, `/api/conversations/create`, and `/api/conversations/update`.
+  - Upgraded Studio **New Session** actions to dispatch tagged sessions (`tags: ["mp-studio"]`) via `CreateConversation` (falling back gracefully to `sidecar.agent.startConversation` or clipboard) and added a live **2.35+ Conversation Tracker** card in Workspace Hub with focus, pin, and archive controls.
+
 ## [1.1.0] - 2026-11-23
 
 ### Added & Changed

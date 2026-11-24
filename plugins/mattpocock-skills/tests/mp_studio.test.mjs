@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import {
   cpSync,
   existsSync,
@@ -16,7 +17,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getStatus, installPlugin, uninstallPlugin } from '../scripts/cli.mjs';
-import { buildOrchestrationPlan, createStore, parseScratchTickets } from '../sidecars/mp_studio/studio_store.mjs';
+import { createConversationClient, normalizeConversationServiceOrigin } from '../sidecars/mp_studio/conversations_client.mjs';
+import { buildOrchestrationPlan, createStore, inspectSkillsManifests, parseScratchTickets } from '../sidecars/mp_studio/studio_store.mjs';
 import {
   adaptSkillMarkdown,
   compileUpstreamDirectory,
@@ -262,6 +264,134 @@ Also call the Skill tool with "codebase-design".
   // Verify st.orchestrationRecipes exists in getStudioState
   st = store.getState([wsDir]);
   assert.ok(Array.isArray(st.orchestrationRecipes) && st.orchestrationRecipes.length >= 6);
+
+  // 5d. Antigravity 2.35+ hierarchical .agents/skills.json / rules.json inspection & zero-copy manifest delivery
+  const manifestWs = join(tempRoot, 'mono-235');
+  const pkgWs = join(manifestWs, 'packages', 'web');
+  const sharedDir = join(manifestWs, 'tools', 'shared-skills');
+  mkdirSync(join(manifestWs, '.git'), { recursive: true });
+  mkdirSync(join(manifestWs, '.agents'), { recursive: true });
+  mkdirSync(join(pkgWs, '.agents'), { recursive: true });
+  mkdirSync(join(sharedDir, 'alpha-skill'), { recursive: true });
+  mkdirSync(join(sharedDir, 'experimental-beta'), { recursive: true });
+  writeFileSync(join(sharedDir, 'alpha-skill', 'SKILL.md'), '---\nname: alpha-skill\ndescription: Alpha.\n---\nBody\n');
+  writeFileSync(join(sharedDir, 'experimental-beta', 'SKILL.md'), '---\nname: experimental-beta\ndescription: Beta.\n---\nBody\n');
+  writeFileSync(
+    join(manifestWs, '.agents', 'skills.json'),
+    JSON.stringify({ entries: [{ path: 'tools/shared-skills', exclude: ['experimental-.*'] }] }, null, 2),
+  );
+  writeFileSync(join(manifestWs, '.agents', 'rules.json'), JSON.stringify({ entries: [] }, null, 2));
+  const sharedInhJson = join(manifestWs, 'shared-inh.json');
+  writeFileSync(
+    sharedInhJson,
+    JSON.stringify({ entries: [{ path: 'tools/shared-skills', include_only: ['alpha-skill'] }] }, null, 2),
+  );
+  writeFileSync(
+    join(pkgWs, '.agents', 'skills.json'),
+    JSON.stringify({ inherits: [{ path: '../../shared-inh.json' }], entries: [] }, null, 2),
+  );
+  const mfInspect = inspectSkillsManifests(pkgWs, fakeHome);
+  assert.equal(mfInspect.hasSkillsJson, true);
+  assert.equal(mfInspect.hasRulesJson, true);
+  assert.equal(mfInspect.ancestors.length, 2, 'Should walk upward from packages/web to .git repo root');
+  assert.ok(mfInspect.resolvedSkills.some((s) => s.name === 'alpha-skill'));
+  assert.equal(mfInspect.resolvedSkills.some((s) => s.name === 'experimental-beta'), false);
+
+  // Zero-copy deliver via mode: 'manifest' preserves unrelated entries & creates backup
+  const customKeepDir = join(wsDir, 'custom-skills');
+  mkdirSync(join(customKeepDir, 'local-helper'), { recursive: true });
+  writeFileSync(join(customKeepDir, 'local-helper', 'SKILL.md'), '---\nname: local-helper\ndescription: Local.\n---\nHi\n');
+  mkdirSync(join(wsDir, '.agents'), { recursive: true });
+  writeFileSync(
+    join(wsDir, '.agents', 'skills.json'),
+    JSON.stringify({ entries: [{ path: 'custom-skills' }] }, null, 2),
+  );
+  const mfDeliver = store.deliverToWorkspace({
+    workspacePath: wsDir,
+    skillNames: ['grill-with-docs'],
+    mode: 'manifest',
+  });
+  assert.equal(mfDeliver.mode, 'manifest');
+  assert.ok(mfDeliver.delivered.includes('grill-with-docs'));
+  assert.ok(mfDeliver.delivered.includes('grilling'));
+  assert.ok(mfDeliver.delivered.includes('domain-modeling'));
+  const writtenMf = JSON.parse(readFileSync(join(wsDir, '.agents', 'skills.json'), 'utf-8'));
+  assert.equal(writtenMf.entries.length, 2, 'Should preserve custom-skills entry and add plugin skills entry');
+  assert.ok(mfDeliver.workspace.manifests.resolvedSkills.some((s) => s.name === 'local-helper'));
+
+  // 5e. Antigravity 2.35+ ConversationService HTTP+JSON client
+  assert.equal(normalizeConversationServiceOrigin('localhost:56266'), 'http://127.0.0.1:56266');
+  assert.equal(normalizeConversationServiceOrigin('192.168.1.50:56266'), null);
+  assert.equal(createConversationClient({ env: {} }).isAvailable(), false);
+
+  const convRequests = [];
+  const convServer = http.createServer((req, res) => {
+    let rawBody = '';
+    req.on('data', (c) => { rawBody += c; });
+    req.on('end', () => {
+      assert.equal(req.headers['connect-protocol-version'], '1');
+      assert.equal(req.headers['x-antigravity-csrf-token'], 'conv-secret-235');
+      const parsedBody = rawBody ? JSON.parse(rawBody) : {};
+      convRequests.push({ url: req.url, body: parsedBody });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (req.url.endsWith('/ListConversations')) {
+        res.end(JSON.stringify({
+          conversations: [{
+            id: 'conv-1',
+            metadata: { tags: ['mp-studio'] },
+            annotations: { title: 'Wave #1', pinned: false },
+            state: { summary: 'Wave #1', runState: 'RUN_STATE_IDLE' },
+          }],
+        }));
+      } else if (req.url.endsWith('/CreateConversation')) {
+        res.end(JSON.stringify({
+          conversation: {
+            id: 'conv-created-235',
+            metadata: { tags: parsedBody.tags || [] },
+            annotations: { title: parsedBody.title || '' },
+            state: { runState: 'RUN_STATE_RUNNING' },
+          },
+        }));
+      } else if (req.url.endsWith('/UpdateConversation')) {
+        res.end(JSON.stringify({
+          conversation: {
+            id: parsedBody.conversationId,
+            annotations: parsedBody.annotations,
+          },
+        }));
+      } else {
+        res.end('{}');
+      }
+    });
+  });
+  await new Promise((r) => convServer.listen(0, '127.0.0.1', r));
+  try {
+    const convPort = convServer.address().port;
+    const convClient = createConversationClient({
+      env: {
+        ANTIGRAVITY_LS_ADDRESS: `localhost:${convPort}`,
+        ANTIGRAVITY_CSRF_TOKEN: 'conv-secret-235',
+      },
+    });
+    assert.equal(convClient.isAvailable(), true);
+    const listed = await convClient.listConversations({ pageSize: 10, tags: ['mp-studio'] });
+    assert.equal(listed.conversations.length, 1);
+    const created = await convClient.createConversation({
+      title: 'Run Ticket 01',
+      model: 'flash',
+      tags: ['mp-studio'],
+      prompt: '/implement .scratch/auth-flow/issues/01.md',
+    });
+    assert.equal(created.conversation.id, 'conv-created-235');
+    assert.deepEqual(convRequests[1].body.prompt, [{ text: '/implement .scratch/auth-flow/issues/01.md' }]);
+    const updated = await convClient.updateConversation({
+      conversationId: 'conv-created-235',
+      annotations: { pinned: true },
+    });
+    assert.equal(updated.conversation.annotations.pinned, true);
+  } finally {
+    await new Promise((r) => convServer.close(r));
+  }
 
   // 6. Uninstall cleanup
   const unRes = uninstallPlugin({ target: pluginTarget });

@@ -33,13 +33,55 @@
       cdpLabel: 'CDP 调试端口',
       topbarLabel: '顶栏注入状态',
       unlockLabel: '上下文长度解锁 (Gate 3A/3B)',
-      sidecarLabel: 'Sidecar 插件脚本',
+      autostartLabel: '开机自启守护',
       capsLabel: 'Sidecar 全功能桥接',
+      sidecarLabel: 'Sidecar 插件脚本',
       settingsTitle: '面板与注入设置',
       optChinese: 'CDP 热注入时启用桌面端中文汉化',
       optCli: '顶栏面板显示 CLI 快捷入口',
+      optComposerBar: '在输入框下方显示上下文与配额状态条',
+      optTurnFooter: '在每条回复尾部显示统计微徽标',
       saveOk: '设置已保存',
       logTitle: 'Sidecar 最近日志'
+    },
+    'zh-TW': {
+      convLabel: '會話:',
+      autoPick: '自動偵測目前會話…',
+      autoOn: '自動 25s',
+      autoOff: '已暫停',
+      tabContext: '上下文 & 詳情',
+      tabQuota: '配額 & 帳號',
+      tabTokens: 'Token & 費用',
+      tabDiag: '診斷',
+      modeAuxPill: 'Aux 原生直連 (免 CDP)',
+      modeCdpPill: 'CDP 已連線',
+      modeWaitPill: '等待 Antigravity',
+      compatDescNoCdp: 'Antigravity 2.33+ 預設關閉 DevToolsActivePort；本側邊欄已內建完整引擎並直連宿主 Language Server 與 live-host，無需 CDP 即可使用完整上下文/配額/Token/熱力圖/模型解鎖與系統增強功能。',
+      compatSummary: '可選：如何開啟頂部標題列懸浮條 (CDP)',
+      compatOptLaunch: '方案 1（免改寫磁碟推薦）：帶除錯連接埠啟動 Antigravity',
+      compatOptInstall: '方案 2（寫入 app.asar）：持久化安裝，無需除錯連接埠',
+      hotInjectBtn: '熱注入',
+      hotInjected: '已觸發頂欄熱注入',
+      copied: '已複製命令到剪貼簿',
+      copyFail: '複製失敗，請手動選取命令複製',
+      copyBtn: '複製',
+      embedLoading: '正在載入完整儀表板…',
+      embedLoadFail: '完整儀表板腳本載入失敗，請點擊右上角重新整理重試。',
+      diagTitle: '執行環境診斷',
+      originLabel: 'Language Server Origin',
+      cdpLabel: 'CDP 除錯連接埠',
+      topbarLabel: '頂欄注入狀態',
+      unlockLabel: '上下文長度解鎖 (Gate 3A/3B)',
+      autostartLabel: '開機自啟守護',
+      capsLabel: 'Sidecar 全功能橋接',
+      sidecarLabel: 'Sidecar 插件腳本',
+      settingsTitle: '面板與注入設定',
+      optChinese: 'CDP 熱注入時啟用桌面端簡體中文化',
+      optCli: '頂欄面板顯示 CLI 快速入口',
+      optComposerBar: '在輸入框下方顯示上下文與配額狀態列',
+      optTurnFooter: '在每則回覆尾部顯示統計微徽章',
+      saveOk: '設定已儲存',
+      logTitle: 'Sidecar 最近日誌'
     },
     en: {
       convLabel: 'Session:',
@@ -69,11 +111,14 @@
       cdpLabel: 'CDP Debug Port',
       topbarLabel: 'Topbar Injection',
       unlockLabel: 'Context Unlock (Gate 3A/3B)',
-      sidecarLabel: 'Sidecar Script',
+      autostartLabel: 'Autostart Daemon',
       capsLabel: 'Full-Feature Live Bridge',
+      sidecarLabel: 'Sidecar Script',
       settingsTitle: 'Preferences',
       optChinese: 'Enable Chinese UI translation on CDP hot-inject',
       optCli: 'Show CLI quick button on topbar widget',
+      optComposerBar: 'Show compact context & quota strip below composer',
+      optTurnFooter: 'Show mini stats footer on each assistant reply',
       saveOk: 'Settings saved',
       logTitle: 'Recent Sidecar Logs'
     }
@@ -180,7 +225,7 @@
     window.__AGContextMeterLive = {
       port: 1,
       token: 'sidecar-inproc',
-      version: '0.9.0-2',
+      version: '0.9.2-1',
       capabilities: state.data?.meta?.capabilities || null,
       backendSource: 'sidecar-inproc'
     };
@@ -326,7 +371,7 @@
     $('lbl-tab-tokens').textContent = t('tabTokens');
     $('lbl-tab-diagnostics').textContent = t('tabDiag');
     $('btn-hot-inject').textContent = t('hotInjectBtn');
-    $('btn-lang').textContent = state.lang === 'zh' ? 'EN' : '中文';
+    $('btn-lang').textContent = state.lang === 'en' ? '中文' : 'EN';
     $('btn-auto').textContent = state.autoRefresh ? t('autoOn') : t('autoOff');
     $('btn-auto').classList.toggle('active', state.autoRefresh);
   }
@@ -371,6 +416,24 @@
     }
   }
 
+  function setOuterTabHighlight(nextTab) {
+    state.tab = nextTab;
+    document.querySelectorAll('.tab').forEach((b) => {
+      const active = b.getAttribute('data-tab') === nextTab;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    const pEmbed = $('panel-embed');
+    const pDiag = $('panel-diagnostics');
+    if (nextTab === 'diagnostics') {
+      pEmbed?.classList.remove('active');
+      pDiag?.classList.add('active');
+    } else {
+      pDiag?.classList.remove('active');
+      pEmbed?.classList.add('active');
+    }
+  }
+
   function syncTabSummaryPills() {
     let ctxText = '--%';
     let quotaText = '--';
@@ -381,6 +444,18 @@
       if (s.contextPct) ctxText = s.contextSubPct ? `${s.contextPct} ${s.contextSubPct}` : s.contextPct;
       if (s.quotaVal) quotaText = s.quotaTag ? `${s.quotaVal} ${s.quotaTag}` : s.quotaVal;
       if (s.tokenVal) tokenText = s.tokenVal;
+      if (s.panelLanguage) {
+        const mappedLang = s.panelLanguage === 'zh-TW' ? 'zh-TW' : (s.panelLanguage === 'en' ? 'en' : 'zh');
+        if (mappedLang !== state.lang) {
+          state.lang = mappedLang;
+          applyStaticLabels();
+          renderHeaderStatus();
+          if (state.tab === 'diagnostics') renderDiagnosticsTab();
+        }
+      }
+      if (state.tab !== 'diagnostics' && s.activePanel && ['context', 'quota', 'tokens'].includes(s.activePanel) && s.activePanel !== state.tab) {
+        setOuterTabHighlight(s.activePanel);
+      }
     } else if (state.data) {
       const pct = state.data.session?.latest?.percent;
       if (Number.isFinite(Number(pct))) ctxText = `${Number(pct).toFixed(0)}%`;
@@ -404,6 +479,7 @@
     const meta = state.data?.meta || {};
     const unlock = state.data?.unlock;
     const sidecar = state.data?.sidecar;
+    const autostart = state.data?.autostart;
     const settings = state.data?.settings || {};
 
     const unlockText = unlock
@@ -417,6 +493,12 @@
     const topbarText = meta.topbarActive
       ? `Active v${meta.topbarVersion || ''}`
       : (meta.installMarker?.meterVersion ? `ASAR v${meta.installMarker.meterVersion}` : 'Aux Pane Full Engine');
+
+    const autostartText = autostart
+      ? (autostart.supported === false
+        ? `Unsupported (${autostart.platform || 'linux'})`
+        : `${autostart.enabled ? 'ON' : 'OFF'}${autostart.kind || autostart.method ? ` (${autostart.kind || autostart.method})` : ''}`)
+      : '--';
 
     const launchCmd = 'node plugins/antigravity-context-viewer/cli.js launch --restart';
     const installCmd = 'node plugins/antigravity-context-viewer/cli.js install';
@@ -459,6 +541,10 @@
             <span class="kv-v">${esc(unlockText)}</span>
           </div>
           <div class="kv-row">
+            <span class="kv-k">${esc(t('autostartLabel'))}</span>
+            <span class="kv-v">${esc(autostartText)}</span>
+          </div>
+          <div class="kv-row">
             <span class="kv-k">${esc(t('capsLabel'))}</span>
             <span class="kv-v">${meta.capabilities ? `${Object.keys(meta.capabilities).length} routes ready` : 'active'}</span>
           </div>
@@ -479,6 +565,14 @@
           <span>${esc(t('optCli'))}</span>
           <input id="chk-show-cli" type="checkbox"${settings.showCliButton === true ? ' checked' : ''}>
         </label>
+        <label class="toggle-row">
+          <span>${esc(t('optComposerBar'))}</span>
+          <input id="chk-show-composer-bar" type="checkbox"${settings.showComposerQuotaSummary === true ? ' checked' : ''}>
+        </label>
+        <label class="toggle-row">
+          <span>${esc(t('optTurnFooter'))}</span>
+          <input id="chk-show-turn-footer" type="checkbox"${settings.showTurnFooterStats === true ? ' checked' : ''}>
+        </label>
       </div>
 
       <div class="card">
@@ -496,6 +590,8 @@
     });
     $('chk-sidecar-zh')?.addEventListener('change', (ev) => saveSetting({ sidecarChinese: ev.target.checked }));
     $('chk-show-cli')?.addEventListener('change', (ev) => saveSetting({ showCliButton: ev.target.checked }));
+    $('chk-show-composer-bar')?.addEventListener('change', (ev) => saveSetting({ showComposerQuotaSummary: ev.target.checked }));
+    $('chk-show-turn-footer')?.addEventListener('change', (ev) => saveSetting({ showTurnFooterStats: ev.target.checked }));
   }
 
   async function saveSetting(patch) {
@@ -509,27 +605,20 @@
   }
 
   function applyActiveTabUi(nextTab) {
-    state.tab = nextTab;
-    document.querySelectorAll('.tab').forEach((b) => {
-      const active = b.getAttribute('data-tab') === nextTab;
-      b.classList.toggle('active', active);
-      b.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-
-    const pEmbed = $('panel-embed');
-    const pDiag = $('panel-diagnostics');
+    setOuterTabHighlight(nextTab);
     if (nextTab === 'diagnostics') {
-      pEmbed?.classList.remove('active');
-      pDiag?.classList.add('active');
       renderDiagnosticsTab();
       if (!state.data || state.data.lightweight || !state.data.sidecar) {
         void refresh(false);
       }
     } else {
-      pDiag?.classList.remove('active');
-      pEmbed?.classList.add('active');
       if (window.__AGContextMeter?.showPanel) {
         try { window.__AGContextMeter.showPanel(nextTab); } catch { }
+      }
+      if (window.__AGContextMeter?.relayoutForSidecar && typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          try { window.__AGContextMeter?.relayoutForSidecar?.(); } catch { }
+        });
       }
     }
   }
@@ -623,9 +712,10 @@
 
     $('btn-refresh')?.addEventListener('click', () => refresh(true));
     $('btn-lang')?.addEventListener('click', () => {
-      state.lang = state.lang === 'zh' ? 'en' : 'zh';
+      state.lang = state.lang === 'en' ? 'zh' : 'en';
+      const mapped = state.lang === 'en' ? 'en' : (state.lang === 'zh-TW' ? 'zh-TW' : 'zh-CN');
       if (window.__AGContextMeter?.setPanelLanguage) {
-        try { void window.__AGContextMeter.setPanelLanguage(state.lang === 'zh' ? 'zh-CN' : 'en', { persist: false }); } catch { }
+        try { void window.__AGContextMeter.setPanelLanguage(mapped, { persist: false }); } catch { }
       }
       render();
     });
@@ -642,6 +732,24 @@
         try { window.__AGContextMeter.setSidecarRoute(resolvedId); } catch { }
       }
       refresh(false);
+    });
+
+    window.addEventListener('ag-sidecar-panel-change', (ev) => {
+      const p = ev?.detail?.panel;
+      if (p && ['context', 'quota', 'tokens'].includes(p) && state.tab !== 'diagnostics' && state.tab !== p) {
+        setOuterTabHighlight(p);
+      }
+    });
+
+    let resizeTimerId = null;
+    window.addEventListener('resize', () => {
+      if (resizeTimerId) clearTimeout(resizeTimerId);
+      resizeTimerId = setTimeout(() => {
+        resizeTimerId = null;
+        if (state.embedReady && state.tab !== 'diagnostics' && window.__AGContextMeter?.relayoutForSidecar) {
+          try { window.__AGContextMeter.relayoutForSidecar(); } catch { }
+        }
+      }, 120);
     });
   }
 
