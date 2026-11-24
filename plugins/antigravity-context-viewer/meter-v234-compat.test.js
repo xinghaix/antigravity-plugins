@@ -820,3 +820,74 @@ test('2.35.0 unlock/enhance 磁盘静态缓存命中与失效控制，且兼容 
   assert.equal(hitRes.peBuildId, '1_2_400');
   assert.equal(hitRes.status, 'not_patched');
 });
+
+test('meter-collector.collect 不得用旧步骤 currentError 覆盖更新的成功 generatorMetadata，并正确清除 currentError 与输出 capturedAt', async (t) => {
+  const cascadeId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const server = http.createServer((req, res) => {
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<script>window.__APP_CONFIG__ = {"productName":"antigravity","csrfToken":"tok-recover","appVersion":"2.35.0"};</script>');
+      return;
+    }
+    if (req.url.endsWith('/GetCascadeTrajectory')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'CASCADE_RUN_STATUS_RUNNING',
+        numTotalSteps: 2,
+        numTotalGeneratorMetadata: 2,
+        trajectory: {
+          steps: [
+            { userInput: { userResponse: 'run refactor' } },
+            { errorMessage: { error: { shortError: 'request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF' } } }
+          ]
+        }
+      }));
+      return;
+    }
+    if (req.url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        generatorMetadata: [
+          {
+            stepIndices: [1],
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Neon',
+              retryInfos: [{ error: 'request failed: EOF', usage: { model: 'gemini' } }]
+            }
+          },
+          {
+            stepIndices: [3],
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Neon',
+              finishReason: 'FINISH_REASON_STOP',
+              timeToFirstToken: '3.2s',
+              streamingDuration: '2.1s',
+              usage: { inputTokens: '15000', cacheReadTokens: '420000', outputTokens: '600' },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 983040 } }
+            }
+          }
+        ]
+      }));
+      return;
+    }
+    if (req.url.includes('/GetUserStatus')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ userStatus: {} }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => server.close(r)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+
+  const data = await collector.collect(origin, cascadeId, { force: true });
+  assert.equal(data.latest.error, '');
+  assert.equal(data.latest.network, false);
+  assert.equal(data.latest.status, 'reported');
+  assert.equal(data.latest.actual, 435600);
+  assert.equal(data.session.currentError, null, '更新的成功 generatorMetadata 应清除旧步骤 currentError');
+  assert.equal(data.latestMetaMaxStep, 3);
+  assert.ok(Number.isFinite(data.capturedAt) && data.capturedAt > 0);
+});

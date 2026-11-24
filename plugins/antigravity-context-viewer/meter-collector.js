@@ -1110,6 +1110,7 @@ async function collect(origin, id, options = {}) {
       let latest = null;
       const count = Number(full.numTotalGeneratorMetadata ?? trajectory.generatorMetadata?.length ?? 0);
       const tail = await call('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id, generatorMetadataOffset: Math.max(0, count - 3), includeMessages: false });
+      const capturedAt = Date.now();
       const originScope = normalizeQuotaOriginScope({ origin });
       let cachedStatus = cachedUserStatusByOrigin.get(originScope)?.status || null;
       let knownCascadeConfigs = Array.isArray(cachedStatus?.cascadeModelConfigs) ? cachedStatus.cascadeModelConfigs : [];
@@ -1191,6 +1192,12 @@ async function collect(origin, id, options = {}) {
       const postCompactActiveTotal = session.postCheckpoint
         ? add(add(add({ ...session.postCheckpoint.textTotal }, postCheckpointAttachmentTotal), system), definitions)
         : null;
+      const latestMetaMaxStep = extractGeneratorMaxStep(latestGeneratorMeta);
+      if (session.currentError && latest && latestMetaMaxStep > session.currentError.index) {
+        if (!latest.error) {
+          session.currentError = null;
+        }
+      }
       if (!session.currentError && isCheckpointNewerThanGenerator(session, latestGeneratorMeta, latest)) {
         latest = buildPostCompactSummary({
           session: { ...session, postCompactActiveTotal },
@@ -1200,7 +1207,7 @@ async function collect(origin, id, options = {}) {
           previousLatest: referenceLatest || latest
         });
       }
-      if (session.currentError) {
+      if (session.currentError && !(latest && latestMetaMaxStep > session.currentError.index)) {
         const fromStep = summarize({ chatModel: { retryInfos: [{ error: session.currentError.text }] } }, {
           currentModel: latest?.model || latestModel?.modelDisplayName || latestModel?.model || '',
           cascadeModelConfigs: mergedCascadeConfigs,
@@ -1217,7 +1224,8 @@ async function collect(origin, id, options = {}) {
             status: fromStep.status,
             actual: fromStep.exceeded ? null : (latest?.actual ?? null),
             percent: fromStep.exceeded ? null : (latest?.percent ?? null),
-            estimated: latest?.actual == null
+            estimated: latest?.actual == null,
+            fromStepError: true
           };
         }
       }
@@ -1266,7 +1274,7 @@ async function collect(origin, id, options = {}) {
         source: a?.source || 'user',
         status: a?.status || 'unknown'
       }));
-      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, attachmentsDetail, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
+      const result = { version: PROJECT_VERSION, conversation: id, cascadeStatus: full.status || null, turnTiming, workspacePath: wsPath || null, latest, preCompactLatest: referenceLatest || null, latestCallId, latestCallRecord, recentGeneratorCalls, generatorCount: count, latestMetaMaxStep, capturedAt, cascadeModelConfigs: compactCascadeConfigs, modelCapabilitiesById, session: { ...session, media: undefined, attachmentTotal, postCheckpointAttachmentTotal, postCompactActiveTotal, total, attachments, attachmentsDetail, unknownFiles, complete: unknownFiles === 0, scope: '全量可读取历史 + 上传附件 + 当前系统提示与工具定义；不将每轮重复输入累加；非服务端分词结果' }, scannedAt, errors: [] };
       if (isSuperseded()) {
         const curSup = conversations.get(key);
         if (!curSup || !curSup.taskSeq || curSup.taskSeq <= taskSeq) {
@@ -7126,6 +7134,14 @@ async function collectTokenHistoryCoreAsync(options = {}, extraContext = {}) {
             existingReq.thinkingTokens = rec.thinking;
             existingReq.totalTokens = rec.tot;
             existingReq.status = rec.status || existingReq.status;
+            if (rec.error) {
+              existingReq.error = rec.error;
+            } else if ((rec.status === 'final' || existingReq.status === 'final') && existingReq.error) {
+              delete existingReq.error;
+              if (existingReq.outcomeStatus && existingReq.outcomeStatus !== 'success') {
+                existingReq.outcomeStatus = 'success';
+              }
+            }
             existingReq.date = dateKey;
             if (rec.created_at) existingReq.created_at = rec.created_at;
             existingReq.timestamp = parsedDate.getTime();

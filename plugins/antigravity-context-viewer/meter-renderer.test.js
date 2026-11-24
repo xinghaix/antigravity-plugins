@@ -10893,3 +10893,189 @@ test('speed trend colors and names match each plotted model, including duplicate
     api.dispose();
   }
 });
+
+test('transient network error recovers immediately on newer poll and resists stale slow scan overwrite', async () => {
+  let nowMs = 1_700_000_100_000;
+  class MockDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [nowMs]));
+    }
+    static now() {
+      return nowMs;
+    }
+  }
+  const errSession = {
+    ...session(),
+    steps: 451,
+    currentError: { index: 450, text: 'request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF' }
+  };
+  const h = harness(errSession, { Date: MockDate });
+  const api = h.sandbox.__AGContextMeter;
+  h.sandbox.window.contextMeterAPI.scan = (id, force = false) =>
+    new Promise(resolve => h.scans.push({ id, force, resolve }));
+
+  try {
+    // 1. 首次扫描与轮询处于网络故障态（第 1 条 generatorMetadata，generatorCount=1）
+    const failedLatest = core.summarize({
+      chatModel: {
+        modelDisplayName: 'Gemini 4 Neon',
+        chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 983040 } },
+        retryInfos: [{ error: errSession.currentError.text, usage: { model: 'gemini' } }]
+      }
+    }, { previousValidContext: { actual: 900000, budget: 983040 } });
+    h.scans[0].resolve({
+      ok: true,
+      data: {
+        session: errSession,
+        scannedAt: nowMs,
+        capturedAt: nowMs,
+        generatorCount: 1,
+        latestMetaMaxStep: 449,
+        latest: failedLatest
+      }
+    });
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [449],
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Neon',
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 983040 } },
+            retryInfos: [{ error: errSession.currentError.text, usage: { model: 'gemini' } }]
+          }
+        }]
+      })
+    });
+    await h.flush();
+
+    assert.equal(h.elements.get('badge-pct-val').textContent, '网络');
+    assert.equal(h.elements.get('csb-runtime-text').textContent, '请求异常');
+
+    // 2. 触发一轮慢扫描（模拟 458 步长会话），尚未返回前，新轮询拿到第 2 条成功请求（即使缺 stepIndices！）
+    nowMs += 25000;
+    const slowScanCapturedAt = nowMs;
+    h.tick();
+    await h.flush();
+    assert.equal(h.scans.length, 2);
+    assert.equal(h.pending.length, 2);
+
+    nowMs += 2000;
+    h.pending[1].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [
+          {
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Neon',
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 983040 } },
+              retryInfos: [{ error: errSession.currentError.text, usage: { model: 'gemini' } }]
+            }
+          },
+          {
+            chatModel: {
+              modelDisplayName: 'Gemini 4 Neon',
+              usage: { responseId: 'resp-ok-2', inputTokens: 11000, cacheReadTokens: 890000, outputTokens: 550 },
+              chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 983040 } }
+            }
+          }
+        ]
+      })
+    });
+    await h.flush();
+
+    // 顶栏和底栏必须立即恢复正常显示，不再卡在“网络 / 请求异常”
+    assert.notEqual(h.elements.get('badge-pct-val').textContent, '网络');
+    assert.match(h.elements.get('badge-pct-val').textContent, /92%/);
+    assert.equal(h.elements.get('csb-runtime-text').textContent, '就绪');
+    assert.equal(api.snapshot().latest.error, '');
+
+    // 3. 之前在后台慢吞吞跑完的旧扫描晚到回包（scannedAt 较晚但 generatorCount=1 落后于 state.count=2）
+    nowMs += 1000;
+    h.scans[1].resolve({
+      ok: true,
+      data: {
+        session: errSession,
+        scannedAt: nowMs,
+        capturedAt: slowScanCapturedAt,
+        generatorCount: 1,
+        latestMetaMaxStep: 449,
+        latest: failedLatest
+      }
+    });
+    await h.flush();
+
+    // 严禁被慢扫描的旧 currentError 重新覆盖回“网络 / 请求异常”！
+    assert.notEqual(h.elements.get('badge-pct-val').textContent, '网络');
+    assert.match(h.elements.get('badge-pct-val').textContent, /92%/);
+    assert.equal(h.elements.get('csb-runtime-text').textContent, '就绪');
+    assert.equal(api.snapshot().latest.error, '');
+  } finally {
+    api.dispose();
+  }
+});
+
+test('composer runtime status reflects running cascade, canceled status without keyword, and clean merged call recovery', async () => {
+  const h = harness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    // 1. 同一 callId 先在旧扫描里带错、后在实时轮询里成功完成 -> 合并后不残留旧错
+    h.scans[0].resolve({
+      ok: true,
+      data: {
+        session: session(),
+        scannedAt: Date.now(),
+        capturedAt: Date.now(),
+        generatorCount: 1,
+        cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING',
+        recentGeneratorCalls: [{
+          callId: 'call-retry-1',
+          cascadeId: '11111111-1111-1111-1111-111111111111',
+          stepIndex: 5,
+          status: 'final',
+          outcomeStatus: 'network',
+          error: 'request failed: EOF',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0
+        }],
+        latest: null
+      }
+    });
+    h.pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        generatorMetadata: [{
+          stepIndices: [5],
+          chatModel: {
+            modelDisplayName: 'Gemini 4 Neon',
+            finishReason: 'STOP',
+            usage: { responseId: 'call-retry-1', inputTokens: 12000, cacheReadTokens: 88000, outputTokens: 400 },
+            chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 256000 } },
+            retryInfos: [{ error: 'request failed: EOF', usage: { model: 'gemini' } }]
+          }
+        }]
+      })
+    });
+    await h.flush();
+
+    assert.equal(h.elements.get('badge-pct-val').textContent, '100K · 39%');
+    assert.equal(h.elements.get('csb-runtime-text').textContent, '生成中');
+    assert.equal(h.elements.get('latest-call-status-pill').textContent, '成功');
+
+    // 2. canceled 分类即便错误文案本身不含英文 cancel/abort 也不应被底栏标红为“请求异常”
+    api.setContextLatestForTest({
+      actual: 100400,
+      budget: 256000,
+      percent: 39.2,
+      status: 'canceled',
+      error: '任务已中断',
+      errorClassification: { kind: 'canceled' },
+      exceeded: false,
+      network: false
+    });
+    assert.notEqual(h.elements.get('csb-runtime-text').textContent, '请求异常');
+  } finally {
+    api.dispose();
+  }
+});

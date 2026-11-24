@@ -26029,7 +26029,7 @@ function formatPeriodCalendarLabel(currentPeriod) {
   const range = value => value ? `≈ ${short(value.low)}–${short(value.high)}` : '—';
   const token = value => value == null ? t('common.notProvided') : `${fmt(value)} tokens`;
   const state = {
-    route: null, count: 0, latest: null, requestAt: 0, requestError: '',
+    route: null, count: 0, latest: null, latestGenIndex: -1, latestMetaMaxStep: -1, requestAt: 0, requestError: '',
     requestBusy: false, requestNext: 0, scanBusy: false, scanNext: 0,
     scanError: '', scan: null, generation: 0, controllers: new Set(),
     disposed: false, layoutMode: 'wide', tooltipOpen: false,
@@ -26079,8 +26079,8 @@ function formatPeriodCalendarLabel(currentPeriod) {
     { prefix: 'subagent__', kind: 'browser_subagent' }
   ];
   const SNAPSHOT_STATE_KEYS = [
-    'count', 'latest', 'sessionCostTotal', 'requestAt', 'requestError',
-    'scan', 'scanError', 'displayedCallRecord', 'displayedCallSig',
+    'count', 'latest', 'latestGenIndex', 'latestMetaMaxStep', 'sessionCostTotal', 'requestAt',
+    'scan', 'displayedCallRecord', 'displayedCallSig',
     'sessionTimeline', 'timelineRenderedRoute', 'lastSpeedEval'
   ];
   const SESSION_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
@@ -30475,16 +30475,30 @@ function formatPeriodCalendarLabel(currentPeriod) {
   // =========================================================================
   // 模块 3: 面板、气泡与溢出菜单交互
   // =========================================================================
-  function withStepError(value, metadata) {
+  function withStepError(value, metadata, candidateGenIndex = -1) {
     const error = state.scan?.session?.currentError;
     if (!error || value?.error) return value;
+    const metaMaxStep = metadata
+      ? (typeof extractGeneratorMaxStep === 'function'
+        ? extractGeneratorMaxStep(metadata)
+        : Math.max(-1, ...(metadata?.stepIndices || []), metadata?.chatModel?.chatStartMetadata?.startStepIndex ?? -1))
+      : ((value && value === state.latest && Number.isInteger(state.latestMetaMaxStep)) ? state.latestMetaMaxStep : -1);
     const lastStep = Math.max(
       -1,
-      ...(metadata?.stepIndices || []),
-      metadata?.chatModel?.chatStartMetadata?.startStepIndex ?? -1,
+      metaMaxStep,
       (value?.compacted && Number.isInteger(value?.checkpointIndex)) ? value.checkpointIndex : -1
     );
     if (lastStep > error.index) return value;
+    const scanGenCount = Number.isFinite(Number(state.scan?.generatorCount)) ? Number(state.scan.generatorCount) : -1;
+    const effGenIndex = candidateGenIndex >= 0
+      ? candidateGenIndex
+      : ((value && value === state.latest && Number.isInteger(state.latestGenIndex)) ? state.latestGenIndex : -1);
+    const hasConfirmedNewerSuccess = Boolean(
+      scanGenCount > 0 &&
+      effGenIndex >= scanGenCount &&
+      value && !value.error && (value.actual !== null || value.status === 'reported')
+    );
+    if (hasConfirmedNewerSuccess) return value;
     const failure = summarize({ chatModel: { retryInfos: [{ error: error.text }] } }, {
       currentModel: value?.model || state.latest?.model || '',
       cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [],
@@ -30504,7 +30518,8 @@ function formatPeriodCalendarLabel(currentPeriod) {
       estimate: value?.estimate ?? failure?.estimate ?? null,
       budget: value?.budget ?? failure?.budget ?? null,
       percent: failure.exceeded ? 100 : (value?.percent ?? null),
-      estimated: value?.actual == null
+      estimated: value?.actual == null,
+      fromStepError: true
     };
   }
 
@@ -36106,9 +36121,10 @@ function closeAllDropdowns(exceptWrap = null) {
     }
 
     // 4. 分段上下文构成 (新增 / 写缓存 / 读缓存 / 剩余) 与 75%/90% 阈值着色
-    const latestCallRec = Array.isArray(state.sessionCalls) && state.sessionCalls.length
-      ? state.sessionCalls[state.sessionCalls.length - 1]
-      : null;
+    const latestCallRec = (typeof resolveLatestSessionCallRecord === 'function' ? resolveLatestSessionCallRecord() : null)
+      || (Array.isArray(state.sessionCalls) && state.sessionCalls.length
+        ? state.sessionCalls[state.sessionCalls.length - 1]
+        : null);
     const segUsage = latestCallRec ? {
       inputTokens: latestCallRec.inputTokens ?? 0,
       cacheCreationInputTokens: latestCallRec.cacheCreationInputTokens ?? latestCallRec.cache_creation_input_tokens ?? null,
@@ -36194,10 +36210,56 @@ function closeAllDropdowns(exceptWrap = null) {
     const waitSec = state.livePendingRequest?.startedAtMs
       ? Math.max(0, (Date.now() - Number(state.livePendingRequest.startedAtMs)) / 1000)
       : 0;
-    const isGeneratingNow = Boolean(state.livePendingRequest || (latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming'));
+    const hasLivePending = Boolean(state.livePendingRequest && (!state.route || state.livePendingRequest.cascadeId === state.route));
+    const latestCallCleanStreaming = Boolean(latestCallRec && String(latestCallRec.status || '').toLowerCase() === 'streaming' && !latestCallRec.error);
+    const scanGenCountNow = Number.isFinite(Number(state.scan?.generatorCount)) ? Number(state.scan.generatorCount) : -1;
+    const scanOlderThanLatestError = Boolean(
+      state.latest?.error &&
+      state.scan &&
+      (
+        (state.requestAt > 0 && Number(state.scan.scannedAt || 0) < state.requestAt) ||
+        (scanGenCountNow > 0 && state.latestGenIndex >= scanGenCountNow)
+      )
+    );
+    const scanSaysRunning = Boolean(
+      state.scan &&
+      !scanOlderThanLatestError &&
+      !state.scan.session?.currentError &&
+      (state.scan.cascadeStatus === 'CASCADE_RUN_STATUS_RUNNING' || state.scan.turnTiming?.isRunning === true)
+    );
+    const liveSpeedStreaming = Boolean(
+      state.liveSpeed?.isActivelyStreaming &&
+      (latestCallCleanStreaming || state.liveSpeed?.emaTps != null)
+    );
+    const isGeneratingNow = Boolean(
+      hasLivePending ||
+      latestCallCleanStreaming ||
+      liveSpeedStreaming ||
+      state.turnState?.streaming ||
+      scanSaysRunning
+    );
     const isOfflineNow = typeof navigator !== 'undefined' && navigator.onLine === false;
-    const lastErrMsg = state.latest?.error ? String(state.latest.error) : (state.requestError ? String(state.requestError) : '');
-    const isUserCancel = Boolean(state.latest?.canceled || /cancel|abort/i.test(lastErrMsg));
+    const latestCallRecoveredStep = Boolean(
+      state.latest?.error &&
+      latestCallRec &&
+      latestCallRec.status === 'final' &&
+      !latestCallRec.error &&
+      (latestCallRec.outcomeStatus === 'success' || latestCallRec.outcomeStatus === 'final') &&
+      Number.isInteger(latestCallRec.stepIndex) &&
+      latestCallRec.stepIndex > Math.max(
+        Number.isInteger(state.latestMetaMaxStep) ? state.latestMetaMaxStep : -1,
+        Number.isInteger(state.scan?.session?.currentError?.index) ? state.scan.session.currentError.index : -1
+      )
+    );
+    const lastErrMsg = (!latestCallRecoveredStep && state.latest?.error)
+      ? String(state.latest.error)
+      : (state.requestError ? String(state.requestError) : '');
+    const isUserCancel = Boolean(
+      state.latest?.canceled ||
+      state.latest?.status === 'canceled' ||
+      state.latest?.errorClassification?.kind === 'canceled' ||
+      /cancel|abort/i.test(lastErrMsg)
+    );
 
     const runtimeStatus = typeof evaluateSessionRuntimeStatus === 'function'
       ? evaluateSessionRuntimeStatus({
@@ -54417,6 +54479,21 @@ function initCrossSessionInsightsControls() {
     const sameActiveCall = latestRec && (!d.speed || !latestRec.outputTokens || Math.abs(Number(latestRec.outputTokens) - Number(d.speed?.outputTokens || 0)) <= 50 || latestRec.status === 'streaming');
     const trackedSamples = (latestRec && state.streamSampleTracker?.byCallId?.get?.(latestRec.callId)) || null;
 
+    if (latestRec && latestRec.status === 'streaming' && latestRec.outputTokens > 0 && !latestRec.error) {
+      return {
+        phase: 'streaming',
+        status: 'streaming',
+        ttftSec: latestRec.ttftSec ?? d.speed?.ttft ?? null,
+        streamingSec: latestRec.streamingSec ?? d.speed?.streamingSec ?? trackedSamples?.elapsedStreamSec ?? null,
+        totalDurationSec: latestRec.durationSec ?? d.speed?.duration ?? null,
+        streamSpeed: latestRec.streamingTps ?? d.speed?.streamingTps ?? null,
+        overallTps: latestRec.tps ?? d.speed?.tps ?? null,
+        outputTokens: latestRec.outputTokens ?? d.speed?.outputTokens ?? 0,
+        totalInputTokens: latestRec.totalInputTokens ?? d.input ?? null,
+        chunkCount: trackedSamples?.chunks ?? latestRec.chunkCount ?? null,
+        chunkIntervalsMs: trackedSamples?.intervalsMs ?? latestRec.chunkIntervalsMs ?? null
+      };
+    }
     if (d.status === 'canceled' || d.errorClassification?.kind === 'canceled') {
       return {
         phase: 'canceled',
@@ -54437,21 +54514,6 @@ function initCrossSessionInsightsControls() {
         totalDurationSec: d.speed?.duration ?? null,
         outputTokens: d.speed?.outputTokens ?? null,
         error: d.error || ''
-      };
-    }
-    if (latestRec && latestRec.status === 'streaming' && latestRec.outputTokens > 0) {
-      return {
-        phase: 'streaming',
-        status: 'streaming',
-        ttftSec: latestRec.ttftSec ?? d.speed?.ttft ?? null,
-        streamingSec: latestRec.streamingSec ?? d.speed?.streamingSec ?? trackedSamples?.elapsedStreamSec ?? null,
-        totalDurationSec: latestRec.durationSec ?? d.speed?.duration ?? null,
-        streamSpeed: latestRec.streamingTps ?? d.speed?.streamingTps ?? null,
-        overallTps: latestRec.tps ?? d.speed?.tps ?? null,
-        outputTokens: latestRec.outputTokens ?? d.speed?.outputTokens ?? 0,
-        totalInputTokens: latestRec.totalInputTokens ?? d.input ?? null,
-        chunkCount: trackedSamples?.chunks ?? latestRec.chunkCount ?? null,
-        chunkIntervalsMs: trackedSamples?.intervalsMs ?? latestRec.chunkIntervalsMs ?? null
       };
     }
     if (d.speed) {
@@ -55029,7 +55091,26 @@ function initCrossSessionInsightsControls() {
         mergedById.set(norm.callId, norm);
         continue;
       }
-      // 同一 callId 从不同源补齐耗时、精确模型或状态，不产生第二条
+      // 同一 callId 从不同源补齐耗时、精确模型或状态，不产生第二条；已确认完成的干净成功记录不再被旧扫描中的错误覆盖
+      const normCleanSuccess = Boolean(
+        norm.status === 'final' && !norm.error &&
+        (!norm.outcomeStatus || norm.outcomeStatus === 'success' || norm.outcomeStatus === 'final') &&
+        (Number(norm.totalTokens) || 0) > 0
+      );
+      const prevCleanSuccess = Boolean(
+        prev.status === 'final' && !prev.error &&
+        (!prev.outcomeStatus || prev.outcomeStatus === 'success' || prev.outcomeStatus === 'final') &&
+        (Number(prev.totalTokens) || 0) > 0
+      );
+      const mergedError = (normCleanSuccess && !prevCleanSuccess)
+        ? null
+        : ((prevCleanSuccess && !normCleanSuccess && (Number(prev.totalTokens) || 0) >= (Number(norm.totalTokens) || 0))
+          ? null
+          : (norm.error || prev.error || null));
+      const mergedErrorClassification = mergedError ? (norm.errorClassification || prev.errorClassification || null) : null;
+      const mergedOutcomeStatus = mergedError
+        ? (norm.error ? (norm.outcomeStatus || 'failed') : (prev.outcomeStatus || 'failed'))
+        : ((normCleanSuccess || prevCleanSuccess) ? 'success' : (norm.outcomeStatus || prev.outcomeStatus || 'success'));
       mergedById.set(norm.callId, {
         ...prev,
         ...norm,
@@ -55040,8 +55121,10 @@ function initCrossSessionInsightsControls() {
         durationSec: norm.durationSec ?? prev.durationSec ?? null,
         tps: norm.tps ?? prev.tps ?? null,
         streamingTps: norm.streamingTps ?? prev.streamingTps ?? null,
-        error: norm.error || prev.error || null,
-        errorClassification: norm.errorClassification || prev.errorClassification || null,
+        status: (norm.status === 'final' || prev.status === 'final') ? 'final' : (norm.status || prev.status),
+        outcomeStatus: mergedOutcomeStatus,
+        error: mergedError,
+        errorClassification: mergedErrorClassification,
         hasInputCacheFields: Boolean(norm.hasInputCacheFields || prev.hasInputCacheFields),
         inputTokens: norm.hasInputCacheFields ? norm.inputTokens : (prev.hasInputCacheFields ? prev.inputTokens : norm.inputTokens),
         cacheReadTokens: norm.hasInputCacheFields ? norm.cacheReadTokens : (prev.hasInputCacheFields ? prev.cacheReadTokens : norm.cacheReadTokens),
@@ -55102,7 +55185,7 @@ function initCrossSessionInsightsControls() {
     if (out === 'streaming') return { text: t('session.latestCall.statusStreaming'), cls: 'key-pill pill-warn' };
     if (out === 'canceled') return { text: t('session.latestCall.statusCanceled'), cls: 'key-pill pill-muted' };
     if (out === 'success' || out === 'final') return { text: t('session.latestCall.statusSuccess'), cls: 'key-pill pill-good' };
-    if (out === 'quota_exhausted' || out === 'context_overflow' || out === 'exceeded' || out === 'network' || out === 'network_error' || out === 'rate_limit' || out === 'failed' || call?.error) {
+    if (out === 'quota_exhausted' || out === 'context_overflow' || out === 'exceeded' || out === 'network' || out === 'network_error' || out === 'rate_limit' || out === 'rate_limited' || out === 'auth_error' || out === 'service_unavailable' || out === 'failed' || call?.error) {
       return { text: t('session.latestCall.statusFailed'), cls: 'key-pill pill-danger' };
     }
     return { text: t('session.latestCall.statusUnknown'), cls: 'key-pill pill-muted' };
@@ -58416,7 +58499,7 @@ function initCrossSessionInsightsControls() {
 
     const effectiveCpIdx = Math.max(scanCpIdx, hostCpActive ? Math.max(0, hostStepIdx) : -1);
     if (effectiveCpIdx < 0 && !hostCpActive) {
-      return withStepError(candidateLatest, candidateMeta);
+      return withStepError(candidateLatest, candidateMeta, candidateGenIndex);
     }
 
     if (candidateLatest && !candidateLatest.compacted) {
@@ -58429,7 +58512,7 @@ function initCrossSessionInsightsControls() {
           if (hCwu && hCwu.estimatedAfterCompaction && (hostStepIdx < 0 || rowMaxStep > hostStepIdx)) {
             hCwu.estimatedAfterCompaction = false;
           }
-          return withStepError(candidateLatest, candidateMeta);
+          return withStepError(candidateLatest, candidateMeta, candidateGenIndex);
         }
       } else if (hasOutcome) {
         const lastModelStep = Number.isInteger(scanSession?.lastModelStepAt)
@@ -58444,7 +58527,7 @@ function initCrossSessionInsightsControls() {
           if (hCwu && hCwu.estimatedAfterCompaction) {
             hCwu.estimatedAfterCompaction = false;
           }
-          return withStepError(candidateLatest, candidateMeta);
+          return withStepError(candidateLatest, candidateMeta, candidateGenIndex);
         }
       }
     }
@@ -58470,10 +58553,10 @@ function initCrossSessionInsightsControls() {
         hostContextWindowUsage: hCwu,
         defaultBudgetFallback: resolveDefaultBudgetFallbackForCompaction(baseRef)
       });
-      return withStepError(compactedObj, null);
+      return withStepError(compactedObj, null, candidateGenIndex);
     }
 
-    return withStepError(candidateLatest, candidateMeta);
+    return withStepError(candidateLatest, candidateMeta, candidateGenIndex);
   }
 
   async function requestPoll(generation, id) {
@@ -58502,7 +58585,7 @@ function initCrossSessionInsightsControls() {
       if (fromCache && nextCount < prevCount) {
         sessionSnapshotCache.delete(id);
         state.sessionCallsMap?.clear();
-        if (!nextCount) Object.assign(state, { latest: null, displayedCallRecord: null, displayedCallSig: '', lastSpeedEval: null });
+        if (!nextCount) Object.assign(state, { latest: null, latestGenIndex: -1, latestMetaMaxStep: -1, displayedCallRecord: null, displayedCallSig: '', lastSpeedEval: null });
       }
       state.count = nextCount;
       if (!state.sessionCallsMap) state.sessionCallsMap = new Map();
@@ -58655,7 +58738,15 @@ function initCrossSessionInsightsControls() {
         const value = summarize(rows[i], { cascadeModelConfigs: state.cascadeModelConfigs || state.scan?.cascadeModelConfigs || [] });
         if (value) {
           matchedPollRow = true;
-          state.latest = resolveEffectiveLatestWithCompaction(value, rows[i], offset + i);
+          const prevLatest = state.latest;
+          const rowGenIndex = offset + i;
+          const rowMaxStep = typeof extractGeneratorMaxStep === 'function' ? extractGeneratorMaxStep(rows[i]) : -1;
+          state.latest = resolveEffectiveLatestWithCompaction(value, rows[i], rowGenIndex);
+          state.latestGenIndex = rowGenIndex;
+          state.latestMetaMaxStep = rowMaxStep;
+          if (prevLatest?.error && !state.latest?.error && state.scan?.session?.currentError) {
+            state.scanNext = Math.min(state.scanNext || (Date.now() + 1000), Date.now() + 1000);
+          }
           const callInfo = parseGeneratorCall ? parseGeneratorCall(rows[i], id, 'desktop', { cascadeModelConfigs: modelConfigsList }) : null;
           updateLiveSpeedTracker(id, rows[i], state.latest, callInfo);
           if (!state.latest?.compacted || state.latest?.postCompactSource === 'host_context_window_usage') {
@@ -58756,9 +58847,31 @@ function initCrossSessionInsightsControls() {
       if (Array.isArray(result.data.cascadeModelConfigs) && result.data.cascadeModelConfigs.length) {
         state.cascadeModelConfigs = result.data.cascadeModelConfigs;
       }
-      if (result.data.scannedAt >= state.requestAt && result.data.latest) {
+      const scanGenCount = Number.isFinite(Number(result.data.generatorCount)) ? Number(result.data.generatorCount) : -1;
+      const scanCaptureTs = Number(result.data.capturedAt || result.data.scannedAt || 0);
+      const pollAheadOfScan = Boolean(
+        state.latest &&
+        scanGenCount >= 0 &&
+        (state.count > scanGenCount || (state.latestGenIndex >= 0 && state.latestGenIndex >= scanGenCount))
+      );
+      const scanIsFreshForLatest = !pollAheadOfScan && (
+        !state.requestAt ||
+        scanCaptureTs >= state.requestAt ||
+        (scanGenCount > 0 && scanGenCount > (state.count || 0))
+      );
+      if (scanIsFreshForLatest && result.data.latest) {
         state.latest = result.data.latest;
-        state.requestAt = result.data.scannedAt;
+        state.requestAt = Number(result.data.scannedAt || Date.now());
+        state.requestError = '';
+        if (scanGenCount > 0 && scanGenCount > (state.count || 0)) {
+          state.count = scanGenCount;
+        }
+        if (scanGenCount > 0) {
+          state.latestGenIndex = scanGenCount - 1;
+        }
+        state.latestMetaMaxStep = Number.isInteger(result.data.latestMetaMaxStep)
+          ? result.data.latestMetaMaxStep
+          : (Number.isInteger(result.data.latestCallRecord?.stepIndex) ? result.data.latestCallRecord.stepIndex : -1);
         const genSteps = Number(result.data.generatorCount);
         const msgSteps = Number(result.data.session?.userMessages || 0) + Number(result.data.session?.assistantMessages || 0);
         const resolvedStepCount = Number.isFinite(genSteps) && genSteps >= 0 ? genSteps : (msgSteps > 0 ? msgSteps : state.count);
@@ -58769,11 +58882,17 @@ function initCrossSessionInsightsControls() {
             ts: Number(result.data.scannedAt || Date.now())
           });
         }
+      } else if (!result.data.session?.currentError && state.latest?.fromStepError) {
+        // 旧 step error 已在最新扫描中清除，触发下一次即时轮询恢复干净状态
+        state.requestNext = 0;
       }
+      const effScanGenIdx = state.latestGenIndex >= 0
+        ? state.latestGenIndex
+        : (state.count > 0 ? state.count - 1 : -1);
       state.latest = resolveEffectiveLatestWithCompaction(
         state.latest || result.data.latest || null,
         null,
-        state.count > 0 ? state.count - 1 : -1
+        effScanGenIdx
       );
       if (state.latest?.compacted && !state.requestAt) {
         state.requestAt = Number(result.data.scannedAt || Date.now());
@@ -62878,7 +62997,7 @@ function initCrossSessionInsightsControls() {
       if (state.expandedTurnKeys) state.expandedTurnKeys.clear();
       if (state.expandedTreeCats) state.expandedTreeCats.clear();
       Object.assign(state, {
-        route: id, count: 0, latest: null, sessionCalls: [], sessionCostTotal: 0,
+        route: id, count: 0, latest: null, latestGenIndex: -1, latestMetaMaxStep: -1, sessionCalls: [], sessionCostTotal: 0,
         callsHydrated: false, requestAt: 0, requestError: '', requestBusy: false, requestNext: 0,
         scanBusy: false, scanNext: 0, scanError: '', scan: null,
         displayedCallRecord: null, displayedCallSig: '', pendingLatestCallRecord: null,
@@ -63144,7 +63263,7 @@ function initCrossSessionInsightsControls() {
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch { }
   globalThis.__AGContextMeter = {
-    buildId: 'bd54a384e198c2d5',
+    buildId: '8054df68ae3551d7',
     version: METER_RENDERER_VERSION,
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {

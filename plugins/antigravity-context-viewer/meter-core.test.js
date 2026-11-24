@@ -5804,3 +5804,138 @@ test('v0.9.0-beta.1: unknown_drop 无证据突降防误判、组成步骤边界/
   assert.equal(grouped.agentFleetSummary.subagents[0].modelBreakdown[0].modelLabel, 'Gemini 3.8 Flash');
 });
 
+test('retryInfos recovery: successful final retry clears transient network error across summarize, parseGeneratorCall and summarizeTurnTiming', () => {
+  const {
+    resolveChatModelRetryAndUsage,
+    parseGeneratorCall,
+    summarizeTurnTiming
+  } = require('./meter-core');
+
+  // 1. 先发生瞬时 EOF 写入 retryInfos，随后重试成功并带上 STOP finishReason 与完整顶层 usage
+  const recoveredRow = {
+    stepIndices: [12],
+    chatModel: {
+      modelDisplayName: 'Gemini 4 Neon',
+      finishReason: 'FINISH_REASON_STOP',
+      timeToFirstToken: '4.2s',
+      streamingDuration: '3.0s',
+      usage: {
+        responseId: 'resp-ok-2',
+        inputTokens: '11000',
+        cacheReadTokens: '500000',
+        outputTokens: '550'
+      },
+      chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 983040 } },
+      retryInfos: [
+        {
+          error: 'request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF',
+          usage: { model: 'gemini', responseId: 'resp-fail-1' }
+        }
+      ]
+    }
+  };
+  const resolved = resolveChatModelRetryAndUsage(recoveredRow.chatModel, recoveredRow);
+  assert.equal(resolved.retryRecovered, true);
+  assert.equal(resolved.error, '');
+  assert.equal(resolved.usage.outputTokens, '550');
+
+  const sum = summarize(recoveredRow);
+  assert.equal(sum.error, '');
+  assert.equal(sum.network, false);
+  assert.equal(sum.status, 'reported');
+  assert.equal(sum.errorClassification.kind, 'none');
+  assert.equal(sum.actual, 511550);
+
+  const parsed = parseGeneratorCall(recoveredRow, 'cid-retry-ok', 'desktop');
+  assert.equal(parsed.outcomeStatus, 'success');
+  assert.equal(parsed.error, undefined);
+  assert.equal(parsed.outputTokens, 550);
+
+  const timing = summarizeTurnTiming({
+    steps: [
+      { userInput: { userResponse: 'continue' }, metadata: { createdAt: '2026-11-24T10:00:00Z' } },
+      { plannerResponse: { response: 'done' }, metadata: { createdAt: '2026-11-24T10:00:08Z' } }
+    ],
+    stepOffset: 11,
+    generatorMetadata: [recoveredRow],
+    cascadeStatus: 'CASCADE_RUN_STATUS_IDLE',
+    nowMs: Date.parse('2026-11-24T10:00:10Z')
+  });
+  assert.equal(timing.outputTokens, 550);
+
+  // 2. 无 finishReason 但顶层 usage 携带了不同于失败 retry 的新 responseId
+  const respIdRecovered = {
+    chatModel: {
+      usage: { responseId: 'resp-new', inputTokens: '8000', outputTokens: '200' },
+      retryInfos: [{ error: 'context deadline exceeded', usage: { responseId: 'resp-old' } }]
+    }
+  };
+  assert.equal(summarize(respIdRecovered).error, '');
+  assert.equal(summarize(respIdRecovered).actual, 8200);
+
+  // 3. 末次 retryInfo 本身无 error 但缺少 token 字段时，安全回落顶层 usage
+  const emptyLastRetry = {
+    chatModel: {
+      usage: { inputTokens: '12000', outputTokens: '300' },
+      retryInfos: [{ error: 'EOF' }, {}]
+    }
+  };
+  assert.equal(summarize(emptyLastRetry).error, '');
+  assert.equal(summarize(emptyLastRetry).actual, 12300);
+
+  // 4. 真正的失败（无正常 finishReason、无新 responseId，哪怕带部分 usage 或异常 finishReason）绝不误判为成功
+  const genuineFailed = {
+    chatModel: {
+      finishReason: 'FINISH_REASON_ERROR',
+      usage: { inputTokens: '50000', outputTokens: '10' },
+      retryInfos: [{ error: 'request failed: stream idle timeout (5m0s): context deadline exceeded', usage: { model: 'gemini' } }]
+    }
+  };
+  const failedSum = summarize(genuineFailed);
+  assert.equal(failedSum.network, true);
+  assert.equal(failedSum.status, 'network');
+  assert.equal(failedSum.errorClassification.kind, 'network_error');
+});
+
+test('analyzeSteps clears stale currentError after subsequent non-error tool steps while preserving error after failed steps', () => {
+  const netErr = { errorMessage: { error: { shortError: 'request failed: EOF' } } };
+
+  // 报错后若紧跟正常/运行中的工具步骤，说明会话已恢复推进，currentError 必须清除
+  const recoveredByToolDone = analyzeSteps([
+    { userInput: { userResponse: 'fix ui' } },
+    netErr,
+    { writeToFile: { targetFileUri: 'file:///NetworkRulesView.svelte' }, status: 'STEP_STATUS_DONE' }
+  ]);
+  assert.equal(recoveredByToolDone.currentError, null);
+
+  const recoveredByToolRunning = analyzeSteps([
+    { userInput: { userResponse: 'fix ui' } },
+    netErr,
+    { runCommand: { commandLine: 'npm test' }, status: 'STEP_STATUS_RUNNING' }
+  ]);
+  assert.equal(recoveredByToolRunning.currentError, null);
+
+  // 报错后若紧跟另一个失败工具步骤，不得误清 currentError
+  const stillFailed = analyzeSteps([
+    { userInput: { userResponse: 'fix ui' } },
+    netErr,
+    { runCommand: { commandLine: 'npm test' }, status: 'STEP_STATUS_ERROR', error: 'exit 1' }
+  ]);
+  assert.ok(stillFailed.currentError);
+});
+
+test('evaluateSessionRuntimeStatus prioritizes active generation/compaction/retry over stale lastError', () => {
+  const { evaluateSessionRuntimeStatus } = require('./meter-core');
+
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, lastError: 'request failed: EOF' }).state, 'running');
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, lastError: 'request failed: EOF' }).reasonCode, 'generating');
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, waitSec: 70, lastError: 'request failed: EOF' }).reasonCode, 'slow_wait');
+  assert.equal(evaluateSessionRuntimeStatus({ isCompacting: true, lastError: 'request failed: EOF' }).reasonCode, 'compacting');
+  assert.equal(evaluateSessionRuntimeStatus({ retryAttempt: 1, lastError: 'request failed: EOF' }).reasonCode, 'retrying');
+
+  // 空闲态、离线或断连仍按错误上报
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: false, lastError: 'request failed: EOF' }).reasonCode, 'request_error');
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, isOffline: true, lastError: 'EOF' }).reasonCode, 'offline');
+  assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, disconnectedSec: 15 }).reasonCode, 'disconnected');
+});
+

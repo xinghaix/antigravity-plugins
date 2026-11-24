@@ -760,11 +760,62 @@
     };
   }
 
+  function hasValidTokenUsage(usage) {
+    if (!usage || typeof usage !== 'object') return false;
+    const input = number(usage.inputTokens) || 0;
+    const cacheWrite = number(usage.cacheCreationInputTokens ?? usage.cacheWriteTokens ?? usage.cacheWriteInputTokens) || 0;
+    const cached = number(usage.cacheReadTokens) || 0;
+    const output = number(usage.outputTokens) || 0;
+    return (input + cacheWrite + cached + output) > 0;
+  }
+
+  /**
+   * 统一解析 chatModel 的 retryInfos 与顶层 usage/finishReason：
+   * - 若单次请求在 retryInfos 中记录过瞬时失败，但顶层已无 error 且携带明确的正常结束标记
+   *   （如 STOP / END_TURN / TOOL_CALLS / MAX_TOKENS）或更新的 responseId 与有效用量，
+   *   则判定最终重试已成功，清除旧重试错误并采用顶层 usage；
+   * - 若最终 retryInfo 本身无 error 但缺少 token 字段，则安全回落到顶层 usage；
+   * - 若无最终成功证据，保持既有语义，以末次 retryInfo 的错误与用量（或顶层 error）为准。
+   */
+  function resolveChatModelRetryAndUsage(cm, row = null) {
+    const m = cm && typeof cm === 'object' ? cm : {};
+    const retryList = Array.isArray(m.retryInfos) ? m.retryInfos : [];
+    const lastRetry = retryList.length ? retryList[retryList.length - 1] : null;
+    const directError = String(m.error || row?.error || '').trim();
+    const lastRetryError = String(lastRetry?.error || '').trim();
+    const topUsage = m.usage && typeof m.usage === 'object' ? m.usage : null;
+    const retryUsage = lastRetry?.usage && typeof lastRetry.usage === 'object' ? lastRetry.usage : null;
+    const topHasUsage = hasValidTokenUsage(topUsage);
+    const retryHasUsage = hasValidTokenUsage(retryUsage);
+
+    const rawFinish = String(m.finishReason || row?.finishReason || '').trim();
+    const isCleanFinishReason = Boolean(rawFinish) &&
+      !/(?:ERROR|FAIL|CANCEL|ABORT|TIMEOUT|EXCEED|BLOCK|SAFETY|RECITATION|MALFORMED|OTHER|UNSPECIFIED)/i.test(rawFinish);
+    const topRespId = String(topUsage?.responseId || '').trim();
+    const retryRespId = String(retryUsage?.responseId || '').trim();
+    const hasNewerResponseId = Boolean(topRespId && retryRespId && topRespId !== retryRespId && topHasUsage);
+    const retryRecovered = Boolean(
+      !directError &&
+      lastRetryError &&
+      ((isCleanFinishReason && topHasUsage) || hasNewerResponseId)
+    );
+
+    const error = retryRecovered ? '' : String(lastRetryError || directError || '');
+    let usage;
+    if (retryRecovered) {
+      usage = topUsage || retryUsage || null;
+    } else if (!error) {
+      usage = retryHasUsage ? retryUsage : (topUsage || retryUsage || null);
+    } else {
+      usage = lastRetry ? (lastRetry.usage || null) : topUsage;
+    }
+    return { lastRetry, error, usage, retryRecovered };
+  }
+
   function summarize(metadata, options = {}) {
     const m = metadata?.chatModel;
     if (!m) return null;
-    const lastRetry = (m.retryInfos || []).at(-1);
-    const error = String(lastRetry?.error || m.error || '');
+    const { error, usage } = resolveChatModelRetryAndUsage(m, metadata);
     const model = m.modelDisplayName || m.responseModel || m.model || options.currentModel || '';
     const modelRaw = String(m.model || m.modelOrAlias?.model || m.responseModel || m.modelDisplayName || options.currentModel || '').trim();
     const modelId = resolveStableModelId(m, options.cascadeModelConfigs || []) || resolveStableModelId(options.currentModel, options.cascadeModelConfigs || []) || null;
@@ -780,7 +831,6 @@
     const network = classification.kind === 'network_error';
     const serviceLimit = classification.serviceLimit || null;
 
-    const usage = lastRetry ? lastRetry.usage : m.usage;
     const input = number(usage?.inputTokens);
     const cacheWrite = number(usage?.cacheCreationInputTokens ?? usage?.cacheWriteTokens ?? usage?.cacheWriteInputTokens);
     const cached = number(usage?.cacheReadTokens), output = number(usage?.outputTokens);
@@ -1061,7 +1111,7 @@
     };
     const media = new Map();
     let userMessages = 0, assistantMessages = 0, latestStepError = null, lastUserAt = -1, lastAssistantAt = -1;
-    let checkpointCount = 0, lastCheckpointIndex = -1, lastCheckpointFailed = false, inProgressCheckpointIndex = -1, lastModelStepAt = -1;
+    let checkpointCount = 0, lastCheckpointIndex = -1, lastCheckpointFailed = false, inProgressCheckpointIndex = -1, lastModelStepAt = -1, lastSuccessModelStepAt = -1;
     let postCheckpointText = empty();
     let postCheckpointMediaRefs = new Map();
     const skip = new Set(['metadata', 'userConfig', 'lastUserConfig', 'userAgentSpec', 'activeUserState', 'thinkingSignature', 'thumbnail', 'inlineData', 'media', 'modelUsage', 'tokenUsage', 'mendelExperimentIds']);
@@ -1164,6 +1214,7 @@
         attachments(u.media?.length ? u.media : u.items, 'user');
       } else if (s.plannerResponse) {
         assistantMessages++; lastAssistantAt = i; lastModelStepAt = i;
+        if (stepStatus !== 'error') lastSuccessModelStepAt = i;
         compositionSubgroups.assistantCount++;
         const aRaw = s.plannerResponse.modifiedResponse || s.plannerResponse.response || '';
         const tRaw = s.plannerResponse.thinking || '';
@@ -1239,6 +1290,7 @@
         }
         if (toolAcc.chars > 0 || toolAcc.bytes > 0) {
           lastModelStepAt = i;
+          if (stepStatus !== 'error') lastSuccessModelStepAt = i;
           const middle = (toolAcc.chars - toolAcc.cjk) / 4 + toolAcc.cjk * 1.2;
           const toolMeasured = {
             chars: toolAcc.chars,
@@ -1312,7 +1364,7 @@
       }
     }
     const total = Object.values(groups).reduce(add, empty());
-    const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt, lastCheckpointIndex)
+    const currentError = latestStepError && latestStepError.index > Math.max(lastUserAt, lastAssistantAt, lastCheckpointIndex, lastSuccessModelStepAt)
       ? latestStepError
       : null;
     const postCheckpoint = lastCheckpointIndex >= 0 ? {
@@ -2966,8 +3018,7 @@
     const settledGmStepSet = new Set();
     for (const g of turnGms) {
       const cm = g?.chatModel || {};
-      const lastRetry = (cm.retryInfos || []).at(-1);
-      const usage = lastRetry ? lastRetry.usage : cm.usage;
+      const { usage } = resolveChatModelRetryAndUsage(cm, g);
       const tSec = parseDurationSec(cm.timeToFirstToken);
       const sSec = parseDurationSec(cm.streamingDuration);
       if (tSec !== null) {
@@ -4123,7 +4174,8 @@
   function parseGeneratorCall(row, cascadeId = null, source = 'desktop', options = {}) {
     if (!row || typeof row !== 'object') return null;
     const cm = row.chatModel || {};
-    const u = cm.usage || {};
+    const { error: rawError, usage: resolvedRetryUsage } = resolveChatModelRetryAndUsage(cm, row);
+    const u = hasValidTokenUsage(resolvedRetryUsage) ? resolvedRetryUsage : (cm.usage || {});
     const hasExplicitInput = u.inputTokens !== undefined || row.inputTokens !== undefined || row.input_tokens !== undefined;
     const hasExplicitCache = u.cacheReadTokens !== undefined || row.cacheTokens !== undefined || row.cacheReadTokens !== undefined || row.cache_read_tokens !== undefined;
     const hasExplicitOutput = u.outputTokens !== undefined || row.outputTokens !== undefined || row.output_tokens !== undefined;
@@ -4146,8 +4198,6 @@
     const responseTokens = Number(u.responseOutputTokens ?? row.responseTokens ?? (output - thinking > 0 ? output - thinking : output));
     const totalTokens = input + cached + output;
 
-    const lastRetry = Array.isArray(cm.retryInfos) && cm.retryInfos.length ? cm.retryInfos[cm.retryInfos.length - 1] : null;
-    const rawError = String(lastRetry?.error || cm.error || row.error || '').trim();
     const errorClassification = rawError
       ? classifyRequestError(rawError, {
         currentModel: modelLabelRaw || model,
@@ -10403,14 +10453,6 @@
         detail: '当前网络离线，请求无法触达模型服务端.'
       };
     }
-    if (lastError && !isUserCanceled) {
-      return {
-        state: 'error',
-        reasonCode: 'request_error',
-        label: '请求异常',
-        detail: lastError
-      };
-    }
     if (disconnectedSec >= 12) {
       return {
         state: 'error',
@@ -10468,6 +10510,14 @@
         reasonCode: 'generating',
         label: '生成中',
         detail: waitSec > 0 ? `正在生成模型响应（已耗时 ${Math.round(waitSec)}s）.` : '正在生成模型响应.'
+      };
+    }
+    if (lastError && !isUserCanceled) {
+      return {
+        state: 'error',
+        reasonCode: 'request_error',
+        label: '请求异常',
+        detail: lastError
       };
     }
     return {
@@ -11564,6 +11614,7 @@
     add,
     empty,
     analyzeSteps,
+    resolveChatModelRetryAndUsage,
     buildSessionCompositionBreakdown,
     sanitizeCommandPreview,
     sanitizeCompositionPreview,
