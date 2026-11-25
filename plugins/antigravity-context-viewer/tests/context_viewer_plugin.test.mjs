@@ -69,6 +69,13 @@ const testFiles = [
   'meter-v091-dashboard-gesture.test.js',
   'meter-v091-skyline-layout.test.js',
   'meter-v091-gap-closure.test.js',
+  'meter-turn-footer-recovery.test.js',
+  'meter-model-picker.test.js',
+  'meter-next-prompt.test.js',
+  'meter-host-settings-update.test.js',
+  'meter-phase8-pr-convergence.test.js',
+  'meter-v092-batch01-followup.test.js',
+  'meter-host-settings-browser.test.js',
   'sidecar-live.test.js',
 ];
 

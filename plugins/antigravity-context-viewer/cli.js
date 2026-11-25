@@ -40,7 +40,8 @@ const {
   getWatchBundleBuildId
 } = require('./install');
 const { restore, tryHotDispose } = require('./restore');
-const { resolvePython, syncLiveRuntimeBundle, OFFICIAL_REPO } = require('./meter-collector');
+const { resolvePython, syncLiveRuntimeBundle, getStagedLiveRuntime, OFFICIAL_REPO } = require('./meter-collector');
+const { compareVersions } = require('./meter-core');
 const { PROJECT_VERSION } = require('./modules-config');
 const { redactProxyUrl } = require('./meter-proxy');
 const { analyzeBinary, analyzeBinaryAsync, applyUnlock, restoreUnlock, detectCliBinary, AUTHOR_INFO } = require('./meter-context-unlock');
@@ -1024,13 +1025,15 @@ async function queryLiveWindow(options = {}) {
     if (!target) return { running: true, cdpEnabled: true, cdpPort: port, pageFound: false, origins: [] };
     const origin = normalizeLoopbackOrigin(target.url) || new URL(target.url).origin;
     const origins = Array.from(new Set(matchedTargets.map(p => normalizeLoopbackOrigin(p.url)).filter(Boolean)));
+    const lightProbe = Boolean(options.lightProbe);
 
     try {
       const client = await createCdpClient(target.webSocketDebuggerUrl, { timeoutMs: 4000 });
       try {
         const status = await client.evaluateValue(`(async () => {
-        const s = window.__AGContextMeter?.snapshot();
-        const root = document.getElementById('ag-context-meter')?.shadowRoot;
+        const light = ${lightProbe ? 'true' : 'false'};
+        const s = light ? null : window.__AGContextMeter?.snapshot();
+        const root = light ? null : document.getElementById('ag-context-meter')?.shadowRoot;
         let ipcRuntimeInfo = null;
         if (typeof window.contextMeterAPI?.getRuntimeInfo === 'function') {
           try { ipcRuntimeInfo = await window.contextMeterAPI.getRuntimeInfo(); } catch {}
@@ -1039,7 +1042,7 @@ async function queryLiveWindow(options = {}) {
         const backendStatus = typeof window.__AGContextMeter?.getBackendStatusForTest === 'function'
           ? window.__AGContextMeter.getBackendStatusForTest()
           : null;
-        const quotaState = typeof window.__AGContextMeter?.getModelQuotaStateForTest === 'function'
+        const quotaState = (!light && typeof window.__AGContextMeter?.getModelQuotaStateForTest === 'function')
           ? window.__AGContextMeter.getModelQuotaStateForTest()
           : null;
         return {
@@ -1516,7 +1519,7 @@ async function runWatchDaemon(options = {}) {
 
   const discoverFn = typeof options._discoverWindow === 'function'
     ? options._discoverWindow
-    : () => queryLiveWindow(options);
+    : () => queryLiveWindow({ ...options, lightProbe: true });
 
   if (!options._discoverWindow && !options._ensureLiveWindow && !options._hotInject && options.autoRecover !== false) {
     await tryAutoRecoverBeforeLaunch(options.customPath || null, { ...options, stateDir }, 'watch');
@@ -1708,7 +1711,9 @@ async function runWatchDaemon(options = {}) {
         ? options.expectedBuildId
         : (options.expectedBundleBuildId !== undefined ? options.expectedBundleBuildId : getWatchBundleBuildId(rootDir));
 
-      if (startupHostBuildId && currentHostBuildId && currentHostBuildId !== startupHostBuildId) {
+      const staged = getStagedLiveRuntime({ stateDir });
+      const stagedScript = staged && compareVersions(staged.version, expectedVersion) > 0 ? path.join(staged.dir, 'cli.js') : null;
+      if (stagedScript || (startupHostBuildId && currentHostBuildId && currentHostBuildId !== startupHostBuildId)) {
         const isTestEnv = process.env.AG_METER_TEST_MODE === '1' || process.env.NODE_ENV === 'test';
         const shouldSelfReload = options.selfReloadOnHostChange === true ||
           (!isTestEnv && options.selfReloadOnHostChange !== false && maxCycles === Infinity);
@@ -1718,8 +1723,9 @@ async function runWatchDaemon(options = {}) {
           }
           await stopLiveBridge({ stateDir });
           cleanupLockfile();
-          const reloadArgs = [expectedScript, 'watch', '--no-launch'];
+          const reloadArgs = [stagedScript || expectedScript, 'watch', '--no-launch'];
           if (options.port) reloadArgs.push('--port', String(options.port));
+          if (options.customPath) reloadArgs.push('--path', options.customPath);
           const reloadSpawner = options._spawnSelfReload || spawn;
           const child = reloadSpawner(process.execPath, reloadArgs, {
             detached: true,
@@ -2031,6 +2037,7 @@ async function cmdCheck(customPath, cdpOptions = {}) {
   }
   const py = resolvePython();
   console.log(`  - Python 附件深度解析器: ${py || '未检测到（基础上下文统计不受影响）'}`);
+  let hasPreflightBlocker = false;
   try {
     const { inspectHostRecoveryState } = require('./host-recovery');
     const rec = inspectHostRecoveryState({ asarPath, stateDir: cdpOptions.stateDir || getStateDir(), ...cdpOptions });
@@ -2038,12 +2045,17 @@ async function cmdCheck(customPath, cdpOptions = {}) {
       ? '正常'
       : (rec.state === 'not_installed' ? '未安装（全新宿主）' : `⚠️ 需要恢复 (${rec.state}: ${rec.reason})`);
     console.log(`  - 宿主覆盖/恢复探测 (ELV-105): ${recLabel}`);
+    console.log(`  - 入口结构与语法预检: ${rec.preflight?.structureValid ? '✅ 通过' : `❌ 未通过 (${rec.preflight?.structureStage || rec.preflight?.reason || 'unknown'})`}`);
     if (rec.needsRecovery && !rec.preflight?.blocked) {
       console.log('    建议执行: node cli.js recover');
     } else if (rec.preflight?.blocked) {
-      console.log(`    写前拦截提示: ${rec.preflight.guidance}`);
+      hasPreflightBlocker = true;
+      console.error(`    写前拦截 [阶段=${rec.preflight.structureStage || rec.preflight.reason || 'blocked'}]: ${rec.preflight.guidance}`);
     }
-  } catch {}
+  } catch (e) {
+    hasPreflightBlocker = true;
+    console.error(`  ❌ 宿主结构预检异常: ${e?.message || e}`);
+  }
   const queryFn = typeof cdpOptions._queryLiveWindow === 'function' ? cdpOptions._queryLiveWindow : queryLiveWindow;
   const live = await queryFn(cdpOptions);
   if (live.running && live.cdpEnabled !== false) {
@@ -2061,6 +2073,11 @@ async function cmdCheck(customPath, cdpOptions = {}) {
     } else {
       console.log('  - 运行中窗口 CDP 状态: 客户端未运行（运行 node cli.js live 或 watch 可自动带调试端口启动并挂载）');
     }
+  }
+  if (hasPreflightBlocker) {
+    console.error('❌ 环境预检未通过，当前目标存在写前拦截条件，请按上方提示处理（勿直接改盘）。');
+    process.exitCode = 1;
+    return;
   }
   console.log('✅ 环境预检通过！');
 }
@@ -2199,11 +2216,11 @@ const CLI_BOOLEAN_FLAGS = new Set([
   '--force', '--all', '--restart', '--cli', '--no-cli-sync', '--no-sync', '--previous', '--in-place', '--no-shortcut',
   '--today', '--week', '--month', '--json', '--compact', '--once', '--dry-run',
   '--clear', '--sync-cli-settings', '--no-open', '--relaunch', '--no-launch', '--force-mac-asar', '--disk-only',
-  '--check-only', '--silent'
+  '--check-only', '--beta', '--silent'
 ]);
 
 const CLI_KNOWN_COMMANDS = new Set([
-  'install', 'recover', 'live', 'launch', 'watch', 'stop-watch', 'restore', 'uninstall',
+  'install', 'update', 'recover', 'live', 'launch', 'watch', 'stop-watch', 'restore', 'uninstall',
   'autostart-status', 'autostart:enable', 'autostart:disable',
   'sidecar:install', 'sidecar:uninstall', 'sidecar:status', 'sidecar:once',
   'install-cli', 'restore-cli', 'status-cli',
@@ -2247,6 +2264,7 @@ function printUsage() {
   node cli.js sidecar:status                查看 Sidecar 配置与运行日志状态
   node cli.js sidecar:once                  执行单次 Sidecar 探测与热注入
   node cli.js sidecar:uninstall             移除 Sidecar 自动挂载配置
+  node cli.js update [--check-only] [--beta] [--json]          检查或下载免改盘更新，供 live / watch 加载
   node cli.js install [--path <app.asar>] [--force-mac-asar]    一键持久化安装并热注入当前运行窗口
   node cli.js recover [--path <app.asar>] [--check-only] [--json]  检测并在宿主更新覆盖后自动备份恢复插件配置
   node cli.js status [--port <port>]        查看安装状态与当前对话实时上下文用量
@@ -2321,6 +2339,18 @@ async function main() {
     return;
   }
   const cmd = parsedArgs.cmd;
+  if (cmd === 'live' || cmd === 'watch') {
+    const staged = getStagedLiveRuntime();
+    if (staged && compareVersions(staged.version, PROJECT_VERSION) > 0) {
+      const code = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [path.join(staged.dir, 'cli.js'), ...args], { stdio: 'inherit' });
+        child.once('error', reject);
+        child.once('close', code => resolve(code ?? 1));
+      });
+      process.exitCode = code;
+      return;
+    }
+  }
   const pathIdx = args.indexOf('--path');
   const customPath = pathIdx >= 0 ? args[pathIdx + 1] : null;
   const backupIdx = args.indexOf('--backup');
@@ -2490,9 +2520,24 @@ async function main() {
     } else if (!res.ok && res.action !== 'skipped') {
       process.exitCode = 1;
     }
+  } else if (cmd === 'update') {
+    const { checkUpdateAsync, applyUpdateAsync } = require('./meter-collector');
+    const flags = { liveOnly: true, ...(args.includes('--beta') ? { allowBetaUpdates: true } : {}) };
+    const release = await checkUpdateAsync({ ...flags, force: true });
+    if (!release.ok) throw new Error(release.error || '检查更新失败');
+    const checkedOnly = args.includes('--check-only') || !release.hasUpdate;
+    const result = checkedOnly ? release : await applyUpdateAsync({
+      ...flags, version: release.latestVersion, allowBetaUpdates: release.allowBetaUpdates || release.prerelease
+    });
+    if (!result.ok) throw new Error(result.error || '免改盘更新失败');
+    if (args.includes('--json')) console.log(JSON.stringify(result, null, 2));
+    else if (result.liveStaged) console.log(`已下载并验证 v${result.version}。由 watch 自动切换，或运行 node cli.js live 加载。`);
+    else if (result.hasUpdate) console.log(`发现可用版本 v${result.latestVersion}`);
+    else console.log(`已是最新版本 v${result.installedVersion}`);
   } else if (cmd === 'live') {
     await cmdLive(customPath, cdpOptions, {
       relaunch: isRelaunch,
+      autoRecover: getStagedLiveRuntime()?.dir !== __dirname,
       autoLaunch: !isNoLaunch
     });
   } else if (cmd === 'launch') {
@@ -2555,6 +2600,7 @@ async function main() {
     const res = await runWatchDaemon({
       ...cdpOptions,
       customPath,
+      autoRecover: getStagedLiveRuntime()?.dir !== __dirname,
       autoBootstrapHost: !isNoLaunch,
       autoLaunch: !isNoLaunch,
       relaunch: isRelaunch

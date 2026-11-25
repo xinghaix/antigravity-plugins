@@ -41,6 +41,7 @@
       optCli: '顶栏面板显示 CLI 快捷入口',
       optComposerBar: '在输入框下方显示上下文与配额状态条',
       optTurnFooter: '在每条回复尾部显示统计微徽标',
+      optNextPrompt: '启用下一句预测建议（默认关闭）',
       saveOk: '设置已保存',
       logTitle: 'Sidecar 最近日志'
     },
@@ -80,6 +81,7 @@
       optCli: '頂欄面板顯示 CLI 快速入口',
       optComposerBar: '在輸入框下方顯示上下文與配額狀態列',
       optTurnFooter: '在每則回覆尾部顯示統計微徽章',
+      optNextPrompt: '啟用下一句預測建議（預設關閉）',
       saveOk: '設定已儲存',
       logTitle: 'Sidecar 最近日誌'
     },
@@ -119,6 +121,7 @@
       optCli: 'Show CLI quick button on topbar widget',
       optComposerBar: 'Show compact context & quota strip below composer',
       optTurnFooter: 'Show mini stats footer on each assistant reply',
+      optNextPrompt: 'Enable next-prompt prediction suggestions (off by default)',
       saveOk: 'Settings saved',
       logTitle: 'Recent Sidecar Logs'
     }
@@ -225,7 +228,7 @@
     window.__AGContextMeterLive = {
       port: 1,
       token: 'sidecar-inproc',
-      version: '0.9.2-1',
+      version: '0.9.3-1',
       capabilities: state.data?.meta?.capabilities || null,
       backendSource: 'sidecar-inproc'
     };
@@ -571,7 +574,11 @@
         </label>
         <label class="toggle-row">
           <span>${esc(t('optTurnFooter'))}</span>
-          <input id="chk-show-turn-footer" type="checkbox"${settings.showTurnFooterStats === true ? ' checked' : ''}>
+          <input id="chk-show-turn-footer" type="checkbox"${settings.showTurnFooterStats !== false ? ' checked' : ''}>
+        </label>
+        <label class="toggle-row">
+          <span>${esc(t('optNextPrompt'))}</span>
+          <input id="chk-next-prompt" type="checkbox"${settings.nextPromptEnabled === true ? ' checked' : ''}>
         </label>
       </div>
 
@@ -592,6 +599,7 @@
     $('chk-show-cli')?.addEventListener('change', (ev) => saveSetting({ showCliButton: ev.target.checked }));
     $('chk-show-composer-bar')?.addEventListener('change', (ev) => saveSetting({ showComposerQuotaSummary: ev.target.checked }));
     $('chk-show-turn-footer')?.addEventListener('change', (ev) => saveSetting({ showTurnFooterStats: ev.target.checked }));
+    $('chk-next-prompt')?.addEventListener('change', (ev) => saveSetting({ nextPromptEnabled: ev.target.checked }));
   }
 
   async function saveSetting(patch) {

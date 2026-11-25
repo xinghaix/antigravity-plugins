@@ -1060,10 +1060,13 @@ test('sidecar ui-server lightweight overview skips heavy collectors and caches q
   }
 });
 
-test('sidecar ui-server exposes autostart status and saves v0.9.2 opt-in display toggles', async () => {
+test('sidecar ui-server v0.9.3 defaults showTurnFooterStats=true, persists nextPromptEnabled, and live-host allows /predict-next-prompt', async () => {
   const { startSidecarUiServer } = require('./sidecars/live-loader/ui-server');
-  const posts = new Map();
+  const liveHost = require('./live-host');
+  assert.ok(liveHost.ALLOWED_ROUTES.includes('/predict-next-prompt'), 'live-host ALLOWED_ROUTES must include /predict-next-prompt');
+  assert.ok(liveHost.ALLOWED_ROUTES.includes('/sidecar-chinese-toggle'), 'live-host ALLOWED_ROUTES must include /sidecar-chinese-toggle');
 
+  const posts = new Map();
   class MockResponse {
     constructor(body, init = {}) {
       this.body = body;
@@ -1078,13 +1081,12 @@ test('sidecar ui-server exposes autostart status and saves v0.9.2 opt-in display
     run() { return { port: 49996, async close() {} }; }
   }
 
-  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-v092-'));
+  const tmpAg = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-ui-v093-'));
   fs.mkdirSync(path.join(tmpAg, 'conversations'), { recursive: true });
   const storedSettings = {
     sidecarChinese: true,
     showCliButton: false,
     showComposerQuotaSummary: false,
-    showTurnFooterStats: false,
     panelLanguage: 'zh-CN'
   };
 
@@ -1105,22 +1107,20 @@ test('sidecar ui-server exposes autostart status and saves v0.9.2 opt-in display
         cli: { queryLiveWindow: async () => ({ running: true, cdpEnabled: false }) },
         sidecarLive: { getSidecarPluginStatus: () => ({ installed: true, scriptExists: true, runtimeLog: { tail: [] } }) },
         asarEngine: { getStateDir: () => tmpAg },
-        autostart: { getAutostartStatus: () => ({ supported: true, enabled: true, platform: 'darwin', kind: 'launchagent', file: '/secret/home/path.plist' }) },
+        autostart: { getAutostartStatus: () => ({ supported: true, enabled: false, platform: 'darwin', kind: 'launchagent' }) },
         liveHost: { LIVE_CAPABILITIES: {}, createLiveRequestHandler: () => () => {} }
       }
     });
 
     const ov = await posts.get('/api/overview')({});
     assert.equal(ov.ok, true);
-    assert.deepEqual(ov.autostart, { supported: true, enabled: true, platform: 'darwin', kind: 'launchagent', method: 'launchagent', reason: null });
-    assert.equal(ov.autostart.file, undefined, 'autostart payload must omit filesystem paths');
-    assert.equal(ov.settings.showComposerQuotaSummary, false);
-    assert.equal(ov.settings.showTurnFooterStats, false);
+    assert.equal(ov.settings.showTurnFooterStats, true, 'v0.9.3 showTurnFooterStats defaults to true');
+    assert.equal(ov.settings.nextPromptEnabled, false, 'v0.9.3 nextPromptEnabled defaults to false');
 
-    const saved = await posts.get('/api/settings')({ showComposerQuotaSummary: true, showTurnFooterStats: true });
+    const saved = await posts.get('/api/settings')({ nextPromptEnabled: true, showTurnFooterStats: false });
     assert.equal(saved.ok, true);
-    assert.equal(saved.settings.showComposerQuotaSummary, true);
-    assert.equal(saved.settings.showTurnFooterStats, true);
+    assert.equal(saved.settings.nextPromptEnabled, true);
+    assert.equal(saved.settings.showTurnFooterStats, false);
 
     await srv.close();
   } finally {

@@ -42,9 +42,9 @@ async function loadSidecarSdk() {
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '0.9.2-1';
+    return pkg.version || '0.9.3-1';
   } catch {
-    return '0.9.2-1';
+    return '0.9.3-1';
   }
 }
 
@@ -128,7 +128,8 @@ function sanitizeSettingsPayload(settings) {
     showCliButton: settings.showCliButton === true,
     sidecarChinese: settings.sidecarChinese !== false,
     showComposerQuotaSummary: settings.showComposerQuotaSummary === true,
-    showTurnFooterStats: settings.showTurnFooterStats === true,
+    showTurnFooterStats: settings.showTurnFooterStats !== false,
+    nextPromptEnabled: settings.nextPromptEnabled === true,
     topbarMode: settings.topbarMode || 'full',
     panelDockMode: settings.panelDockMode || 'popover',
     contextScopeMode: settings.contextScopeMode || 'unified',
@@ -475,6 +476,7 @@ function createUiHandlers(options = {}) {
     if (typeof data.showCliButton === 'boolean') patch.showCliButton = data.showCliButton;
     if (typeof data.showComposerQuotaSummary === 'boolean') patch.showComposerQuotaSummary = data.showComposerQuotaSummary;
     if (typeof data.showTurnFooterStats === 'boolean') patch.showTurnFooterStats = data.showTurnFooterStats;
+    if (typeof data.nextPromptEnabled === 'boolean') patch.nextPromptEnabled = data.nextPromptEnabled;
     if (typeof data.panelLanguage === 'string' && ['zh-CN', 'zh-TW', 'en'].includes(data.panelLanguage)) {
       patch.panelLanguage = data.panelLanguage;
     }

@@ -728,10 +728,12 @@ test('PR #66 加固：额度 IPC 拒绝渲染进程伪造 origin/userStatus 且 
     if (forceUnauthorized) {
       return { ok: false, error: 'HTTP 401', errorKind: 'auth', snapshot: { syncState: 'stale', pools: [] } };
     }
+    const nowTs = Date.now();
     return {
       ok: true,
       error: null,
-      snapshot: core.buildModelQuotaSnapshot({ userStatusRes, quotaSummaryRes, nowMs: Date.now() }),
+      fetchedAtMs: nowTs,
+      snapshot: core.buildModelQuotaSnapshot({ userStatusRes, quotaSummaryRes, fetchMeta: { fetchedAtMs: nowTs }, nowMs: nowTs }),
       _raw: { planStatus: { email: 'real-quota@example.com' } }
     };
   });
@@ -3801,8 +3803,9 @@ test('额度消耗节奏 UI：双轨20格渲染、分层紧凑与展开、顶栏
   assert.equal(h.elements.get('panel-quota').hidden, false, '补充任务 A: 点击底栏额度项直达模型额度看板');
   h.elements.get('csb-group-quota').click();
   assert.equal(h.elements.get('panel-quota').hidden, true, '二次点击底栏额度项关闭模型额度看板');
-  h.elements.get('badge-quota').click();
-  assert.equal(h.elements.get('panel-quota').hidden, false, '点击顶部额度圆环正常打开额度看板');
+  const quotaBadge = h.elements.get('badge-quota');
+  quotaBadge.dispatchEvent({ type: 'click', target: quotaBadge, detail: 0 });
+  assert.equal(h.elements.get('panel-quota').hidden, false, '键盘激活顶部额度圆环可打开额度看板');
   const chkComposerQuota = h.elements.get('chk-show-composer-quota');
   chkComposerQuota.checked = false;
   chkComposerQuota.dispatchEvent({ type: 'change', target: chkComposerQuota });

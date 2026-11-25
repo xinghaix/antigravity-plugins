@@ -13,9 +13,9 @@ const ACTIVE_POLL_MS = 20000;
 function readPackageVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    return pkg.version || '0.9.2-1';
+    return pkg.version || '0.9.3-1';
   } catch {
-    return '0.9.2-1';
+    return '0.9.3-1';
   }
 }
 

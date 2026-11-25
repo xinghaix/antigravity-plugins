@@ -818,6 +818,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const resNormal = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowIntegrityOverride: true,
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerNormal
@@ -830,6 +831,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const resFail = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowIntegrityOverride: true,
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerFail
@@ -852,6 +854,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const resTimeout = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowIntegrityOverride: true,
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerTimeout,
@@ -866,6 +869,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const resTrue = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowIntegrityOverride: true,
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerLiveTrue
@@ -877,6 +881,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   const resFalse = await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowIntegrityOverride: true,
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
     _spawn: spawnerLiveFalse
@@ -897,6 +902,7 @@ test('子进程更新 3.3：异步子进程非阻塞、超时、非零退出码�
   await applyUpdateAsync({
     version: '0.9.0',
     currentVersion: '0.8.10',
+    allowIntegrityOverride: true,
     targetPath: 'D:\\custom\\antigravity\\resources\\app.asar',
     _requestGithubUrl: mockFetcher,
     _extractZip: mockExtractZip,
@@ -1144,6 +1150,7 @@ test('界面状态 5.5：应用更新文案区分热注入即时生效与需重�
 
 test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最新且红点与更新按钮自动消除', async () => {
   const h = setupRendererHarness();
+  const currentVer = h.sandbox.__AGContextMeter.version;
   let checkCount = 0;
   h.sandbox.window.contextMeterAPI.checkUpdate = async (opts) => {
     checkCount++;
@@ -1152,15 +1159,15 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
         ok: true,
         hasUpdate: true,
         currentVersion: '0.8.0',
-        latestVersion: '0.8.1'
+        latestVersion: currentVer
       };
     }
     return {
       ok: true,
       hasUpdate: false,
-      currentVersion: opts?.currentVersion || '0.8.1',
-      installedVersion: '0.8.1',
-      latestVersion: '0.8.1'
+      currentVersion: opts?.currentVersion || currentVer,
+      installedVersion: currentVer,
+      latestVersion: currentVer
     };
   };
 
@@ -1168,7 +1175,9 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
     ok: true,
     diskInstalled: true,
     liveInjected: true,
-    version: '0.8.1'
+    backendHotReloaded: true,
+    backendVersion: currentVer,
+    version: currentVer
   });
 
   // 1. 首次检查并应用更新
@@ -1183,13 +1192,14 @@ test('界面状态 5.6：在线更新完成后再次检查更新呈现已是最�
   const dot = h.elements.get('update-badge-dot');
   const pop = h.elements.get('update-popover');
 
-  // 2. 更新完成后弹窗关闭，用户再次主动触发“检查更新”
+  // 2. 前后端版本均已对齐后弹窗关闭，用户再次主动触发“检查更新”
   pop.style.display = 'none';
   h.elements.get('btn-check-update').click();
   await h.flush();
 
+  const escapedVer = currentVer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.equal(titleEl.textContent, '✅ 已是最新版本');
-  assert.match(verEl.textContent, /v0\.8\.1.*已是最新/);
+  assert.match(verEl.textContent, new RegExp(`v?${escapedVer}.*已是最新`));
   assert.equal(applyBtn.style.display, 'none');
   assert.equal(applyBtn.disabled, true);
   assert.equal(dot.style.display, 'none');

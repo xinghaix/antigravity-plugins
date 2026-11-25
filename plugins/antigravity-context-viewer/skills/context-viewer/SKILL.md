@@ -1,11 +1,11 @@
 ---
 name: context-viewer
-description: "Inspect and manage the modified Antigravity Context Viewer & Token Dashboard plugin (v0.9.2-1: full-feature Aux Pane Sidecar UI for Antigravity 2.33+/2.34+, CDP auto-loader, live status check, and optional modules)."
+description: "Inspect and manage the modified Antigravity Context Viewer & Token Dashboard plugin (v0.9.3-1: full-feature Aux Pane Sidecar UI for Antigravity 2.33+/2.35.1+, native Settings page integration, CDP auto-loader, live status check, and optional modules)."
 ---
 
 # Antigravity Context Viewer (`antigravity-context-viewer`)
 
-This plugin is a modified edition (`v0.9.2-1`, synced to upstream `v0.9.2`) of upstream [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer), packaged as a native Antigravity plugin with the `live-loader` background Sidecar.
+This plugin is a modified edition (`v0.9.3-1`, synced to upstream `v0.9.3`) of upstream [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer), packaged as a native Antigravity plugin with the `live-loader` background Sidecar.
 
 ## How It Works
 

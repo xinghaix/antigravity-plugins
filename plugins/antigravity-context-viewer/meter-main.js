@@ -34,7 +34,17 @@ const {
   restoreContextUnlockAsync,
   syncPricingCatalogAsync
 } = require('./meter-collector');
-const { isValidExternalUrl } = require('./meter-core');
+const { isValidExternalUrl, compareVersions } = require('./meter-core');
+
+function isHostVersionAtLeast(targetVersion = '2.34.0') {
+  try {
+    const raw = typeof app?.getVersion === 'function' ? String(app.getVersion() || '').trim() : '';
+    if (!raw) return false;
+    return compareVersions(raw, targetVersion) >= 0;
+  } catch {
+    return false;
+  }
+}
 const { PROJECT_VERSION } = require('./modules-config');
 const MAIN_STARTED_AT = Date.now();
 const MAIN_CAPABILITIES = {
@@ -540,12 +550,15 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
       };
     }
 
-    // 若用户是关闭一个原本就未注入的模块，直接同步配置
+    // 若用户是关闭一个原本就未注入的模块，直接同步配置（只改目标语言，绝不覆盖原有品牌选择）
     if (!targetEnable && !(moduleName === 'chinese' && extraOpts?.brandTitle && extraOpts.brandTitle !== 'english')) {
       cfg.modules[moduleName].enabled = false;
       if (moduleName === 'chinese') {
         cfg.modules.chinese.language = 'en';
-        cfg.modules.chinese.brandTitle = 'english';
+        if (extraOpts?.brandTitle !== undefined) {
+          const { normalizeBrandTitle } = require('./modules-config');
+          cfg.modules.chinese.brandTitle = normalizeBrandTitle(extraOpts.brandTitle);
+        }
       }
       if (moduleName === 'proxy' && extraOpts) {
         if (typeof extraOpts.proxyUrl === 'string' && extraOpts.proxyUrl.trim()) {
@@ -584,7 +597,7 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
     const installerDir = fs.existsSync(path.join(__dirname, 'package.json')) ? __dirname : getLiveRuntimeDir();
     const installBrandSupport = moduleName === 'chinese' && extraOpts.brandTitle && extraOpts.brandTitle !== 'english';
     if ((targetEnable || installBrandSupport) && disk.meterReady && disk.asarPath && ['proxy', 'chinese'].includes(moduleName)
-        && fs.existsSync(path.join(installerDir, 'install.js'))) {
+      && fs.existsSync(path.join(installerDir, 'install.js'))) {
       const patch = { enabled: true };
       if (moduleName === 'proxy') {
         const proxy = validateProxyUrlInput(extraOpts.proxyUrl ?? cfg.modules.proxy.proxyUrl);
@@ -607,9 +620,11 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
         await new Promise((resolve, reject) => {
           execFile(rt.runtime, argv, {
             cwd: installerDir,
-            env: { ...rt.env, AG_METER_STATE_DIR: getStateDir(), AG_OPTIONAL_MODULE_INSTALL: JSON.stringify({
-              path: disk.asarPath, modules: { [moduleName]: patch }, noHotInject: true
-            }) },
+            env: {
+              ...rt.env, AG_METER_STATE_DIR: getStateDir(), AG_OPTIONAL_MODULE_INSTALL: JSON.stringify({
+                path: disk.asarPath, modules: { [moduleName]: patch }, noHotInject: true
+              })
+            },
             windowsHide: true,
             timeout: 60000
           }, (error, _stdout, stderr) => {
@@ -627,9 +642,11 @@ async function handleToggleModule(event, moduleName, enable, extraOpts = {}) {
           message: '可选模块已安装，重启客户端后生效'
         };
       } catch (error) {
-        return { ok: false, status: 'install_failed', data: loadModulesConfig(),
+        return {
+          ok: false, status: 'install_failed', data: loadModulesConfig(),
           disk: inspectDiskModules(disk.asarPath, { forceRefresh: true }),
-          restartRequired: false, error: error.message };
+          restartRequired: false, error: error.message
+        };
       }
     }
 
@@ -669,10 +686,20 @@ async function handleRestartHost(event, options = {}) {
     ? options.args
     : (Array.isArray(process.argv) ? process.argv.slice(1) : []);
   const delayMs = Number.isFinite(Number(options?.delayMs)) ? Number(options.delayMs) : 80;
+  try {
+    targetApp.relaunch({ args });
+  } catch (error) {
+    return { ok: false, supported: true, error: error.message };
+  }
   const triggerRestart = () => {
     try {
       setAppQuitting(true);
-      targetApp.relaunch({ args });
+      try {
+        const hostUtils = require('./utils');
+        if (typeof hostUtils?.setShowQuitConfirmation === 'function') {
+          hostUtils.setShowQuitConfirmation(false);
+        }
+      } catch { }
       targetApp.quit();
     } catch { }
   };
@@ -808,22 +835,145 @@ function registerMeterIpcHandlers(ipcMain) {
       const { _raw, ...safePayload } = res || {};
       let accountSyncResult = null;
       try {
-        const { getSharedAccountsManager } = require('./meter-accounts');
+        const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
         const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
         const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-        const email = !switchInFlight
-          ? (res?.email || _raw?.planStatus?.email || res?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+        const sourceEmail = !switchInFlight
+          ? (res?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || res?.planStatus?.email || null)
           : null;
-        if (!switchInFlight && res?.ok && email && res?.snapshot) {
-          mgr.syncActiveHostQuotaSnapshot(res, email);
-          const ov = mgr.getOverviewState();
-          if (ov.autoSwitch?.enabled && !res.error) {
-            accountSyncResult = await mgr.evaluateAutoSwitch({
-              activeEmail: email,
-              activeSnapshot: res.snapshot,
-              syncState: 'fresh',
-              isGenerating: options?.isGenerating === true
-            });
+        const activeDetectedEmail = !switchInFlight
+          ? (sourceEmail || (await mgr.detectCurrentActiveAccount())?.email || null)
+          : null;
+        const trustCtx = deriveTrustedAutoSwitchQuotaContext({
+          res,
+          raw: _raw,
+          activeEmail: activeDetectedEmail
+        });
+        if (!switchInFlight && trustCtx.trusted && trustCtx.email && res?.snapshot) {
+          mgr.syncActiveHostQuotaSnapshot(res, trustCtx.email);
+        }
+        const ov = mgr.getOverviewState();
+        if (!switchInFlight && ov.autoSwitch?.enabled) {
+          const requiresClientRestart = isHostVersionAtLeast('2.34.0');
+          const openWindowCount = countOpenHostWindows();
+          const hasRestartApi = typeof app?.relaunch === 'function' && typeof app?.quit === 'function';
+          const isGeneratingNow = options?.isGenerating === true;
+          const hasUnsavedDraft = options?.hasUnsavedDraft === true;
+          const canRestart = requiresClientRestart
+            && !isGeneratingNow
+            && !hasUnsavedDraft
+            && openWindowCount <= 1
+            && hasRestartApi;
+          const blockedRestartReason = !canRestart
+            ? (isGeneratingNow
+              ? 'generation_in_progress'
+              : (hasUnsavedDraft
+                ? 'unsaved_draft_present'
+                : (openWindowCount > 1 ? 'multi_window_open' : 'client_restart_requires_idle_window')))
+            : undefined;
+          const expectedActiveEmail = (trustCtx.email || activeDetectedEmail)
+            ? String(trustCtx.email || activeDetectedEmail).trim().toLowerCase()
+            : null;
+          const snapshotRuleSig = JSON.stringify({
+            poolKey: ov.autoSwitch?.poolKey || '',
+            windowKey: ov.autoSwitch?.windowKey || '',
+            metricMode: ov.autoSwitch?.metricMode || '',
+            thresholdPct: ov.autoSwitch?.thresholdPct ?? null,
+            candidates: Array.isArray(ov.autoSwitch?.candidates) ? ov.autoSwitch.candidates : []
+          });
+          const queryLiveGuardState = async () => {
+            if (typeof options?.getLiveGuardState === 'function') {
+              try {
+                const live = await options.getLiveGuardState();
+                if (live && typeof live === 'object') return live;
+              } catch { }
+            }
+            if (event?.sender && !event.sender.isDestroyed?.() && typeof event.sender.executeJavaScript === 'function') {
+              try {
+                const live = await Promise.race([
+                  event.sender.executeJavaScript('window.__AGContextMeter?.getLiveAutoSwitchGuardState?.() || null', true),
+                  new Promise(resolve => setTimeout(() => resolve(null), 500))
+                ]);
+                if (live && typeof live === 'object') return live;
+              } catch { }
+            }
+            return {
+              isGenerating: options?.isGenerating === true,
+              hasComposerDraft: false,
+              hasRuleDraft: options?.hasUnsavedDraft === true
+            };
+          };
+          const evalSyncState = trustCtx.trusted
+            ? 'fresh'
+            : (trustCtx.syncState && trustCtx.syncState !== 'fresh' ? trustCtx.syncState : 'untrusted');
+          accountSyncResult = await mgr.evaluateAutoSwitch({
+            activeEmail: expectedActiveEmail,
+            activeSnapshot: res?.snapshot || null,
+            syncState: evalSyncState,
+            allowLiveCandidateRefresh: true,
+            isGenerating: isGeneratingNow,
+            hasUnsavedDraft,
+            openWindowCount,
+            requiresClientRestart,
+            blockedRestartReason,
+            preRestartNoticeDelayMs: Number.isFinite(Number(options?.preRestartNoticeDelayMs))
+              ? Number(options.preRestartNoticeDelayMs)
+              : (event?.sender && typeof event.sender.executeJavaScript === 'function' ? 2000 : 0),
+            onBeforeRestartNotice: async (meta) => {
+              if (event?.sender && !event.sender.isDestroyed?.() && typeof event.sender.executeJavaScript === 'function') {
+                try {
+                  await event.sender.executeJavaScript(
+                    `window.__AGContextMeter?.showAutoSwitchPreRestartNotice?.(${JSON.stringify(meta)})`,
+                    true
+                  );
+                } catch { }
+              }
+            },
+            onAbortRestartNotice: async (abortInfo) => {
+              if (event?.sender && !event.sender.isDestroyed?.() && typeof event.sender.executeJavaScript === 'function') {
+                try {
+                  await event.sender.executeJavaScript(
+                    `window.__AGContextMeter?.clearAutoSwitchPreRestartNotice?.(${JSON.stringify(abortInfo?.error || '')})`,
+                    true
+                  );
+                } catch { }
+              }
+            },
+            preCommitCheck: async ({ phase } = {}) => {
+              const latestOv = mgr.getOverviewState();
+              if (!latestOv?.autoSwitch?.enabled) {
+                return { ok: false, deferred: true, reason: 'auto_switch_disabled', error: '自动切号已被关闭，取消切换' };
+              }
+              const latestRuleSig = JSON.stringify({
+                poolKey: latestOv.autoSwitch?.poolKey || '',
+                windowKey: latestOv.autoSwitch?.windowKey || '',
+                metricMode: latestOv.autoSwitch?.metricMode || '',
+                thresholdPct: latestOv.autoSwitch?.thresholdPct ?? null,
+                candidates: Array.isArray(latestOv.autoSwitch?.candidates) ? latestOv.autoSwitch.candidates : []
+              });
+              if (latestRuleSig !== snapshotRuleSig) {
+                return { ok: false, deferred: true, reason: 'rule_changed_before_commit', error: '自动切号规则已变更，已中止旧切换并回滚' };
+              }
+              if (expectedActiveEmail && latestOv.activeAccountEmail && String(latestOv.activeAccountEmail).trim().toLowerCase() !== expectedActiveEmail) {
+                return { ok: false, deferred: true, reason: 'active_account_changed', error: '当前激活账号已发生变化，取消旧上下文切换' };
+              }
+              const latestWinCount = countOpenHostWindows();
+              if (latestWinCount > 1) {
+                return { ok: false, deferred: true, reason: 'multi_window_open', error: '检测到新打开的 Antigravity 窗口，已延后切号与重启' };
+              }
+              const liveGuard = await queryLiveGuardState();
+              if (liveGuard?.isGenerating === true) {
+                return { ok: false, deferred: true, reason: 'generation_in_progress', error: phase === 'before_restart' ? '会话开始生成，已中止并回滚本次切换' : '当前有会话正在生成，已延后自动切号' };
+              }
+              if (liveGuard?.hasComposerDraft === true || liveGuard?.hasRuleDraft === true) {
+                return { ok: false, deferred: true, reason: 'unsaved_draft_present', error: '检测到未发送的聊天草稿或未保存规则，已延后自动切号并回滚' };
+              }
+              return { ok: true };
+            },
+            restartClient: canRestart ? () => handleRestartHost(event) : undefined
+          });
+          if (accountSyncResult && typeof accountSyncResult === 'object') {
+            accountSyncResult.overview = mgr.getOverviewState();
           }
         }
       } catch { }
@@ -1160,8 +1310,9 @@ function registerMeterIpcHandlers(ipcMain) {
       const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
       const mgr = getSharedAccountsManager({ origin: url.origin, getLiveOrigins: getActiveHubWindowOrigins });
       let restartClient;
-      if (payload?.action === 'switch' && process.platform === 'darwin' && /^2\.34\./.test(app?.getVersion?.() || '')
-          && typeof app?.relaunch === 'function' && typeof app?.quit === 'function') {
+      const requiresClientRestart = isHostVersionAtLeast('2.34.0');
+      if (payload?.action === 'switch' && requiresClientRestart
+        && typeof app?.relaunch === 'function' && typeof app?.quit === 'function') {
         const { dialog } = require('electron');
         const zh = /^zh/i.test(app.getLocale?.() || '');
         const result = await dialog.showMessageBox({
@@ -1171,10 +1322,16 @@ function registerMeterIpcHandlers(ipcMain) {
           cancelId: 1,
           message: zh ? '切换账号需要重新启动 Antigravity' : 'Restart Antigravity to switch accounts'
         });
-        if (result.response !== 0) return { ok: false, cancelled: true };
+        if (result.response !== 0) {
+          return { ok: false, cancelled: true, reason: 'user_cancelled_restart', overview: mgr.getOverviewState() };
+        }
         restartClient = () => handleRestartHost(event);
       }
-      return await dispatchAccountsAction(mgr, payload || {}, { restartClient });
+      return await dispatchAccountsAction(mgr, payload || {}, {
+        restartClient,
+        requiresClientRestart,
+        allowManualRestartPending: requiresClientRestart && !restartClient
+      });
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1227,6 +1384,34 @@ function registerMeterIpcHandlers(ipcMain) {
       };
     } catch (e) {
       return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('context-meter:predict-next-prompt', async (event, payload = {}) => {
+    const url = isLocalMainFrameSender(event);
+    if (!url) throw new Error('仅允许本机主聊天窗口');
+    try {
+      const settings = getPluginSettings();
+      if (settings.nextPromptEnabled !== true) {
+        return { ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 };
+      }
+      const { predictNextPromptAsync } = require('./meter-next-prompt');
+      const safeInput = {
+        cascadeId: typeof payload?.cascadeId === 'string' ? payload.cascadeId : undefined,
+        turnId: typeof payload?.turnId === 'string' ? payload.turnId : undefined,
+        language: typeof payload?.language === 'string' ? payload.language : undefined,
+        turns: Array.isArray(payload?.turns) ? payload.turns : [],
+        preferences: Array.isArray(payload?.preferences) ? payload.preferences : [],
+        verificationEvidence: typeof payload?.verificationEvidence === 'string' ? payload.verificationEvidence : undefined,
+        taskMarkdown: typeof payload?.taskMarkdown === 'string' ? payload.taskMarkdown : undefined
+      };
+      return await predictNextPromptAsync(safeInput, {
+        origin: url.origin,
+        model: typeof payload?.model === 'string' && payload.model.trim() ? payload.model.trim() : undefined,
+        allowGetModelResponseFallback: payload?.allowGetModelResponseFallback === true
+      });
+    } catch (e) {
+      return { ok: false, abstained: true, suggestion: '', error: e.message };
     }
   });
 }
@@ -1307,6 +1492,49 @@ function getActiveHubWindowOrigins() {
     }
   } catch { }
   return origins;
+}
+
+/**
+ * 统计当前活跃的 Antigravity 宿主窗口数量（基于 Window 实例与 webContents ID 精确去重，防止多窗口共享原点时误判单窗口）
+ */
+function countOpenHostWindows() {
+  const seenWins = new Set();
+  const seenWcIds = new Set();
+  let count = 0;
+  const collectWin = (win) => {
+    if (!win || seenWins.has(win) || win.isDestroyed?.()) return;
+    seenWins.add(win);
+    try {
+      // 跳过宿主内部隐形背景窗口（未最小化且不可见）
+      if (typeof win.isVisible === 'function' && !win.isVisible() && !win.isMinimized?.()) return;
+      const wc = getWindowWebContents(win);
+      if (wc && !wc.isDestroyed?.()) {
+        const url = String(wc.getURL?.() || '').trim();
+        if (url && !/^https?:\/\/127\.0\.0\.1:\d+/i.test(url)) return;
+        const wcId = wc.id;
+        if (wcId != null) {
+          if (seenWcIds.has(wcId)) return;
+          seenWcIds.add(wcId);
+        }
+      }
+    } catch { }
+    count += 1;
+  };
+  try {
+    const utils = require('./utils');
+    const wins = typeof utils.getHubWindows === 'function' ? utils.getHubWindows() : [];
+    for (const w of wins) collectWin(w);
+  } catch { }
+  try {
+    const { BrowserWindow, BaseWindow } = require('electron');
+    const allWins = [
+      ...(typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []),
+      ...(typeof BaseWindow?.getAllWindows === 'function' ? BaseWindow.getAllWindows() : [])
+    ];
+    for (const w of allWins) collectWin(w);
+  } catch { }
+  if (count > 0) return count;
+  return getActiveHubWindowOrigins().length;
 }
 
 
@@ -1987,6 +2215,7 @@ exports.shouldInterceptWindowClose = shouldInterceptWindowClose;
 exports.isHostRunInBackgroundEnabled = isHostRunInBackgroundEnabled;
 exports.getWindowWebContents = getWindowWebContents;
 exports.getActiveHubWindowOrigins = getActiveHubWindowOrigins;
+exports.countOpenHostWindows = countOpenHostWindows;
 exports.getMeterSource = getMeterSource;
 exports.clearMeterSourceCacheForTest = clearMeterSourceCacheForTest;
 exports.logDiagnostic = logDiagnostic;

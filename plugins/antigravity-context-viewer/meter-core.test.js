@@ -5939,3 +5939,16 @@ test('evaluateSessionRuntimeStatus prioritizes active generation/compaction/retr
   assert.equal(evaluateSessionRuntimeStatus({ isGenerating: true, disconnectedSec: 15 }).reasonCode, 'disconnected');
 });
 
+test('会话费用使用混合计价，保留已知费率，仅折算未收录的用量', () => {
+  const { summarizeSessionHybridCost, calculateReferenceModelCost } = require('./meter-core');
+  const known = { isPriced: true, costUSD: 2.5, inputTokens: 1000000 };
+  const unknown = { isPriced: false, inputTokens: 40000, cacheReadTokens: 20000, outputTokens: 10000 };
+  const expected = calculateReferenceModelCost(unknown, 'gemini-3.8-flash', { pricingDate: '2026-11-09' }).totalCostUSD;
+  const mixed = summarizeSessionHybridCost([known, unknown]);
+  assert.equal(mixed.knownCostUSD, 2.5);
+  assert.equal(mixed.unpricedResidualTokens, 70000);
+  assert.equal(mixed.latestEstimateUSD, expected);
+  assert.equal(mixed.combinedTotalUSD, Number((2.5 + expected).toFixed(4)));
+  assert.equal(summarizeSessionHybridCost([known, { totalTokens: 1000 }]).latestEstimateUSD, null);
+  assert.equal(summarizeSessionHybridCost([known, { isPriced: true, costUSD: 0, inputTokens: 1000 }]).unpricedResidualTokens, 0);
+});

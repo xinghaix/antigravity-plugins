@@ -23,8 +23,30 @@ const {
   syncPricingCatalogAsync
 } = require('./meter-collector');
 const { normalizeProxyUrl, normalizeBypassListForCompare, parseAndValidateProxyUrl, redactProxyUrl } = require('./meter-proxy');
-const { getStateDir } = require('./asar-engine');
+const { getStateDir, findAsarPath, builtinAsar } = require('./asar-engine');
 const { PROJECT_VERSION, getHostCoreBuildId } = require('./modules-config');
+const { compareVersions } = require('./meter-core');
+
+function resolveLiveHostTargetVersion() {
+  const envVer = String(process.env.AG_HOST_VERSION || '').trim();
+  if (envVer) return envVer;
+  try {
+    const stateDir = getStateDir();
+    const manifestP = path.join(stateDir, 'installation.json');
+    if (fs.existsSync(manifestP)) {
+      const m = JSON.parse(fs.readFileSync(manifestP, 'utf8'));
+      if (m?.version) return String(m.version);
+    }
+  } catch { }
+  try {
+    const asarPath = findAsarPath(null);
+    if (asarPath && fs.existsSync(asarPath)) {
+      const pkg = JSON.parse(builtinAsar.extractFile(asarPath, 'package.json').toString('utf8'));
+      if (pkg?.version) return String(pkg.version);
+    }
+  } catch { }
+  return '2.34.0';
+}
 
 const liveBootProxySnapshot = (() => {
   const bootInfo = (typeof globalThis !== 'undefined' && globalThis.__AG_PROXY_BOOT_INFO__ && globalThis.__AG_PROXY_BOOT_INFO__.injectedAtStartup)
@@ -75,11 +97,11 @@ function resolveLiveBootChineseSnapshot(customAsarPath = null) {
       enabled: active,
       language: String(ch.language || (ch.enabled ? 'zh-CN' : 'en'))
     };
-  } catch {}
+  } catch { }
   liveBootChineseSnapshots.set(key, snap);
   return snap;
 }
-try { resolveLiveBootChineseSnapshot(); } catch {}
+try { resolveLiveBootChineseSnapshot(); } catch { }
 
 function buildLiveRuntimeModulesMeta(cfg, customAsarPath = null) {
   const diskProxy = cfg?.modules?.proxy || {};
@@ -142,6 +164,7 @@ const ALLOWED_ROUTES = [
   '/open-dashboard-browser',
   '/shutdown',
   '/restart-host',
+  '/predict-next-prompt',
   '/sidecar-chinese-toggle'
 ];
 
@@ -181,8 +204,17 @@ function createLiveRequestHandler(arg1, arg2) {
   const opts = (arg1 && typeof arg1 === 'object' && ('api' in arg1 || 'secret' in arg1))
     ? arg1
     : { api: arg1, secret: arg2, managed: false };
-  const { api, secret, getAllowedOrigins = null, onShutdown = null, startedAt = LIVE_HOST_STARTED_AT } = opts;
+  const {
+    api,
+    secret,
+    getAllowedOrigins = null,
+    onShutdown = null,
+    startedAt = LIVE_HOST_STARTED_AT,
+    _applyUpdateAsync = applyUpdateAsync
+  } = opts;
   const isManagedSidecar = opts.managed === true;
+  let activeApplyUpdateCount = 0;
+  let deferredShutdownRequested = false;
   const resolveAllowedSet = () => {
     const set = new Set();
     const addAllowed = (raw) => {
@@ -574,7 +606,12 @@ function createLiveRequestHandler(arg1, arg2) {
           return;
         }
         if (req.url === '/check-update') {
-          const result = await checkUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          const result = await checkUpdateAsync({
+            force: request?.force === true,
+            allowBetaUpdates: typeof request?.allowBetaUpdates === 'boolean' ? request.allowBetaUpdates : undefined,
+            currentVersion: PROJECT_VERSION,
+            liveOnly: true
+          });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;
@@ -615,7 +652,7 @@ function createLiveRequestHandler(arg1, arg2) {
                 spawn('xdg-open', [dashboardUrl], { detached: true, stdio: 'ignore' }).unref();
               }
               openedExternal = true;
-            } catch {}
+            } catch { }
           }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
@@ -631,17 +668,45 @@ function createLiveRequestHandler(arg1, arg2) {
           return;
         }
         if (req.url === '/apply-update') {
-          const result = await applyUpdateAsync({ ...(request || {}), currentVersion: PROJECT_VERSION });
+          activeApplyUpdateCount += 1;
+          let result;
+          try {
+            result = await _applyUpdateAsync({
+              ...(request || {}),
+              version: typeof request?.version === 'string' ? request.version : undefined,
+              allowBetaUpdates: request?.allowBetaUpdates === true || request?.prerelease === true,
+              prerelease: request?.prerelease === true,
+              currentVersion: PROJECT_VERSION,
+              backendSource: 'live-host',
+              bundleDir: process.env.AG_BUNDLE_SOURCE_DIR || __dirname,
+              callerLiveHostPid: process.pid,
+              liveOnly: request?.liveOnly !== undefined ? request.liveOnly === true : true
+            });
+          } finally {
+            activeApplyUpdateCount = Math.max(0, activeApplyUpdateCount - 1);
+          }
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
+          if (((result && result.ok && result.shouldShutdownCallerLiveHost) || deferredShutdownRequested) && typeof onShutdown === 'function') {
+            res.once('finish', () => {
+              setTimeout(() => {
+                try { onShutdown(); } catch { }
+              }, 250);
+            });
+          }
           return;
         }
         if (req.url === '/shutdown') {
           res.setHeader('Content-Type', 'application/json');
+          if (activeApplyUpdateCount > 0) {
+            deferredShutdownRequested = true;
+            res.end(JSON.stringify({ ok: true, shuttingDown: true, deferred: true, deferredForApplyUpdate: true, pid: process.pid, version: PROJECT_VERSION }));
+            return;
+          }
           res.end(JSON.stringify({ ok: true, shuttingDown: true, pid: process.pid, version: PROJECT_VERSION }));
           if (typeof onShutdown === 'function') {
             setImmediate(() => {
-              try { onShutdown(); } catch {}
+              try { onShutdown(); } catch { }
             });
           }
           return;
@@ -694,22 +759,41 @@ function createLiveRequestHandler(arg1, arg2) {
           const { _raw, ...safeData } = resData || {};
           let accountSyncResult = null;
           try {
-            const { getSharedAccountsManager } = require('./meter-accounts');
+            const { getSharedAccountsManager, deriveTrustedAutoSwitchQuotaContext } = require('./meter-accounts');
             const mgr = getSharedAccountsManager({ origin: targetOrigin });
             const switchInFlight = Boolean(mgr.isSwitchInFlight?.());
-            const email = !switchInFlight
-              ? (resData?.email || _raw?.planStatus?.email || resData?.planStatus?.email || (await mgr.detectCurrentActiveAccount())?.email || null)
+            const sourceEmail = !switchInFlight
+              ? (resData?.email || _raw?.planStatus?.email || _raw?.userStatus?.email || _raw?.email || resData?.planStatus?.email || null)
               : null;
-            if (!switchInFlight && email && resData?.snapshot) {
-              mgr.syncActiveHostQuotaSnapshot(resData, email);
-              const ov = mgr.getOverviewState();
-              if (ov.autoSwitch?.enabled && !resData.error) {
-                accountSyncResult = await mgr.evaluateAutoSwitch({
-                  activeEmail: email,
-                  activeSnapshot: resData.snapshot,
-                  syncState: 'fresh',
-                  isGenerating: Boolean(request?.isGenerating)
-                });
+            const activeDetectedEmail = !switchInFlight
+              ? (sourceEmail || (await mgr.detectCurrentActiveAccount())?.email || null)
+              : null;
+            const trustCtx = deriveTrustedAutoSwitchQuotaContext({
+              res: resData,
+              raw: _raw,
+              activeEmail: activeDetectedEmail
+            });
+            if (!switchInFlight && trustCtx.trusted && trustCtx.email && resData?.snapshot) {
+              mgr.syncActiveHostQuotaSnapshot(resData, trustCtx.email);
+            }
+            const ov = mgr.getOverviewState();
+            if (!switchInFlight && ov.autoSwitch?.enabled) {
+              const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+              const evalSyncState = trustCtx.trusted
+                ? 'fresh'
+                : (trustCtx.syncState && trustCtx.syncState !== 'fresh' ? trustCtx.syncState : 'untrusted');
+              accountSyncResult = await mgr.evaluateAutoSwitch({
+                activeEmail: trustCtx.email || activeDetectedEmail,
+                activeSnapshot: resData?.snapshot || null,
+                syncState: evalSyncState,
+                allowLiveCandidateRefresh: true,
+                isGenerating: Boolean(request?.isGenerating),
+                hasUnsavedDraft: Boolean(request?.hasUnsavedDraft),
+                requiresClientRestart,
+                blockedRestartReason: requiresClientRestart ? 'live_mode_cannot_auto_restart' : undefined
+              });
+              if (accountSyncResult && typeof accountSyncResult === 'object') {
+                accountSyncResult.overview = mgr.getOverviewState();
               }
             }
           } catch { }
@@ -730,7 +814,11 @@ function createLiveRequestHandler(arg1, arg2) {
           const { getSharedAccountsManager, dispatchAccountsAction } = require('./meter-accounts');
           const targetOrigin = normalizeLoopbackOrigin(request?.origin) || reqOrigin;
           const mgr = getSharedAccountsManager({ origin: targetOrigin });
-          const outRes = await dispatchAccountsAction(mgr, request || {});
+          const requiresClientRestart = compareVersions(resolveLiveHostTargetVersion(), '2.34.0') >= 0;
+          const outRes = await dispatchAccountsAction(mgr, request || {}, {
+            requiresClientRestart,
+            allowManualRestartPending: requiresClientRestart
+          });
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(outRes));
           return;
@@ -748,6 +836,32 @@ function createLiveRequestHandler(arg1, arg2) {
               backendSource: 'live-host'
             }
           }));
+          return;
+        }
+        if (req.url === '/predict-next-prompt') {
+          const settings = getPluginSettings();
+          if (settings.nextPromptEnabled !== true) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true, abstained: true, suggestion: '', reason: 'feature_disabled', requestCount: 0 }));
+            return;
+          }
+          const { predictNextPromptAsync } = require('./meter-next-prompt');
+          const safeInput = {
+            cascadeId: typeof request?.cascadeId === 'string' ? request.cascadeId : undefined,
+            turnId: typeof request?.turnId === 'string' ? request.turnId : undefined,
+            language: typeof request?.language === 'string' ? request.language : undefined,
+            turns: Array.isArray(request?.turns) ? request.turns : [],
+            preferences: Array.isArray(request?.preferences) ? request.preferences : [],
+            verificationEvidence: typeof request?.verificationEvidence === 'string' ? request.verificationEvidence : undefined,
+            taskMarkdown: typeof request?.taskMarkdown === 'string' ? request.taskMarkdown : undefined
+          };
+          const predRes = await predictNextPromptAsync(safeInput, {
+            origin: effectiveOrigin,
+            model: typeof request?.model === 'string' && request.model.trim() ? request.model.trim() : undefined,
+            allowGetModelResponseFallback: request?.allowGetModelResponseFallback === true
+          });
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ...predRes, backendVersion: PROJECT_VERSION, backendSource: 'live-host' }));
           return;
         }
         const data = await collect(effectiveOrigin, request.id, { force: request.force === true });
@@ -778,7 +892,7 @@ function parseInitialOriginsEnv() {
   const cliOriginsB64 = getCliArgValue('--origins-b64');
   let raw = String(process.env.AG_LIVE_ORIGINS || '').trim();
   if (!raw && cliOriginsB64) {
-    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch {}
+    try { raw = Buffer.from(cliOriginsB64, 'base64').toString('utf8').trim(); } catch { }
   }
   if (!raw) return [];
   try {
@@ -788,7 +902,7 @@ function parseInitialOriginsEnv() {
         ? Array.from(new Set(parsed.map(normalizeLoopbackOrigin).filter(Boolean)))
         : [];
     }
-  } catch {}
+  } catch { }
   return Array.from(new Set(raw.split(/[,;\s]+/).map(normalizeLoopbackOrigin).filter(Boolean)));
 }
 
@@ -896,7 +1010,7 @@ async function startLiveHost() {
           const cur = JSON.parse(fs.readFileSync(candidateStamp, 'utf8'));
           if (cur && cur.pid === process.pid) fs.unlinkSync(candidateStamp);
         }
-      } catch {}
+      } catch { }
     }
     if (server) {
       try {

@@ -1,10 +1,10 @@
-# Antigravity Context & Token Viewer (Modified Edition `v0.9.2-1`)
+# Antigravity Context & Token Viewer (Modified Edition `v0.9.3-1`)
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **Upstream & Version Notice**: This plugin is a modified and enhanced edition derived from upstream [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) (MIT License, synced to upstream **`v0.9.2`**). It uses the `<upstream-version>-<rev>` versioning convention (`v0.9.2-1`), adding:
-> 1. **Native Aux Pane Sidecar UI & Antigravity `2.33+` / `2.34+` / `2.35+` Support** (`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`): Antigravity `2.33+`–`2.35+` disables `DevToolsActivePort` by default and macOS enforces `ElectronAsarIntegrity`. Context Viewer connects directly to the host Language Server via `authBootstrap`, `ANTIGRAVITY_LS_ADDRESS`, `~/.gemini/antigravity/daemon/hub_*.json`, and `main.log`, exposing a native Aux Pane panel (`sidecar://antigravity-context-viewer/live-loader/`) without patching `app.asar` (with subprocess binary inspection isolation and on-disk signature caches keeping Sidecar RSS minimal), while retaining CDP hot-injection, `node cli.js watch`, `node cli.js launch --restart`, and `node cli.js install` (blocked on integrity-protected macOS `.app` bundles unless `--force-mac-asar`).
-> 2. **Renderer & Live i18n Enhancements** (`src/renderer/*`, `meter-renderer.js`, `install.js`, `live-host.js`): compact length+percentage context pill, monochrome dual-ring styling, default-hidden CLI button toggle, live Chinese injection, synced with upstream `v0.9.0` 4-row responsive Bento session workbench, 9-dimension breakdown, timing donut, Gemini 4 Neon & unified pool, `v2.34.0` client localization, multi-account ledger isolation, and strict opt-in prompt/title rewriting (OFF by default).
+> **Upstream & Version Notice**: This plugin is a modified and enhanced edition derived from upstream [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) (MIT License, synced to upstream **`v0.9.3`**). It uses the `<upstream-version>-<rev>` versioning convention (`v0.9.3-1`), adding:
+> 1. **Native Aux Pane Sidecar UI & Antigravity `2.33+` / `2.34+` / `2.35.1+` Support** (`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`): Antigravity `2.33+`–`2.35.1+` disables `DevToolsActivePort` by default and macOS enforces `ElectronAsarIntegrity`. Context Viewer connects directly to the host Language Server via `authBootstrap`, `ANTIGRAVITY_LS_ADDRESS`, `~/.gemini/antigravity/daemon/hub_*.json`, and `main.log`, exposing a native Aux Pane panel (`sidecar://antigravity-context-viewer/live-loader/`) without patching `app.asar` (with subprocess binary inspection isolation and on-disk signature caches keeping Sidecar RSS minimal), while retaining CDP hot-injection, `node cli.js watch`, `node cli.js launch --restart`, and `node cli.js install` (blocked on integrity-protected macOS `.app` bundles unless `--force-mac-asar`).
+> 2. **Renderer, Native Settings & Live i18n Enhancements** (`src/renderer/*`, `meter-renderer.js`, `install.js`, `live-host.js`): synced with upstream `v0.9.3` Antigravity `2.35.1` peer-level native Settings integration, unified dropdowns & candidate switches, top-layer `<dialog>` restart confirmation, native model menu reuse, opt-in next-prompt suggestions (default OFF), scoped 4-target auto-switch with notice deduplication, and `v0.9.0`–`v0.9.2` Bento/Skyline workbench & Gemini 4 Neon unified pool; while preserving our compact length+percentage context pill, monochrome dual-ring defaults, default-hidden CLI toggle, live Chinese hot-injection, sticky-error recovery, latest-step pure streaming speed, and strict opt-in prompt/title rewriting (OFF by default).
 > 3. **Cross-Platform Context Unlock, Integrity Preflight & Modular CLI** (`meter-context-unlock.js`, `host-recovery.js`, `macos-binary-utils.js`, `cli.js` `watch` / `stop-watch` / `sidecar:*`).
 
 See how much context your conversation uses, how fast the model responds, remaining model quota, and how many tokens you have used across the desktop app and CLI, right from the Google Antigravity 2.x toolbar.
@@ -70,6 +70,8 @@ node cli.js install
 node cli.js live              # Patch-free CDP injection (auto-launches with CDP port; pass --relaunch outside host if already running without CDP on v2.33.0+)
 node cli.js watch             # Patch-free background watcher (recommended on macOS to preserve Apple code signatures)
 node cli.js stop-watch
+node cli.js update --check-only
+node cli.js update            # Stage a verified plugin release for watch or live to load
 node cli.js status
 node cli.js restore
 node cli.js enhance-status
@@ -77,10 +79,12 @@ node cli.js enhance --tier 3 --chinese-title on --brand-title english
 node cli.js enhance-restore
 ```
 
+If your plugin copy does not recognize `update`, download a plugin package with the command from [GitHub Releases](https://github.com/elviscjn-cjn/antigravity-context-viewer/releases), extract it to a new folder, and run `node cli.js watch` there. If the macOS application signature is already damaged, reinstall the official client and check scheduled tasks before using `watch`.
+
 > [!IMPORTANT]
 > **Antigravity v2.34.0 & macOS `ElectronAsarIntegrity` Support Scope**:
 > - **Window-loader anchor (`loadHubWindowUrl`)**: Verified across clean install, upgrade (`v2.33.0 -> v2.34.0`), and lossless restore tests.
-> - **macOS `ElectronAsarIntegrity` & code signature**: Signed macOS `Antigravity.app` bundles enable `ElectronAsarIntegrity` in `Info.plist` plus Hardened Runtime (`TeamIdentifier`). Modifying `app.asar` in-place risks launch integrity failures or breaking Keychain/TCC permissions. `node cli.js check` reports integrity preflight status, and `node cli.js install` blocks patching integrity-protected macOS `.app` bundles by default in favor of patch-free **`node cli.js watch`** (`open -a Antigravity --args --remote-debugging-port=58321`) unless `--force-mac-asar` is explicitly passed.
+> - **macOS `ElectronAsarIntegrity` and code signing**: `node cli.js check` reports signing and ASAR integrity status. `install` and `recover` block patching when `ElectronAsarIntegrity` is enabled or the application bundle has a publisher signature. Use patch-free **`node cli.js watch`** on these bundles. Modifying `app.asar` can invalidate the signature and prevent the app or its scheduled-task `language_server` from launching.
 > - **Unverified on real Mac hardware**: No physical macOS host was available during this release cycle; real macOS cold-boot signature behavior and desktop UI interactions await community hardware feedback.
 
 ---
