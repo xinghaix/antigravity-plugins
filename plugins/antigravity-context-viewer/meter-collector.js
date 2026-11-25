@@ -4364,6 +4364,7 @@ function getPluginSettings(options = {}) {
   const validPanelDockModes = new Set(['popover', 'aux', 'page']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
+  const validThemeModes = new Set(['auto', 'light', 'dark']);
   const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
   const defaultViewPrefs = sanitizeDefaultViewPrefs(uiPrefs.defaultViewPrefs, uiPrefs.savedHeatView);
   const hasExplicitPanelLanguage = typeof uiPrefs.panelLanguage === 'string' && validPanelLanguages.has(uiPrefs.panelLanguage);
@@ -4432,6 +4433,7 @@ function getPluginSettings(options = {}) {
     floatingOrbHidden: !resolvedRadialOrbEnabled,
     radialOrbPos: savedOrbPos,
     quotaBadgeWindowMode: validQuotaWindowModes.has(uiPrefs.quotaBadgeWindowMode) ? uiPrefs.quotaBadgeWindowMode : 'auto',
+    themeMode: validThemeModes.has(uiPrefs.themeMode) ? uiPrefs.themeMode : null,
     panelLanguage: hasExplicitPanelLanguage ? uiPrefs.panelLanguage : 'zh-CN',
     panelLanguageExplicit: hasExplicitPanelLanguage,
     showCliButton: uiPrefs.showCliButton === true,
@@ -4539,8 +4541,14 @@ function savePluginSettings(payload = {}, options = {}) {
   }
   const validPanelLanguages = new Set(['zh-CN', 'zh-TW', 'en']);
   const validDockPositions = new Set(['flow', 'compact', 'fixed', 'aux', 'page', 'hide']);
+  const validTopbarModes = new Set(['full', 'compact', 'hidden']);
+  const validPanelDockModes = new Set(['popover', 'aux', 'page']);
+  const validThemeModes = new Set(['auto', 'light', 'dark']);
   const validQuotaWindowModes = new Set(['auto', '5h', 'weekly', 'both']);
   const validQuickMenuStyles = new Set(['floating', 'topbar', 'bottombar', 'classic']);
+  if (typeof payload.themeMode === 'string' && validThemeModes.has(payload.themeMode)) {
+    topLevelUiPrefs.themeMode = payload.themeMode;
+  }
   if (typeof payload.autoCheckUpdate === 'boolean') {
     topLevelUiPrefs.autoCheckUpdate = payload.autoCheckUpdate;
   }
@@ -4549,52 +4557,66 @@ function savePluginSettings(payload = {}, options = {}) {
     cachedUpdateCheck = null;
     cachedUpdateCheckAt = 0;
   }
-  if (typeof payload.topbarMode === 'string' && validTopbarModes.has(payload.topbarMode)) {
+  const hasExplicitTopbarMode = typeof payload.topbarMode === 'string' && validTopbarModes.has(payload.topbarMode);
+  const hasExplicitPanelDockMode = typeof payload.panelDockMode === 'string' && validPanelDockModes.has(payload.panelDockMode);
+  const existingTopbarMode = settings.uiPreferences?.topbarMode;
+  const existingPanelDockMode = settings.uiPreferences?.panelDockMode;
+  if (hasExplicitTopbarMode) {
     topLevelUiPrefs.topbarMode = payload.topbarMode;
     topLevelUiPrefs.hideTopbar = payload.topbarMode === 'hidden';
-    if (payload.topbarMode === 'compact') {
+    const effPanelDock = hasExplicitPanelDockMode ? payload.panelDockMode : existingPanelDockMode;
+    if (effPanelDock === 'aux') {
+      topLevelUiPrefs.dockPosition = 'aux';
+    } else if (effPanelDock === 'page') {
+      topLevelUiPrefs.dockPosition = 'flow';
+    } else if (payload.topbarMode === 'compact') {
       topLevelUiPrefs.dockPosition = 'compact';
     } else if (payload.topbarMode === 'full') {
-      topLevelUiPrefs.dockPosition = topLevelUiPrefs.panelDockMode === 'aux' ? 'aux' : (topLevelUiPrefs.panelDockMode === 'page' ? 'page' : 'flow');
+      topLevelUiPrefs.dockPosition = 'flow';
     }
   }
-  if (typeof payload.panelDockMode === 'string' && validPanelDockModes.has(payload.panelDockMode)) {
+  if (hasExplicitPanelDockMode) {
     topLevelUiPrefs.panelDockMode = payload.panelDockMode;
+    const effTopbar = hasExplicitTopbarMode ? payload.topbarMode : existingTopbarMode;
     if (payload.panelDockMode === 'aux') {
       topLevelUiPrefs.dockPosition = 'aux';
     } else if (payload.panelDockMode === 'page') {
-      topLevelUiPrefs.dockPosition = 'page';
+      topLevelUiPrefs.dockPosition = payload.dockPosition === 'flow' ? 'flow' : 'page';
     } else {
-      topLevelUiPrefs.dockPosition = topLevelUiPrefs.topbarMode === 'compact' ? 'compact' : 'flow';
+      topLevelUiPrefs.dockPosition = effTopbar === 'compact' ? 'compact' : 'flow';
     }
   }
   if (typeof payload.autoHideTopbarOnDockedPanel === 'boolean') {
     topLevelUiPrefs.autoHideTopbarOnDockedPanel = payload.autoHideTopbarOnDockedPanel;
   }
   if (typeof payload.dockPosition === 'string' && validDockPositions.has(payload.dockPosition)) {
-    topLevelUiPrefs.dockPosition = payload.dockPosition;
-    // 兼容映射到新字段
-    if (payload.dockPosition === 'compact' || payload.dockPosition === 'fixed') {
-      topLevelUiPrefs.topbarMode = 'compact';
-      topLevelUiPrefs.panelDockMode = 'popover';
-    } else if (payload.dockPosition === 'aux') {
-      topLevelUiPrefs.panelDockMode = 'aux';
-    } else if (payload.dockPosition === 'page') {
-      topLevelUiPrefs.panelDockMode = 'page';
-    } else if (payload.dockPosition === 'hide') {
-      topLevelUiPrefs.topbarMode = 'hidden';
-      topLevelUiPrefs.hideTopbar = true;
-    } else if (payload.dockPosition === 'flow') {
-      topLevelUiPrefs.topbarMode = 'full';
-      topLevelUiPrefs.panelDockMode = 'popover';
+    if (!hasExplicitTopbarMode && !hasExplicitPanelDockMode) {
+      topLevelUiPrefs.dockPosition = payload.dockPosition;
+      // 仅对纯旧版 dockPosition 写入做兼容映射，绝不覆盖显式传入的正交字段
+      if (payload.dockPosition === 'compact' || payload.dockPosition === 'fixed') {
+        topLevelUiPrefs.topbarMode = 'compact';
+        topLevelUiPrefs.panelDockMode = 'popover';
+      } else if (payload.dockPosition === 'aux') {
+        topLevelUiPrefs.panelDockMode = 'aux';
+      } else if (payload.dockPosition === 'page') {
+        topLevelUiPrefs.panelDockMode = 'page';
+      } else if (payload.dockPosition === 'hide') {
+        topLevelUiPrefs.topbarMode = 'hidden';
+        topLevelUiPrefs.hideTopbar = true;
+      } else if (payload.dockPosition === 'flow') {
+        topLevelUiPrefs.topbarMode = 'full';
+        topLevelUiPrefs.panelDockMode = 'popover';
+      }
     }
   }
   if (typeof payload.hideTopbar === 'boolean') {
     topLevelUiPrefs.hideTopbar = payload.hideTopbar;
-    if (payload.hideTopbar) {
-      topLevelUiPrefs.topbarMode = 'hidden';
-    } else if (topLevelUiPrefs.topbarMode === 'hidden') {
-      topLevelUiPrefs.topbarMode = 'full';
+    if (!hasExplicitTopbarMode) {
+      if (payload.hideTopbar) {
+        topLevelUiPrefs.topbarMode = 'hidden';
+      } else if (topLevelUiPrefs.topbarMode === 'hidden' || existingTopbarMode === 'hidden') {
+        topLevelUiPrefs.topbarMode = 'full';
+      }
     }
   }
   if (typeof payload.quickMenuStyle === 'string' && validQuickMenuStyles.has(payload.quickMenuStyle)) {

@@ -49809,6 +49809,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         if (savedAllowBeta !== undefined) {
           setAllowBetaUpdatesState(savedAllowBeta === true, { persist: false });
         }
+        const savedThemeMode = settingsRes.uiPreferences?.themeMode || settingsRes.themeMode;
+        if (savedThemeMode && ['auto', 'light', 'dark'].includes(savedThemeMode) && savedThemeMode !== currentThemeMode) {
+          currentThemeMode = savedThemeMode;
+          try { if (typeof localStorage !== 'undefined') localStorage.setItem('ag_theme_mode', savedThemeMode); } catch { }
+          if (typeof applyTheme === 'function') applyTheme();
+        }
         const savedTopbarMode = settingsRes.topbarMode || settingsRes.uiPreferences?.topbarMode;
         const savedPanelDockMode = settingsRes.panelDockMode || settingsRes.uiPreferences?.panelDockMode;
         const savedAutoHideCol = settingsRes.autoHideTopbarOnDockedPanel ?? settingsRes.uiPreferences?.autoHideTopbarOnDockedPanel;
@@ -49841,7 +49847,12 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
         }
         const normalizedSavedDock = savedDock === 'page' ? 'flow' : savedDock;
         if (savedDock === 'page' && (typeof window?.contextMeterAPI?.saveSettings === 'function' || hasLiveHttpBridge())) {
-          void saveSettingsPayloadBridge({ dockPosition: 'flow', hideTopbar: isTopbarHidden });
+          void saveSettingsPayloadBridge({
+            panelDockMode: 'popover',
+            topbarMode,
+            dockPosition: topbarMode === 'compact' ? 'compact' : 'flow',
+            hideTopbar: isTopbarHidden
+          });
         }
         if (IS_SIDECAR_EMBED || (preserveSessionView && (panelDockMode === 'page' || dockPosition === 'page'))) {
           syncDockPositionUi();
@@ -72248,7 +72259,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch { }
   globalThis.__AGContextMeter = {
-    buildId: '98b5835f4f4181da',
+    buildId: '7fe9ad798af67389',
     version: METER_RENDERER_VERSION,
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {

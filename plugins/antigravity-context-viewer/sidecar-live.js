@@ -179,7 +179,7 @@ function getSidecarPluginStatus(options = {}) {
 
 function getBundleStamp(repoDir = __dirname) {
   try {
-    return ['meter-core.js', 'meter-renderer.js'].map(file => {
+    return ['meter-core.js', 'meter-renderer.js', 'meter-collector.js', 'live-host.js'].map(file => {
       const st = fs.statSync(path.join(repoDir, file));
       return `${file}:${st.size}:${Math.trunc(st.mtimeMs)}`;
     }).join('|');

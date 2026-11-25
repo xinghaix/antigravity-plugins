@@ -9,7 +9,7 @@
   - **免改盘更新与安装恢复加固**（`cli.js`、`install.js`、`modular-installer.js`、`restore.js`）：新增 `node cli.js update` 免改盘检查/下载、`createWindow` `await win.loadURL` 兼容与 4 阶段 `diagnoseCleanStructure` 结构诊断，限定 `cli-window-helper.exe` 仅在 Windows 平台部署并在卸载时清理。
 - **完整保留与兼容本仓近期修复与 Sidecar 特性**：
   - **Aux Pane Sidecar 引擎与原生设置页细节适配 `v0.9.3`**：在 `IS_SIDECAR_EMBED` 模式下点击设置直接展开内嵌设置工作区（跳过宿主弹窗探测并隐藏降级提示条，不启动多余宿主设置 `MutationObserver` 与输入框下一句监听）；优化原生设置侧栏 `Context Meter` 导航项为与原生条目一致的纯文本无图标样式、去除点击蓝框，并动态采样同级原生激活/未激活配色修复切页后残留高亮与选中态文本同步高亮，同时将右侧设置内容（`.ag-ns-page`）改为 `margin: 0 auto` 水平居中；Sidecar 诊断页同步对齐 `showTurnFooterStats` 默认开启与 `nextPromptEnabled` 开关；`live-host.js` `ALLOWED_ROUTES` 补齐 `/predict-next-prompt` 并修正 `next-prompt.js` 经由 `postLiveHttpEndpoint` 携带鉴权头请求；
-  - **完整保留防卡滞错误自愈修复**：保留 `meter-core.js` / `meter-collector.js` / `src/renderer/main.js` 针对 `retryInfos` 成功重试恢复、非错工具步骤清错、活跃生成/压缩/重试优先于陈旧错误、以及慢扫描防覆盖新轮询与 `capturedAt`/`latestMetaMaxStep` 保护；
+  - **完整保留防卡滞错误自愈修复并修复设置落盘缺陷**：修复上游 `meter-collector.js` `savePluginSettings()` 漏定义 `validTopbarModes` / `validPanelDockModes` 导致「精简圆环 / 隐藏顶栏 / 停靠位置」无法写入磁盘并在更新后回退的缺陷，阻止旧 `dockPosition` 覆盖显式正交字段，补齐 `themeMode` 持久化与恢复，并在 `sidecar-live.js` `getBundleStamp()` 纳入 `meter-collector.js` / `live-host.js`；保留 `meter-core.js` / `meter-collector.js` / `src/renderer/main.js` 针对 `retryInfos` 成功重试恢复、非错工具步骤清错、活跃生成/压缩/重试优先于陈旧错误、以及慢扫描防覆盖新轮询与 `capturedAt`/`latestMetaMaxStep` 保护；
   - **完整保留 `2.35+` 内存优化与全部外观/直连增强**：保留独立子进程二进制扫描与磁盘缓存（Sidecar 常驻 ~64 MB）、`ANTIGRAVITY_LS_ADDRESS` 回环直连快路径、`i18n-runtime` 6ms `rAF` 分片遍历、Google AI Ultra `5x`/`20x` 自动识别、底栏最后 1 步纯吐字速度、`K/M · %` 紧凑胶囊与双圆环单色默认配色（`#b8b8c0` / `#52525b`）、CLI 按钮默认隐藏开关与免改盘中文热注入自愈。
 
 ---

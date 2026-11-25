@@ -469,3 +469,54 @@ test('界面可见文案零括号红线检测', async () => {
     assert.doesNotMatch(m, bracketRegex, `i18n 词条严禁含有中英文括号: ${m}`);
   }
 });
+
+test('savePluginSettings/getPluginSettings 磁盘持久化往返：topbarMode / panelDockMode / themeMode 不抛错且不被旧 dockPosition 覆盖', () => {
+  const os = require('node:os');
+  const collector = require('./meter-collector');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-topbar-persist-'));
+  try {
+    // 1. 精简圆环 (compact) 落盘往返
+    const r1 = collector.savePluginSettings({ topbarMode: 'compact', hideTopbar: false, dockPosition: 'compact' }, tmpDir);
+    assert.equal(r1.ok, true);
+    let s = collector.getPluginSettings(tmpDir);
+    assert.equal(s.topbarMode, 'compact');
+    assert.equal(s.uiPreferences.topbarMode, 'compact');
+    assert.equal(s.panelDockMode, 'popover');
+
+    // 2. 切换 panelDockMode 为 aux，不冲掉 topbarMode: compact
+    const r2 = collector.savePluginSettings({ panelDockMode: 'aux', dockPosition: 'aux' }, tmpDir);
+    assert.equal(r2.ok, true);
+    s = collector.getPluginSettings(tmpDir);
+    assert.equal(s.topbarMode, 'compact');
+    assert.equal(s.panelDockMode, 'aux');
+
+    // 3. 切换 panelDockMode 为 page（渲染层兼容传 dockPosition: flow），不得把 topbarMode/panelDockMode 覆盖回 full/popover
+    const r3 = collector.savePluginSettings({ panelDockMode: 'page', dockPosition: 'flow' }, tmpDir);
+    assert.equal(r3.ok, true);
+    s = collector.getPluginSettings(tmpDir);
+    assert.equal(s.topbarMode, 'compact');
+    assert.equal(s.panelDockMode, 'page');
+
+    // 4. 切回 popover 仍保留 compact；隐藏顶栏 (hidden) 也不被 dockPosition: flow 覆盖
+    const r4 = collector.savePluginSettings({ panelDockMode: 'popover', dockPosition: 'compact' }, tmpDir);
+    assert.equal(r4.ok, true);
+    s = collector.getPluginSettings(tmpDir);
+    assert.equal(s.topbarMode, 'compact');
+    assert.equal(s.panelDockMode, 'popover');
+
+    const r5 = collector.savePluginSettings({ topbarMode: 'hidden', hideTopbar: true, dockPosition: 'flow' }, tmpDir);
+    assert.equal(r5.ok, true);
+    s = collector.getPluginSettings(tmpDir);
+    assert.equal(s.topbarMode, 'hidden');
+    assert.equal(s.hideTopbar, true);
+
+    // 5. themeMode 落盘与读回
+    const r6 = collector.savePluginSettings({ themeMode: 'dark' }, tmpDir);
+    assert.equal(r6.ok, true);
+    s = collector.getPluginSettings(tmpDir);
+    assert.equal(s.themeMode, 'dark');
+    assert.equal(s.uiPreferences.themeMode, 'dark');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
