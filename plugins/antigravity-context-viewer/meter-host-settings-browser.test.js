@@ -466,22 +466,25 @@ test('第 4 项浏览器实机布局回归：唯一滚动容器、滚轮顶到�
   const port = server.address().port;
 
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agcm-browser-test-'));
-  const chromeProc = spawn(browserPath, [
+  const chromeArgs = [
     '--headless=new',
     '--remote-debugging-port=0',
     `--user-data-dir=${userDataDir}`,
     '--disable-gpu',
+    '--disable-dev-shm-usage',
     '--no-first-run',
     '--no-default-browser-check',
     '--window-size=1200,760',
+    ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
     `http://127.0.0.1:${port}/`
-  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  ];
+  const chromeProc = spawn(browserPath, chromeArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let cdp = null;
   try {
     const wsUrl = await new Promise((resolve, reject) => {
       let buf = '';
-      const tm = setTimeout(() => reject(new Error(`Chrome CDP startup timeout: ${buf}`)), 8000);
+      const tm = setTimeout(() => reject(new Error(`Chrome CDP startup timeout: ${buf}`)), 25000);
       const onData = (chunk) => {
         buf += chunk.toString('utf8');
         const m = buf.match(/DevTools listening on (ws:\/\/[^\s]+)/);
@@ -492,11 +495,23 @@ test('第 4 项浏览器实机布局回归：唯一滚动容器、滚轮顶到�
       };
       chromeProc.stderr.on('data', onData);
       chromeProc.stdout.on('data', onData);
+      chromeProc.once('exit', (code) => {
+        clearTimeout(tm);
+        reject(new Error(`Chrome exited before CDP ready (code=${code}): ${buf}`));
+      });
     });
 
-    const pagesRes = await fetch(`${wsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/browser\/.*$/, '/json/list')}`);
-    const pages = await pagesRes.json();
-    const targetPage = pages.find((p) => p.type === 'page' && p.webSocketDebuggerUrl) || pages[0];
+    const listUrl = `${wsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/browser\/.*$/, '/json/list')}`;
+    let targetPage = null;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const pagesRes = await fetch(listUrl);
+        const pages = await pagesRes.json();
+        targetPage = pages.find((p) => p.type === 'page' && p.webSocketDebuggerUrl) || pages[0] || null;
+        if (targetPage?.webSocketDebuggerUrl) break;
+      } catch { }
+      await new Promise((r) => setTimeout(r, 100));
+    }
     assert.ok(targetPage?.webSocketDebuggerUrl, '必须获取到 CDP page WebSocket 地址');
 
     cdp = new CdpClient(targetPage.webSocketDebuggerUrl);
@@ -917,18 +932,20 @@ test('v0.9.3 实机返工浏览器回归：VX外层包裹导航首点直达零�
   const chromeProc = spawn(browser.path, [
     '--headless=new',
     '--disable-gpu',
+    '--disable-dev-shm-usage',
     '--no-first-run',
     '--no-default-browser-check',
     '--remote-debugging-port=0',
     `--user-data-dir=${userDataDir}`,
     '--window-size=1280,820',
+    ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
     `http://127.0.0.1:${port}/`
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let cdp = null;
   try {
     const wsUrl = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('等待 Chrome DevTools 端口超时')), 15000);
+      const timer = setTimeout(() => reject(new Error('等待 Chrome DevTools 端口超时')), 25000);
       let stderrBuf = '';
       chromeProc.stderr.on('data', (chunk) => {
         stderrBuf += chunk.toString('utf8');
