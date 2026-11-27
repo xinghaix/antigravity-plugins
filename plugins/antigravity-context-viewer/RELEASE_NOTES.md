@@ -1,3 +1,11 @@
+## v0.9.3-2
+
+- **修复原生设置融合逻辑误注入普通提示弹框（Toast / Dialog）的问题**（`src/renderer/host-settings.js`、`meter-renderer.js`）：
+  - 收紧 `findHostSettingsTargets()` 对 `[role="dialog"]` 兜底候选的校验，移除无条件回退到 `navBtns[0]` 的行为，并在 `getNavButtons()` 中过滤 `×` / `Close` / `Dismiss` / `关闭` 等关闭按钮，避免 Antigravity 归档会话后的 `Conversation Archived` 提示弹框、登录确认框等普通 `role="dialog"` 被误判为原生设置弹窗并塞入 `width: 100%` 的 `Context Meter` 导航按钮（此前会将标题挤压为逐字母竖排）；
+  - 仅在命中显式设置特征（`settings-nav-item-*`、`.settings-modal-container`、`[data-settings-content-pane]`、`aria-label="Settings"` 等）且存在有效设置导航项，或普通 `role="dialog"` 中同容器包含至少 2 个不同标准设置分栏标签时才执行挂载，并补充多场景回归测试（`meter-host-settings-update.test.js`）。
+
+---
+
 ## v0.9.3-1
 
 基于上游 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) **`v0.9.3`** 完成全量合并，并完整保留与兼容本仓近期防卡滞错误自愈修复、Antigravity `2.35+` 内存优化及全部 Aux Pane Sidecar 改版特性：

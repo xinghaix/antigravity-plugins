@@ -228,7 +228,7 @@
     window.__AGContextMeterLive = {
       port: 1,
       token: 'sidecar-inproc',
-      version: '0.9.3-1',
+      version: '0.9.3-2',
       capabilities: state.data?.meta?.capabilities || null,
       backendSource: 'sidecar-inproc'
     };

@@ -1,6 +1,6 @@
 (function () {
-  const METER_VERSION = '0.9.3-1';
-  const METER_DISPLAY_VERSION = 'v0.9.3-1';
+  const METER_VERSION = '0.9.3-2';
+  const METER_DISPLAY_VERSION = 'v0.9.3-2';
 
   'use strict';
   const isSidecarEmbedBoot = Boolean(typeof globalThis !== 'undefined' && globalThis.__AGContextMeterSidecarEmbed);
@@ -17371,7 +17371,7 @@
         data-i18n="panel.ctx.title" title="Antigravity Context Meter" data-i18n-title="panel.ctx.fullName"
         aria-label="Antigravity Context Meter" data-i18n-aria="panel.ctx.fullName">💬 当前会话上下文</span>
       <span id="v" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">v0.9.3-1</span>
+        data-i18n-title="header.versionBtn.title">v0.9.3-2</span>
     </div>
     <div class="panel-header-actions ctx-header-actions">
       <!-- 插件面板三语言快速切换分段按钮 -->
@@ -19862,7 +19862,7 @@
         style="font-size:13px;font-weight:600;color:var(--ag-custom-token-accent,var(--ag-token-accent-default))"
         data-i18n="tokens.title">本机已记录用量</span>
       <span id="v-tokens" class="version-pill-btn" role="button" tabindex="0" title="点击跳转到版本更新与关于设置"
-        data-i18n-title="header.versionBtn.title">v0.9.3-1</span>
+        data-i18n-title="header.versionBtn.title">v0.9.3-2</span>
     </div>
     <div class="panel-header-actions">
       <button id="theme-toggle-tokens" class="panel-icon-btn" type="button" aria-label="切换浅色/深色主题"
@@ -21119,7 +21119,7 @@
     <div style="display:flex;align-items:center;gap:6px">
       <span id="up-pop-title" style="font-weight:600;font-size:12px;color:var(--ag-text-primary)"
         data-i18n="update.title">🚀 检查更新</span>
-      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.9.3-1</span>
+      <span id="up-pop-ver" class="key-pill pill-good" style="font-size:10px">v0.9.3-2</span>
     </div>
     <button id="btn-close-update-pop" class="panel-icon-btn" type="button"
       style="padding:1px 5px;font-size:13px">×</button>
@@ -27551,12 +27551,12 @@ function formatPeriodCalendarLabel(currentPeriod) {
   let lastUpdateError = null;
   let cachedStrictUpdateState = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-1';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-2';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
     const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
       ? String(METER_DISPLAY_VERSION).trim()
-      : 'v0.9.3-1';
+      : 'v0.9.3-2';
     if (!clean) return buildDisplay;
     const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
     if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;
@@ -50336,7 +50336,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-2';
     const currentDisplayVer = formatDisplayVersion(currentVer);
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
@@ -50530,7 +50530,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-1';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-2';
         const nextVer = res.version || res.targetVersion || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const nextDisplayVer = formatDisplayVersion(nextVer);
         lastApplyUpdateResult = res;
@@ -57811,6 +57811,9 @@ function createHostSettingsController(deps = {}) {
     );
   }
 
+  const SETTINGS_SECTION_LABEL_RE = /^(general|browser|account|models|editor|agent|customizations?|extensions?|mcp|notifications?|privacy|appearance|shortcuts?|keybindings?|terminal|workspace|通用|常规|常規|应用|應用|浏览器|瀏覽器|账号|帳號|账户|帳戶|模型|编辑器|編輯器|通知|隐私|隱私|外观|外觀|快捷键|快捷鍵)$/i;
+  const SETTINGS_DIALOG_LABEL_RE = /^(settings|preferences|设置|設定|偏好设置|偏好設定)$/i;
+
   function isHostNavTestId(node) {
     if (!node) return false;
     const id = String(node.id || '');
@@ -57818,17 +57821,78 @@ function createHostSettingsController(deps = {}) {
     return id.startsWith('settings-nav-item-') || tid.startsWith('settings-nav-item-');
   }
 
+  function isCloseActionNode(node) {
+    if (!node) return false;
+    if (isHostNavTestId(node)) return false;
+    const testId = String(node.getAttribute?.('data-testid') || '');
+    const ariaLbl = String(node.getAttribute?.('aria-label') || '');
+    const title = String(node.getAttribute?.('title') || node.title || '');
+    const cls = String(node.className || '');
+    const txt = String(node.textContent || '').trim();
+    if (/close|dismiss/i.test(testId) || /close|dismiss|关闭|關閉/i.test(ariaLbl) || /^(close|dismiss|关闭|關閉)$/i.test(title)) {
+      return true;
+    }
+    if (/^[×✕✖✗xX]$/.test(txt)) return true;
+    if (/\bclose\b/i.test(cls) && !node.children?.length) return true;
+    return false;
+  }
+
+  function normalizeNavLabel(node) {
+    return String(node?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function isSettingsSectionNavButton(node) {
+    if (!node || node.id === NAV_ID || isPluginOwnedNode(node) || isCloseActionNode(node)) return false;
+    if (isHostNavTestId(node)) return true;
+    const label = normalizeNavLabel(node);
+    if (!label || label.length > 32) return false;
+    return SETTINGS_SECTION_LABEL_RE.test(label);
+  }
+
+  function countDistinctNavLabels(buttons) {
+    const seen = new Set();
+    for (const btn of buttons || []) {
+      const key = isHostNavTestId(btn)
+        ? String(btn.id || btn.getAttribute?.('data-testid') || '').toLowerCase()
+        : normalizeNavLabel(btn);
+      if (key) seen.add(key);
+    }
+    return seen.size;
+  }
+
+  function isExplicitSettingsModalNode(node) {
+    if (!node) return false;
+    if (node.classList?.contains?.('settings-modal-container')) return true;
+    if (/\bsettings-modal-container\b/.test(String(node.className || ''))) return true;
+    const testId = String(node.getAttribute?.('data-testid') || '');
+    if (/^settings-(modal|dialog)$/i.test(testId)) return true;
+    const ariaLbl = String(node.getAttribute?.('aria-label') || '').trim();
+    if (SETTINGS_DIALOG_LABEL_RE.test(ariaLbl)) return true;
+    return false;
+  }
+
+  function getExplicitNavButtons(container) {
+    if (!container) return [];
+    if (typeof container.querySelectorAll === 'function') {
+      const queried = Array.from(container.querySelectorAll('button[id^="settings-nav-item-"], button[data-testid^="settings-nav-item-"]') || [])
+        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+      if (queried.length > 0) return queried;
+      return Array.from(container.querySelectorAll('button, [role="tab"]') || [])
+        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b) && isHostNavTestId(b));
+    }
+    return Array.from(container.children || []).filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b) && isHostNavTestId(b));
+  }
+
   function getNavButtons(container) {
     if (!container) return [];
     if (typeof container.querySelectorAll === 'function') {
-      const explicit = Array.from(container.querySelectorAll('button[id^="settings-nav-item-"], button[data-testid^="settings-nav-item-"]') || [])
-        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+      const explicit = getExplicitNavButtons(container);
       if (explicit.length > 0) return explicit;
       const fallback = Array.from(container.querySelectorAll('button, [role="tab"]') || [])
-        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+        .filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b) && !isCloseActionNode(b));
       return fallback;
     }
-    return Array.from(container.children || []).filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b));
+    return Array.from(container.children || []).filter((b) => b && b.id !== NAV_ID && !isPluginOwnedNode(b) && !isCloseActionNode(b));
   }
 
   function resolveNavRowInList(navList, btn) {
@@ -57994,35 +58058,57 @@ function createHostSettingsController(deps = {}) {
       if (modalFromBrowser && !candidates.includes(modalFromBrowser)) candidates.unshift(modalFromBrowser);
     }
 
+    let hasSettingsCandidate = false;
     for (const modal of candidates) {
       const browserBtn = modal.querySelector?.('#settings-nav-item-Browser, [data-testid="settings-nav-item-Browser"]') || (browserById && (modal.contains?.(browserById) || browserById.parentElement?.parentElement === modal) ? browserById : null);
-      const navBtns = getNavButtons(modal);
-      if (!browserBtn && navBtns.length === 0) continue;
+      const explicitNavBtns = getExplicitNavButtons(modal);
+      const explicitContentPane = typeof modal.querySelector === 'function'
+        ? modal.querySelector('[data-settings-content-pane="true"], .settings-content-pane')
+        : null;
+      const isExplicitSettingsModal = isExplicitSettingsModalNode(modal) || Boolean(browserBtn) || explicitNavBtns.length > 0 || Boolean(explicitContentPane);
+      const navBtns = explicitNavBtns.length > 0 ? explicitNavBtns : getNavButtons(modal);
+      const matchedSectionBtns = explicitNavBtns.length > 0 ? explicitNavBtns : navBtns.filter(isSettingsSectionNavButton);
+      if (isExplicitSettingsModal) hasSettingsCandidate = true;
+      if (!browserBtn && matchedSectionBtns.length === 0) continue;
+      if (!isExplicitSettingsModal && countDistinctNavLabels(matchedSectionBtns) < 2) continue;
+
       let navList = null;
       if (browserBtn) {
         const directParent = browserBtn.parentElement;
         const grandParent = directParent?.parentElement;
-        if (grandParent && getNavButtons(grandParent).length > getNavButtons(directParent).length) {
+        const directExplicitCount = getExplicitNavButtons(directParent).length;
+        const grandExplicitCount = grandParent && grandParent !== modal ? getExplicitNavButtons(grandParent).length : 0;
+        if (directExplicitCount <= 1 && grandParent && grandParent !== modal && grandExplicitCount > directExplicitCount) {
           navList = grandParent;
         } else {
           navList = directParent;
         }
       } else {
-        const sampleBtn = navBtns.find((b) => /general|browser|account|浏览器|通用/i.test(String(b.textContent || b.id || b.getAttribute?.('data-testid') || ''))) || navBtns[0];
+        const sampleBtn = matchedSectionBtns.find((b) => /^(browser|浏览器|瀏覽器)$/i.test(normalizeNavLabel(b))) || matchedSectionBtns[0];
         const directParent = sampleBtn?.parentElement;
         const grandParent = directParent?.parentElement;
-        navList = (grandParent && getNavButtons(grandParent).length > getNavButtons(directParent).length)
+        const directSectionCount = getNavButtons(directParent).filter(isSettingsSectionNavButton).length;
+        const grandSectionCount = grandParent && grandParent !== modal
+          ? getNavButtons(grandParent).filter(isSettingsSectionNavButton).length
+          : 0;
+        navList = (directSectionCount <= 1 && grandParent && grandParent !== modal && grandSectionCount > directSectionCount)
           ? grandParent
           : directParent;
       }
-      if (!navList) continue;
+      if (!navList || navList === modal) continue;
+      if (!browserBtn && explicitNavBtns.length === 0) {
+        const navListMatched = getNavButtons(navList).filter(isSettingsSectionNavButton);
+        const minDistinct = isExplicitSettingsModal ? 1 : 2;
+        if (countDistinctNavLabels(navListMatched) < minDistinct) continue;
+      }
       const anchorBtn = findBrowserAnchorButton(navList, browserBtn);
+      if (!anchorBtn) continue;
       const contentPane = findContentPane(modal, navList);
       if (!contentPane) continue;
       lastMountDiagnostic = 'matched_settings_modal_container';
       return { modal, sidebar: null, navList, splitRow: contentPane.parentElement || null, anchorBtn, contentPane };
     }
-    lastMountDiagnostic = candidates.length > 0 ? 'host_settings_structure_unrecognized' : 'host_settings_modal_not_open';
+    lastMountDiagnostic = hasSettingsCandidate ? 'host_settings_structure_unrecognized' : 'host_settings_modal_not_open';
     return null;
   }
 
@@ -72259,7 +72345,7 @@ if (typeof dismissNextPromptSuggestion === 'function') dismissNextPromptSuggesti
   const injectedBundleStamp = typeof globalThis !== 'undefined' ? (globalThis.__AGContextMeterPendingStamp || null) : null;
   try { delete globalThis.__AGContextMeterPendingStamp; } catch { }
   globalThis.__AGContextMeter = {
-    buildId: '7fe9ad798af67389',
+    buildId: '23d8f4b50e9af404',
     version: METER_RENDERER_VERSION,
     injectedStamp: injectedBundleStamp,
     ensureAlive: () => {

@@ -8,8 +8,8 @@
       "dirName": "antigravity-context-viewer",
       "path": "plugins/antigravity-context-viewer",
       "displayName": "Context Viewer",
-      "version": "0.9.3-1",
-      "description": "Modified edition of antigravity-context-viewer (v0.9.3-1, synced to upstream v0.9.3): Antigravity 2.35.1 native Settings integration, opt-in next-prompt suggestions, scoped multi-account auto-switch, full-feature Aux Pane Sidecar UI & CDP topbar gauge, Gemini 4 Neon & Google AI Ultra 5x/20x detection, and cost analytics.",
+      "version": "0.9.3-2",
+      "description": "Modified edition of antigravity-context-viewer (v0.9.3-2, synced to upstream v0.9.3): Antigravity 2.35.1+ native Settings integration, opt-in next-prompt suggestions, scoped multi-account auto-switch, full-feature Aux Pane Sidecar UI & CDP topbar gauge, Gemini 4 Neon & Google AI Ultra 5x/20x detection, and cost analytics.",
       "logo": "assets/logo.svg",
       "components": {
         "skills": 1,

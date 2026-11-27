@@ -5652,7 +5652,7 @@ test('当前权威版本展示与预发布更新比较隔离', async () => {
   const curDisplayVer = pkg.displayVersion || `v${curVer}`;
   const escapedVer = curVer.replace(/\./g, '\\.');
   const escapedDisplayVer = curDisplayVer.replace(/\./g, '\\.');
-  assert.equal(curVer, '0.9.3-1');
+  assert.equal(curVer, '0.9.3-2');
   assert.equal(curDisplayVer, `v${curVer}`);
 
   // 1. 默认构建模板中 #v 与 #up-pop-ver 均为权威展示版本，beta 通道开关默认未勾选

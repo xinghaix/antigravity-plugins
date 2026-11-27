@@ -6999,7 +6999,7 @@
    * - 正式版用户默认（allowBetaUpdates !== true）不推送预发布版本
    * - 预发布用户（如 0.8.9-beta.1）可识别并升级到后续 beta 或正式版（如 0.8.9）
    */
-  function filterReleases(releasesList, currentVersion = '0.9.3-1', options = {}) {
+  function filterReleases(releasesList, currentVersion = '0.9.3-2', options = {}) {
     if (!Array.isArray(releasesList)) return [];
     const allowBetaUpdates = options?.allowBetaUpdates === true;
     const currentParsed = parseSemver(currentVersion);

@@ -796,3 +796,127 @@ test('原生设置页侧栏导航纯文本无图标且无点击蓝框，内容�
     api.dispose();
   }
 });
+
+test('归档提示弹框与普通 role="dialog" 严禁被误认成原生设置弹窗注入 Context Meter', async () => {
+  const h = createHostSettingsTestHarness();
+  const api = h.sandbox.__AGContextMeter;
+  try {
+    await h.flush();
+
+    // 1. 还原真实 Antigravity「Conversation Archived」归档提示弹框（role="dialog" + 标题栏含 × + 正文含 撤销）
+    const archiveToast = h.createMockNode('div');
+    archiveToast.setAttribute('role', 'dialog');
+    const toastHeader = h.createMockNode('div');
+    toastHeader.className = 'flex items-center justify-between';
+    const toastTitle = h.createMockNode('div');
+    toastTitle.textContent = 'Conversation Archived';
+    const toastCloseBtn = h.createMockNode('button');
+    toastCloseBtn.setAttribute('aria-label', 'Close');
+    toastCloseBtn.textContent = '×';
+    toastHeader.appendChild(toastTitle);
+    toastHeader.appendChild(toastCloseBtn);
+
+    const toastBody = h.createMockNode('div');
+    const toastDesc = h.createMockNode('p');
+    toastDesc.textContent = 'View archived in the sidebar (☰ menu).';
+    const toastUndoBtn = h.createMockNode('button');
+    toastUndoBtn.textContent = '撤销';
+    toastBody.appendChild(toastDesc);
+    toastBody.appendChild(toastUndoBtn);
+
+    archiveToast.appendChild(toastHeader);
+    archiveToast.appendChild(toastBody);
+    h.bodyNode.appendChild(archiveToast);
+
+    assert.equal(api.syncHostSettingsForTest(), false, '归档提示 toast 不得触发宿主设置挂载');
+    assert.equal(h.docElements.get('ag-cm-host-settings-nav') || null, null, '归档提示 toast 内严禁注入 #ag-cm-host-settings-nav');
+    assert.equal(archiveToast.querySelector('#ag-cm-host-settings-page'), null, '归档提示 toast 内严禁注入 #ag-cm-host-settings-page');
+    assert.deepEqual(toastHeader.children, [toastTitle, toastCloseBtn], '归档提示标题栏子节点不得被污染');
+    assert.equal(api.getHostSettingsStateForTest().mounted, false);
+
+    // 2. 无 aria-label/纯图标关闭按钮的 toast，以及含「Open Browser」/单个「Browser」按钮的确认弹窗均不得误注入
+    const iconCloseToast = h.createMockNode('div');
+    iconCloseToast.setAttribute('role', 'dialog');
+    const iconHeader = h.createMockNode('div');
+    const iconCloseBtn = h.createMockNode('button');
+    iconCloseBtn.textContent = '';
+    iconHeader.appendChild(iconCloseBtn);
+    const iconBody = h.createMockNode('div');
+    const okBtn = h.createMockNode('button');
+    okBtn.textContent = '撤销';
+    iconBody.appendChild(okBtn);
+    iconCloseToast.appendChild(iconHeader);
+    iconCloseToast.appendChild(iconBody);
+    h.bodyNode.appendChild(iconCloseToast);
+
+    const oauthDialog = h.createMockNode('div');
+    oauthDialog.setAttribute('role', 'dialog');
+    oauthDialog.setAttribute('aria-label', 'Sign in');
+    const oauthBody = h.createMockNode('div');
+    oauthBody.textContent = 'Please open your browser to sign in to your account.';
+    const oauthFooter = h.createMockNode('div');
+    const cancelBtn = h.createMockNode('button');
+    cancelBtn.textContent = 'Cancel';
+    const openBrowserBtn = h.createMockNode('button');
+    openBrowserBtn.textContent = 'Open Browser';
+    oauthFooter.appendChild(cancelBtn);
+    oauthFooter.appendChild(openBrowserBtn);
+    oauthDialog.appendChild(oauthBody);
+    oauthDialog.appendChild(oauthFooter);
+    h.bodyNode.appendChild(oauthDialog);
+
+    const singleTabConfirm = h.createMockNode('div');
+    singleTabConfirm.setAttribute('role', 'dialog');
+    const singleBody = h.createMockNode('div');
+    singleBody.textContent = 'Switch mode?';
+    const singleFooter = h.createMockNode('div');
+    const singleCancel = h.createMockNode('button');
+    singleCancel.textContent = 'Cancel';
+    const singleBrowser = h.createMockNode('button');
+    singleBrowser.textContent = 'Browser';
+    singleFooter.appendChild(singleCancel);
+    singleFooter.appendChild(singleBrowser);
+    singleTabConfirm.appendChild(singleBody);
+    singleTabConfirm.appendChild(singleFooter);
+    h.bodyNode.appendChild(singleTabConfirm);
+
+    assert.equal(api.syncHostSettingsForTest(), false, '普通图标 toast 与确认/OAuth dialog 均不得触发宿主设置挂载');
+    assert.equal(h.docElements.get('ag-cm-host-settings-nav') || null, null);
+    assert.equal(api.getHostSettingsStateForTest().navCountInDoc, 0);
+
+    // 3. 归档提示弹框先存在于 DOM 时打开真实原生设置弹窗：必须精准挂载到设置弹窗且不污染 toast
+    const modalCtx = h.mountHostSettingsModal();
+    assert.equal(api.syncHostSettingsForTest(), true, '真实设置弹窗必须正常挂载');
+    const navBtn = h.docElements.get('ag-cm-host-settings-nav');
+    assert.ok(navBtn, '真实设置弹窗必须挂载 #ag-cm-host-settings-nav');
+    assert.equal(modalCtx.btnBrowser.nextElementSibling, navBtn, '必须挂载在设置弹窗 Browser 项下方');
+    assert.deepEqual(toastHeader.children, [toastTitle, toastCloseBtn], '并存的归档提示 toast 仍不得被注入');
+
+    // 4. 关闭带 explicit ID 的设置弹窗后，无 settings-nav-item-* ID 但含多组标准设置分栏的纯 role="dialog" 兜底仍可挂载
+    modalCtx.modal.remove();
+    assert.equal(api.syncHostSettingsForTest(), false, '关闭设置弹窗后仅剩 toast 时必须返回未挂载');
+
+    const genericSettingsDialog = h.createMockNode('div');
+    genericSettingsDialog.setAttribute('role', 'dialog');
+    const genericNav = h.createMockNode('div');
+    const gGeneral = h.createMockNode('button');
+    gGeneral.textContent = 'General';
+    const gBrowser = h.createMockNode('button');
+    gBrowser.textContent = 'Browser';
+    genericNav.appendChild(gGeneral);
+    genericNav.appendChild(gBrowser);
+    const genericContent = h.createMockNode('div');
+    const genericBody = h.createMockNode('div');
+    genericBody.textContent = 'General preferences body';
+    genericContent.appendChild(genericBody);
+    genericSettingsDialog.appendChild(genericNav);
+    genericSettingsDialog.appendChild(genericContent);
+    h.bodyNode.appendChild(genericSettingsDialog);
+
+    assert.equal(api.syncHostSettingsForTest(), true, '具备多组标准设置导航项的兜底设置 dialog 应正常挂载');
+    assert.equal(gBrowser.nextElementSibling?.id, 'ag-cm-host-settings-nav');
+    assert.deepEqual(toastHeader.children, [toastTitle, toastCloseBtn]);
+  } finally {
+    api.dispose();
+  }
+});

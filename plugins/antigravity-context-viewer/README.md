@@ -1,8 +1,8 @@
-# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.9.3-1`）
+# Antigravity 对话上下文查看器与 Token 用量看板（改版增强版 `v0.9.3-2`）
 
 **简体中文** · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
-> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.9.3`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.9.3-1`**）：
+> **上游与版本说明**：本插件基于开源上游仓库 [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer)（MIT License，当前同步基线 **`v0.9.3`**）进行二次改版与增强，版本号采用 `<上游版本>-<插件修订号>` 规则（如 **`v0.9.3-2`**）：
 > 1. **原生 Aux Pane Sidecar UI + Daemon / CDP 双模适配（兼容 Antigravity `2.33+` / `2.34+` / `2.35.1+`）**（`sidecars/live-loader` + `sidecar-live.js` + `local-api.js`）：Antigravity `2.33+` ~ `2.35.1+` 默认关闭 `DevToolsActivePort`，且 macOS 启用了 `ElectronAsarIntegrity` 签名完整性校验。插件自动通过 `authBootstrap`、`ANTIGRAVITY_LS_ADDRESS`、`~/.gemini/antigravity/daemon/hub_*.json` 与 `main.log` 免改盘直连本地 Language Server，在原生侧边栏 `sidecar://antigravity-context-viewer/live-loader/` 展示实时上下文用量、生成速度、配额、历史 Token 与解锁诊断（并通过独立子进程扫描与磁盘签名缓存控制 Sidecar 常驻内存）；同时完整保留 CDP 自动热注入、`node cli.js watch` 免改盘守护模式、`node cli.js launch --restart` 与显式 `--force-mac-asar` 支持。
 > 2. **渲染器界面、原生设置页与状态同步增强**（`src/renderer/*`、`meter-renderer.js`、`install.js`、`live-host.js`）：完整同步上游 `v0.9.3` Antigravity `2.35.1` 原生设置侧栏同级独立页、统一下拉与候选开关视觉、顶层原生重启弹窗、复用原生模型菜单与可选下一句预测建议（默认关闭）、四项收敛自动切号与提示去重，以及 `v0.9.0`–`v0.9.2` 4 行响应式 Bento/Skyline 工作台、Gemini 4 Neon 统一配额池；同时完整保留本仓顶栏胶囊紧致上下文长度+比例双显示、克制双圆环风格、默认隐藏 CLI 启动按钮、免改盘中文热注入自愈、防卡滞错误自愈与底栏最后 1 步纯吐字速度（提示词与标题改写默认严格关闭）。
 > 3. **多平台上下文加长解锁、完整性预检与 CLI 增强**（`meter-context-unlock.js`、`host-recovery.js`、`macos-binary-utils.js`、`cli.js`）：支持 macOS `ElectronAsarIntegrity` 写前预检与 Apple Silicon (`arm64`) Mach-O `fixed` / `dynamic` / `default` + `codesign` 上下文解锁、`watch` / `stop-watch` 与独立 `sidecar:*` 生命周期管理。

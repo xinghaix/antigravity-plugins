@@ -1272,12 +1272,12 @@
   let lastUpdateError = null;
   let cachedStrictUpdateState = null;
 
-  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-1';
+  const METER_RENDERER_VERSION = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-2';
   function formatDisplayVersion(rawVer) {
     const clean = String(rawVer ?? METER_RENDERER_VERSION).replace(/^v/i, '').trim();
     const buildDisplay = typeof METER_DISPLAY_VERSION !== 'undefined' && METER_DISPLAY_VERSION
       ? String(METER_DISPLAY_VERSION).trim()
-      : 'v0.9.3-1';
+      : 'v0.9.3-2';
     if (!clean) return buildDisplay;
     const normalizedCurrent = String(METER_RENDERER_VERSION || '').replace(/^v/i, '').trim();
     if (normalizedCurrent && clean === normalizedCurrent) return buildDisplay;
@@ -20835,7 +20835,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
     };
 
     // 检查桥接是否存在；若缺失则直接判定为更新功能不可用，严禁显示“最新”
-    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-1';
+    const currentVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-2';
     const currentDisplayVer = formatDisplayVersion(currentVer);
     const hasIpcUpdateBridge = typeof window !== 'undefined' && typeof window.contextMeterAPI?.checkUpdate === 'function';
     const hasBridge = hasIpcUpdateBridge || (hasLiveHttpBridge() && hasLiveRouteCapability('/check-update'));
@@ -21029,7 +21029,7 @@ speedPkSelection = speedPkSelection.filter(v => v !== id);
       }
       if (state.disposed) return;
       if (res && res.ok) {
-        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-1';
+        const fallbackVer = typeof METER_VERSION !== 'undefined' ? METER_VERSION : '0.9.3-2';
         const nextVer = res.version || res.targetVersion || res.installedVersion || cachedLatestRelease?.latestVersion || fallbackVer;
         const nextDisplayVer = formatDisplayVersion(nextVer);
         lastApplyUpdateResult = res;
